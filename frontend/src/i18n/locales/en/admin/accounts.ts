@@ -1658,6 +1658,13 @@ export default {
         estimatedTotalCost: 'Est. total ${cost}',
         estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
+      googleQuota: {
+        groupGemini: 'Gemini',
+        groupClaudeGPT: 'Claude/GPT',
+        groupOther: 'Quota',
+        window5h: '5h',
+        windowWeekly: '7d'
+      },
       openaiReferral: {
         available: 'Invites left',
         invite: 'Invite user',

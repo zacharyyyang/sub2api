@@ -1378,6 +1378,22 @@ export interface AntigravityModelQuota {
   reset_time: string  // 重置时间 ISO8601
 }
 
+// Google 官方配额组的单个窗口（桶）
+export interface GoogleQuotaWindow {
+  bucket_id: string
+  kind: 'five_hour' | 'seven_day' | 'other'
+  label?: string
+  utilization: number // 使用率 0-100
+  reset_time?: string // 重置时间 ISO8601
+}
+
+// Google 官方配额组（Gemini / Claude+GPT / 其他）
+export interface GoogleQuotaGroup {
+  kind: 'gemini' | 'claude_gpt' | 'other'
+  label: string
+  windows: GoogleQuotaWindow[]
+}
+
 export interface GrokQuotaWindow {
   limit?: number | null
   remaining?: number | null
@@ -1436,6 +1452,7 @@ export interface AccountUsageInfo {
   gemini_pro_minute?: UsageProgress | null
   gemini_flash_minute?: UsageProgress | null
   antigravity_quota?: Record<string, AntigravityModelQuota> | null
+  google_quota_groups?: GoogleQuotaGroup[] | null
   grok_request_quota?: GrokQuotaWindow | null
   grok_token_quota?: GrokQuotaWindow | null
   grok_retry_after_seconds?: number | null

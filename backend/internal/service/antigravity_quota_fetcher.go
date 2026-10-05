@@ -86,6 +86,9 @@ func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Accou
 	// 转换为 UsageInfo
 	usageInfo := f.buildUsageInfo(modelsResp, tierRaw, tierNormalized, loadResp)
 
+	// 旁路探测官方配额组额度（非关键路径：失败仅 Warn、绝不写 Error/ErrorCode）
+	f.attachGoogleQuotaGroups(ctx, client, accessToken, resolveModelsListReadLimit(f.cfg), usageInfo)
+
 	return &QuotaResult{
 		UsageInfo: usageInfo,
 		Raw:       modelsRaw,
@@ -107,6 +110,23 @@ func (f *AntigravityQuotaFetcher) fetchSubscriptionTier(ctx context.Context, cli
 	raw = loadResp.GetTier() // 已有方法：paidTier > currentTier
 	normalized = normalizeTier(raw)
 	return raw, normalized, loadResp
+}
+
+// attachGoogleQuotaGroups 旁路获取官方配额组额度并装配进 UsageInfo。
+// 非关键路径，与 fetchSubscriptionTier 同构：成功填入 info.GoogleQuotaGroups；
+// 失败仅 slog.Warn、绝不写 Error / ErrorCode（写错误码会把整份用量判为降级，
+// 连带连累已成功的逐模型额度 —— 需求功能点 3）。可脱离 FetchQuota 直接单测。
+func (f *AntigravityQuotaFetcher) attachGoogleQuotaGroups(ctx context.Context, client *antigravity.Client, accessToken string, bodyLimit int64, info *UsageInfo) {
+	if info == nil {
+		slog.Warn("attachGoogleQuotaGroups: nil UsageInfo", "error", "usage info missing")
+		return
+	}
+	resp, err := client.FetchUserQuotaSummary(ctx, accessToken, bodyLimit)
+	if err != nil {
+		slog.Warn("failed to fetch google quota groups", "error", err)
+		return
+	}
+	info.GoogleQuotaGroups = buildGoogleQuotaGroups(resp)
 }
 
 // normalizeTier 将原始 tier 字符串归一化为 FREE/PRO/ULTRA/UNKNOWN

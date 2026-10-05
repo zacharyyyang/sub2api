@@ -535,6 +535,13 @@ export default {
         estimatedTotalCost: '预计总费用 ${cost}',
         estimatedTotalCostTooltip: '根据当前窗口费用和使用率估算达到 100% 使用率时的总费用'
       },
+      googleQuota: {
+        groupGemini: 'Gemini',
+        groupClaudeGPT: 'Claude/GPT',
+        groupOther: '额度',
+        window5h: '5h',
+        windowWeekly: '7d'
+      },
       openaiReferral: {
         available: '可邀请',
         invite: '邀请用户',

@@ -332,12 +332,16 @@
           color="amber"
         />
 
+        <!-- Google official quota groups (grouped window usage) -->
+        <GoogleQuotaGroups :groups="googleQuotaGroups" />
+
         <div v-if="aiCreditsDisplay" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
           💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
         </div>
       </div>
-      <div v-else-if="aiCreditsDisplay" class="text-[10px] text-gray-500 dark:text-gray-400">
-        💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}
+      <div v-else-if="aiCreditsDisplay || googleQuotaGroups.length > 0" class="text-[10px] text-gray-500 dark:text-gray-400">
+        <GoogleQuotaGroups :groups="googleQuotaGroups" />
+        <span v-if="aiCreditsDisplay">💳 {{ t('admin.accounts.aiCreditsBalance') }}: {{ aiCreditsDisplay }}</span>
       </div>
       <div v-else class="text-xs text-gray-400">-</div>
     </template>
@@ -677,7 +681,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
-import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { Account, AccountUsageInfo, GeminiCredentials, GoogleQuotaGroup, WindowStats } from '@/types'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -691,6 +695,7 @@ import CNProviderBalanceCell from './CNProviderBalanceCell.vue'
 import OllamaCloudUsageCell from './OllamaCloudUsageCell.vue'
 import { cnQuotaCellVisible as cnQuotaCellVisibleFn, cnBalanceCellVisible as cnBalanceCellVisibleFn } from './credentialsBuilder'
 import OpenCodeGoUsageCell from './OpenCodeGoUsageCell.vue'
+import GoogleQuotaGroups from './GoogleQuotaGroups.vue'
 
 // Module-level cache shared across all AccountUsageCell instances
 const _usageCache = new Map<number, { data: AccountUsageInfo; ts: number }>()
@@ -917,6 +922,20 @@ const antigravityClaudeUsageFromAPI = computed(() =>
     'claude-opus-4-7', 'claude-opus-4-8',
   ])
 )
+
+// Google official quota groups（谷歌账单页同源数据，随 UsageInfo 快照刷新）
+// 防御过滤与子组件同规则：非有限 / 负数的窗口剔除、无有效窗口的组整体剔除（设计 §2.4 :188、§6 F4）
+const googleQuotaGroups = computed(() => {
+  const groups = usageInfo.value?.google_quota_groups
+  if (!groups || groups.length === 0) return []
+  const result: GoogleQuotaGroup[] = []
+  for (const group of groups) {
+    const windows = (group.windows ?? []).filter(w => Number.isFinite(w.utilization) && w.utilization >= 0)
+    if (windows.length === 0) continue
+    result.push({ ...group, windows })
+  }
+  return result
+})
 
 const aiCreditsDisplay = computed(() => {
   const credits = usageInfo.value?.ai_credits

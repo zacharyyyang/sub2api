@@ -225,6 +225,9 @@ type UsageInfo struct {
 	// Antigravity AI Credits 余额
 	AICredits []AICredit `json:"ai_credits,omitempty"`
 
+	// Antigravity 官方配额组额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode）
+	GoogleQuotaGroups []GoogleQuotaGroup `json:"google_quota_groups,omitempty"`
+
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
 
@@ -244,6 +247,22 @@ type UsageInfo struct {
 
 	// 获取 usage 时的错误信息（降级返回，而非 500）
 	Error string `json:"error,omitempty"`
+}
+
+// GoogleQuotaWindow 官方配额组的一个窗口（桶）。
+type GoogleQuotaWindow struct {
+	BucketID    string `json:"bucket_id"`
+	Kind        string `json:"kind"`                 // five_hour / seven_day / other
+	Label       string `json:"label,omitempty"`      // 上游 displayName 清洗后（本地无词条时兜底）
+	Utilization int    `json:"utilization"`          // 0-100，= int((1-remainingFraction)*100)，与既有逐模型同算法
+	ResetTime   string `json:"reset_time,omitempty"` // 上游原样 RFC3339（仅在校验可解析后保留）
+}
+
+// GoogleQuotaGroup 一个官方配额组。
+type GoogleQuotaGroup struct {
+	Kind    string              `json:"kind"` // gemini / claude_gpt / other
+	Label   string              `json:"label"`
+	Windows []GoogleQuotaWindow `json:"windows"`
 }
 
 // ClaudeUsageWindow Anthropic /api/oauth/usage 返回的单个用量窗口
