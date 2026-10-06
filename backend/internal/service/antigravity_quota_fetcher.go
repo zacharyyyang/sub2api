@@ -113,20 +113,41 @@ func (f *AntigravityQuotaFetcher) fetchSubscriptionTier(ctx context.Context, cli
 }
 
 // attachGoogleQuotaGroups 旁路获取官方配额组额度并装配进 UsageInfo。
-// 非关键路径，与 fetchSubscriptionTier 同构：成功填入 info.GoogleQuotaGroups；
-// 失败仅 slog.Warn、绝不写 Error / ErrorCode（写错误码会把整份用量判为降级，
+// 生产调用点：对 prod 与 daily 各调一次 FetchUserQuotaSummaryForDomain（固定序 prod→daily，
+// 与 BaseURLs 一致，顺序不影响合并键）；单域失败仅 slog.Warn 不返回 error；
+// 双 nil ⇒ GoogleQuotaGroups = nil；单域 nil ⇒ 用另一域结果。
+// 非关键路径，与 fetchSubscriptionTier 同构：失败绝不写 Error / ErrorCode（写错误码会把整份用量判为降级，
 // 连带连累已成功的逐模型额度 —— 需求功能点 3）。可脱离 FetchQuota 直接单测。
 func (f *AntigravityQuotaFetcher) attachGoogleQuotaGroups(ctx context.Context, client *antigravity.Client, accessToken string, bodyLimit int64, info *UsageInfo) {
 	if info == nil {
 		slog.Warn("attachGoogleQuotaGroups: nil UsageInfo", "error", "usage info missing")
 		return
 	}
-	resp, err := client.FetchUserQuotaSummary(ctx, accessToken, bodyLimit)
-	if err != nil {
-		slog.Warn("failed to fetch google quota groups", "error", err)
-		return
+
+	// 双探针：先 prod 后 daily（与 BaseURLs 排序一致）；任一域失败仅 Warn，合并层用另一域结果兜底。
+	// BaseURLs 长度守卫：缺域不得越界 panic —— len==0 跳过双探针（GoogleQuotaGroups 保持 nil、字段缺席）；
+	// len==1 仅探 prod 位、daily 按 nil 参与合并；len>=2 双探针行为不变。缺域跳过记一条 Warn，绝不写 Error / ErrorCode。
+	switch n := len(antigravity.BaseURLs); {
+	case n == 0:
+		slog.Warn("attachGoogleQuotaGroups: empty BaseURLs, skipping google quota probes")
+	case n == 1:
+		prodResp, err := client.FetchUserQuotaSummaryForDomain(ctx, accessToken, bodyLimit, antigravity.BaseURLs[0])
+		if err != nil {
+			slog.Warn("failed to fetch google quota groups (prod)", "error", err)
+		}
+		slog.Warn("attachGoogleQuotaGroups: single BaseURLs element, skipping daily domain probe")
+		info.GoogleQuotaGroups = buildGoogleQuotaGroups(prodResp, nil)
+	default:
+		prodResp, err := client.FetchUserQuotaSummaryForDomain(ctx, accessToken, bodyLimit, antigravity.BaseURLs[0])
+		if err != nil {
+			slog.Warn("failed to fetch google quota groups (prod)", "error", err)
+		}
+		dailyResp, err := client.FetchUserQuotaSummaryForDomain(ctx, accessToken, bodyLimit, antigravity.BaseURLs[1])
+		if err != nil {
+			slog.Warn("failed to fetch google quota groups (daily)", "error", err)
+		}
+		info.GoogleQuotaGroups = buildGoogleQuotaGroups(prodResp, dailyResp)
 	}
-	info.GoogleQuotaGroups = buildGoogleQuotaGroups(resp)
 }
 
 // normalizeTier 将原始 tier 字符串归一化为 FREE/PRO/ULTRA/UNKNOWN

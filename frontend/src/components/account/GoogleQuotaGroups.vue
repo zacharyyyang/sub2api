@@ -1,6 +1,6 @@
 <template>
   <template v-if="effectiveGroups.length > 0">
-    <template v-for="group in effectiveGroups" :key="`${group.kind}:${group.label}`">
+    <template v-for="group in effectiveGroups" :key="`${group.kind}:${group.label}:${group.domain ?? ''}`">
       <div class="group-name mt-1 text-[10px] text-gray-400">
         {{ groupLabel(group) }}
       </div>
@@ -50,7 +50,12 @@ const effectiveGroups = computed(() => {
 
 const groupLabel = (group: GoogleQuotaGroup): string => {
   if (group.kind === 'gemini') return t('admin.accounts.googleQuota.groupGemini')
-  if (group.kind === 'claude_gpt') return t('admin.accounts.googleQuota.groupClaudeGPT')
+  if (group.kind === 'claude_gpt') {
+    // claude_gpt 组名行拼域标签（组词条 + · + 域词条），同组多域各有独立行
+    const base = t('admin.accounts.googleQuota.groupClaudeGPT')
+    if (!group.domain) return base // domain 缺省（v1 旧数据）不拼域，向后兼容
+    return `${base} · ${t(`admin.accounts.googleQuota.domain.${group.domain}`)}`
+  }
   // kind = other：优先上游 label，缺失时兜底本地词条
   return group.label || t('admin.accounts.googleQuota.groupOther')
 }

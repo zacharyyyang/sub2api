@@ -4,6 +4,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 
@@ -44,11 +45,12 @@ func TestBuildGoogleQuotaGroups_Normal(t *testing.T) {
 		},
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 2)
 
 	g0 := groups[0]
 	require.Equal(t, "gemini", g0.Kind)
+	require.Equal(t, "", g0.Domain, "账号级组不标域")
 	require.Equal(t, "Gemini Models", g0.Label)
 	require.Len(t, g0.Windows, 2)
 	// utilization = int((1-remainingFraction)*100) 截断取整：0.97 ⇒ 3、0.6 ⇒ 40
@@ -61,6 +63,7 @@ func TestBuildGoogleQuotaGroups_Normal(t *testing.T) {
 
 	g1 := groups[1]
 	require.Equal(t, "claude_gpt", g1.Kind)
+	require.Equal(t, "prod", g1.Domain, "claude 每域独立一组，prod 在前")
 	require.Equal(t, "Claude & GPT", g1.Label)
 	require.Len(t, g1.Windows, 2)
 	// 1.0 ⇒ 0、0.0 ⇒ 100（合法零值保留，额度已用尽）
@@ -73,15 +76,16 @@ func TestBuildGoogleQuotaGroups_Normal(t *testing.T) {
 
 // C2 正常：resp == nil ⇒ nil（字段缺席 ⇒ 无数据不显示）
 func TestBuildGoogleQuotaGroups_NilResponse(t *testing.T) {
-	require.Nil(t, buildGoogleQuotaGroups(nil))
+	require.Nil(t, buildGoogleQuotaGroups(nil, nil))
 }
 
 // C3 边界：空 groups ⇒ nil（不输出空切片，omitempty 后字段整体缺席）
 func TestBuildGoogleQuotaGroups_EmptyGroups(t *testing.T) {
-	require.Nil(t, buildGoogleQuotaGroups(&antigravity.UserQuotaSummaryResponse{}))
+	require.Nil(t, buildGoogleQuotaGroups(&antigravity.UserQuotaSummaryResponse{}, nil))
 }
 
-// C4 边界：9 组 × 9 桶 ⇒ 截断为 8 组 × 8 桶 + Warn 一次，不报错
+// C4 边界（合并语义重定义）：上游 9 组 × 9 桶同桶 ⇒ (kind, bucketId) 去重后 1 组 1 窗。
+// v1 的「9 组截断 8 组」在新合并模型下不可达：组上限 8 仅防合并并集超 8（见下方 C4b），保留为防御守卫。
 func TestBuildGoogleQuotaGroups_Truncate(t *testing.T) {
 	resp := &antigravity.UserQuotaSummaryResponse{}
 	for gi := 0; gi < 9; gi++ {
@@ -92,11 +96,104 @@ func TestBuildGoogleQuotaGroups_Truncate(t *testing.T) {
 		resp.Groups = append(resp.Groups, grp)
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
-	require.Len(t, groups, 8)
-	for _, g := range groups {
-		require.Len(t, g.Windows, 8)
+	groups := buildGoogleQuotaGroups(resp, nil)
+	require.Len(t, groups, 1, "同 kind 同桶跨组去重 ⇒ 单组")
+	require.Len(t, groups[0].Windows, 1, "单 bucketId 去重 ⇒ 单窗")
+}
+
+// C4b 合并截断防御：daily 8 个 gemini 桶 + prod 8 个不同 gemini 桶 ⇒ 并集 16 截断为 8 窗
+func TestBuildGoogleQuotaGroups_MergeBucketTruncate(t *testing.T) {
+	mk := func(offset int) []antigravity.UserQuotaGroup {
+		grp := antigravity.UserQuotaGroup{DisplayName: "Gemini Models"}
+		for i := 0; i < 8; i++ {
+			grp.Buckets = append(grp.Buckets, bucket(fmt.Sprintf("gemini-%d-5h", offset+i), floatPtr(0.5)))
+		}
+		return []antigravity.UserQuotaGroup{grp}
 	}
+	prod := &antigravity.UserQuotaSummaryResponse{Groups: mk(0)}
+	daily := &antigravity.UserQuotaSummaryResponse{Groups: mk(10)}
+
+	groups := buildGoogleQuotaGroups(prod, daily)
+	require.Len(t, groups, 1)
+	require.Len(t, groups[0].Windows, 8, "并集 16 截断为 8 窗")
+}
+
+// D1 双域合并（账号级）：gemini 两域同桶，daily 值优先（同 (kind, bucketId) 异值取 daily），Domain=""
+func TestBuildGoogleQuotaGroups_DualDomainSameBucketDailyWins(t *testing.T) {
+	prod := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Gemini Models", Buckets: []antigravity.UserQuotaBucket{
+			bucket("gemini-5h", floatPtr(0.97)),
+			bucket("gemini-weekly", floatPtr(0.6)),
+		}},
+	}}
+	daily := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Gemini Models", Buckets: []antigravity.UserQuotaBucket{
+			bucket("gemini-5h", floatPtr(0.4)), // 异值 ⇒ daily 优先
+		}},
+	}}
+
+	groups := buildGoogleQuotaGroups(prod, daily)
+	require.Len(t, groups, 1)
+	require.Equal(t, "gemini", groups[0].Kind)
+	require.Equal(t, "", groups[0].Domain)
+	require.Len(t, groups[0].Windows, 2, "两域并集去重 ⇒ 2 窗")
+	require.Equal(t, 60, groups[0].Windows[0].Utilization, "daily 桶在前，同桶取 daily 值")
+}
+
+// D2 双域合并（claude）：prod / daily 各自成组（Domain 标域），异值并存不跨域合并
+func TestBuildGoogleQuotaGroups_DualDomainClaudePerDomain(t *testing.T) {
+	prod := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Claude & GPT", Buckets: []antigravity.UserQuotaBucket{
+			bucket("3p-weekly", floatPtr(0.25)),
+		}},
+	}}
+	daily := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Claude & GPT", Buckets: []antigravity.UserQuotaBucket{
+			bucket("3p-weekly", floatPtr(0.5)), // 同桶异值 ⇒ 不跨域合并，分别保留
+		}},
+	}}
+
+	groups := buildGoogleQuotaGroups(prod, daily)
+	require.Len(t, groups, 2, "claude 每域一组")
+	require.Equal(t, "claude_gpt", groups[0].Kind)
+	require.Equal(t, "prod", groups[0].Domain)
+	require.Equal(t, 75, groups[0].Windows[0].Utilization)
+	require.Equal(t, "claude_gpt", groups[1].Kind)
+	require.Equal(t, "daily", groups[1].Domain)
+	require.Equal(t, 50, groups[1].Windows[0].Utilization)
+}
+
+// D3 单域失败（降级）：daily 为空 ⇒ 仅 prod 数据输出；prod 为空 ⇒ 仅 daily 数据输出（fetcher 侧单域失败只 Warn，合并侧单域降级）
+func TestBuildGoogleQuotaGroups_SingleDomainFallback(t *testing.T) {
+	prod := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Gemini Models", Buckets: []antigravity.UserQuotaBucket{
+			bucket("gemini-5h", floatPtr(0.5)),
+		}},
+	}}
+	daily := &antigravity.UserQuotaSummaryResponse{Groups: []antigravity.UserQuotaGroup{
+		{DisplayName: "Gemini Models", Buckets: []antigravity.UserQuotaBucket{
+			bucket("gemini-5h", floatPtr(0.5)),
+		}},
+	}}
+
+	// daily 域失败（nil）⇒ 仅 prod 数据输出
+	groupsDailyNil := buildGoogleQuotaGroups(prod, nil)
+	require.Len(t, groupsDailyNil, 1)
+	require.Equal(t, "gemini", groupsDailyNil[0].Kind)
+	require.Equal(t, "", groupsDailyNil[0].Domain)
+	require.Equal(t, 50, groupsDailyNil[0].Windows[0].Utilization)
+
+	// prod 域失败（nil）⇒ 仅 daily 数据输出
+	groupsProdNil := buildGoogleQuotaGroups(nil, daily)
+	require.Len(t, groupsProdNil, 1)
+	require.Equal(t, "gemini", groupsProdNil[0].Kind)
+	require.Equal(t, "", groupsProdNil[0].Domain)
+	require.Equal(t, 50, groupsProdNil[0].Windows[0].Utilization)
+}
+
+// D4 双 nil ⇒ nil（两域都失败 ⇒ 无数据不显示）
+func TestBuildGoogleQuotaGroups_DualNilNil(t *testing.T) {
+	require.Nil(t, buildGoogleQuotaGroups(nil, nil))
 }
 
 // C5 异常：越界 / NaN 桶丢弃，其余保留
@@ -115,8 +212,9 @@ func TestBuildGoogleQuotaGroups_OutOfRangeDropped(t *testing.T) {
 		},
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 1)
+	require.Equal(t, "prod", groups[0].Domain, "混合组首个有效桶 3p ⇒ claude_gpt，prod 域独立一组")
 	require.Len(t, groups[0].Windows, 1)
 	require.Equal(t, "3p-weekly", groups[0].Windows[0].BucketID)
 	require.Equal(t, 50, groups[0].Windows[0].Utilization)
@@ -142,7 +240,7 @@ func TestBuildGoogleQuotaGroups_GroupAllInvalidDropped(t *testing.T) {
 		},
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 1)
 	require.Equal(t, "Gemini Models", groups[0].Label)
 	require.Len(t, groups[0].Windows, 1)
@@ -170,7 +268,7 @@ func TestBuildGoogleQuotaGroups_InvalidResetTime(t *testing.T) {
 		},
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 1)
 	require.Len(t, groups[0].Windows, 2)
 	require.Equal(t, "", groups[0].Windows[0].ResetTime)
@@ -197,7 +295,7 @@ func TestBuildGoogleQuotaGroups_UnknownBucketID(t *testing.T) {
 		},
 	}
 
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 1)
 	require.Equal(t, "other", groups[0].Kind)
 	require.Equal(t, "Mystery PoolLine2", groups[0].Label) // 控制字符（换行）去除
@@ -232,7 +330,7 @@ func TestBuildGoogleQuotaGroups_RemainingFractionMissingOrNull(t *testing.T) {
 			var resp antigravity.UserQuotaSummaryResponse
 			require.NoError(t, json.Unmarshal([]byte(tt.json), &resp))
 
-			groups := buildGoogleQuotaGroups(&resp)
+			groups := buildGoogleQuotaGroups(&resp, nil)
 			require.Len(t, groups, 1)
 			require.Len(t, groups[0].Windows, 1, "nil 剩余比例桶应被丢弃")
 			require.Equal(t, "gemini-weekly", groups[0].Windows[0].BucketID)
@@ -251,7 +349,7 @@ func TestBuildGoogleQuotaGroups_RemainingFractionMissingOrNull(t *testing.T) {
 			},
 		},
 	}
-	groupsZero := buildGoogleQuotaGroups(respZero)
+	groupsZero := buildGoogleQuotaGroups(respZero, nil)
 	require.Len(t, groupsZero, 1)
 	require.Len(t, groupsZero[0].Windows, 1)
 	require.Equal(t, 100, groupsZero[0].Windows[0].Utilization, "合法 0 ⇒ 已用尽 = 100，不得与无数据同形")
@@ -270,7 +368,7 @@ func TestBuildGoogleQuotaGroups_AllInvalidNil(t *testing.T) {
 			},
 		},
 	}
-	require.Nil(t, buildGoogleQuotaGroups(resp))
+	require.Nil(t, buildGoogleQuotaGroups(resp, nil))
 }
 
 // S9 表驱动：≥9 例覆盖 C4-C7 + C11-C13 输入面
@@ -294,7 +392,7 @@ func TestBuildGoogleQuotaGroups_TableDriven(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildGoogleQuotaGroups(&antigravity.UserQuotaSummaryResponse{Groups: tt.groups})
+			got := buildGoogleQuotaGroups(&antigravity.UserQuotaSummaryResponse{Groups: tt.groups}, nil)
 			if tt.wantNil {
 				require.Nil(t, got)
 				return
@@ -343,7 +441,7 @@ func TestBuildGoogleQuotaGroups_LongLabelTruncated(t *testing.T) {
 			},
 		},
 	}
-	groups := buildGoogleQuotaGroups(resp)
+	groups := buildGoogleQuotaGroups(resp, nil)
 	require.Len(t, groups, 1)
 	require.Equal(t, 80, len([]rune(groups[0].Label)))
 }

@@ -540,7 +540,11 @@ export default {
         groupClaudeGPT: 'Claude/GPT',
         groupOther: '额度',
         window5h: '5h',
-        windowWeekly: '7d'
+        windowWeekly: '7d',
+        domain: {
+          prod: 'prod',
+          daily: 'daily'
+        }
       },
       openaiReferral: {
         available: '可邀请',

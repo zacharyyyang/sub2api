@@ -555,3 +555,163 @@ func TestExtractValidationURL(t *testing.T) {
 		})
 	}
 }
+
+// TestAttachGoogleQuotaGroups_DualProbe 双探针装配（设计 §3.2 / §6 A 表）：prod 与 daily 各探一次；
+// 两域成功 / 单域失败仅 Warn / 双失败 ⇒ GoogleQuotaGroups = nil；任何结局均不污染既有字段与 UpdatedAt。
+func TestAttachGoogleQuotaGroups_DualProbe(t *testing.T) {
+	const quotaBody = `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"g-5h","displayName":"Gemini 5h","window":"5h","resetTime":"2026-10-05T12:00:00Z","remainingFraction":0.97}]}]}`
+
+	newServer := func(status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
+			_, _ = w.Write([]byte(quotaBody))
+		}))
+	}
+
+	setup := func(t *testing.T, prodURL, dailyURL string) (*AntigravityQuotaFetcher, *antigravity.Client) {
+		t.Helper()
+		oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+		oldAvailability := antigravity.DefaultURLAvailability
+		t.Cleanup(func() {
+			antigravity.BaseURLs = oldBaseURLs
+			antigravity.DefaultURLAvailability = oldAvailability
+		})
+		antigravity.BaseURLs = []string{prodURL, dailyURL}
+		antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
+
+		client, err := antigravity.NewClient("")
+		require.NoError(t, err)
+		return NewAntigravityQuotaFetcher(nil, &config.Config{}), client
+	}
+
+	baseline := func() (*UsageInfo, UsageInfo) {
+		now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+		info := &UsageInfo{
+			UpdatedAt:        &now,
+			SubscriptionTier: "PRO",
+			AntigravityQuota: map[string]*AntigravityModelQuota{
+				"model-a": {Utilization: 40, ResetTime: "2026-10-05T00:00:00Z"},
+			},
+		}
+		return info, *info
+	}
+
+	probe := func(info *UsageInfo, fetcher *AntigravityQuotaFetcher, client *antigravity.Client) {
+		fetcher.attachGoogleQuotaGroups(context.Background(), client, "token", 8<<20, info)
+	}
+
+	t.Run("两域成功：groups 非空，既有字段不变", func(t *testing.T) {
+		prod, daily := newServer(200), newServer(200)
+		defer prod.Close()
+		defer daily.Close()
+
+		fetcher, client := setup(t, prod.URL, daily.URL)
+		info, pre := baseline()
+		probe(info, fetcher, client)
+		require.NotEmpty(t, info.GoogleQuotaGroups, "两域成功时应装配出 quota groups")
+		require.Equal(t, pre.UpdatedAt, info.UpdatedAt, "不得污染 UpdatedAt")
+		require.Equal(t, pre.SubscriptionTier, info.SubscriptionTier)
+		require.Equal(t, pre.AntigravityQuota, info.AntigravityQuota)
+		require.Empty(t, info.Error)
+		require.Empty(t, info.ErrorCode)
+	})
+
+	t.Run("单域失败：groups 非空（用另一域），仅 Warn 不写错误", func(t *testing.T) {
+		prod, daily := newServer(500), newServer(200)
+		defer prod.Close()
+		defer daily.Close()
+
+		fetcher, client := setup(t, prod.URL, daily.URL)
+		info, pre := baseline()
+		probe(info, fetcher, client)
+		require.NotEmpty(t, info.GoogleQuotaGroups, "单域失败时用另一域结果兜底")
+		require.Equal(t, pre.UpdatedAt, info.UpdatedAt, "不得污染 UpdatedAt")
+		require.Empty(t, info.Error, "旁路失败绝不写 Error")
+		require.Empty(t, info.ErrorCode)
+	})
+
+	t.Run("双失败：groups nil，整包不变", func(t *testing.T) {
+		prod, daily := newServer(500), newServer(500)
+		defer prod.Close()
+		defer daily.Close()
+
+		fetcher, client := setup(t, prod.URL, daily.URL)
+		info, pre := baseline()
+		probe(info, fetcher, client)
+		require.Nil(t, info.GoogleQuotaGroups, "双失败 ⇒ 无数据不显示")
+		require.Equal(t, pre, *info, "双失败时 *UsageInfo 必须整包不变")
+	})
+}
+
+// BaseURLs 长度守卫：空端点集合 / 单端点都不得越界 panic —— len==0 双域按缺域跳过、字段保持 nil；
+// len==1 仅探 prod 位、daily 按 nil 参与合并 ⇒ 结果仅含首域（prod 位）数据；均不写 Error / ErrorCode。
+func TestAttachGoogleQuotaGroups_BaseURLsLengthGuard(t *testing.T) {
+	const quotaBody = `{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"g-5h","displayName":"Gemini 5h","window":"5h","resetTime":"2026-10-05T12:00:00Z","remainingFraction":0.97}]}]}`
+
+	newServer := func(status int) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if status != http.StatusOK {
+				w.WriteHeader(status)
+				return
+			}
+			_, _ = w.Write([]byte(quotaBody))
+		}))
+	}
+
+	setup := func(t *testing.T, baseURLs []string) (*AntigravityQuotaFetcher, *antigravity.Client) {
+		t.Helper()
+		oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
+		oldAvailability := antigravity.DefaultURLAvailability
+		t.Cleanup(func() {
+			antigravity.BaseURLs = oldBaseURLs
+			antigravity.DefaultURLAvailability = oldAvailability
+		})
+		antigravity.BaseURLs = baseURLs
+		antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
+
+		client, err := antigravity.NewClient("")
+		require.NoError(t, err)
+		return NewAntigravityQuotaFetcher(nil, &config.Config{}), client
+	}
+
+	probe := func(info *UsageInfo, fetcher *AntigravityQuotaFetcher, client *antigravity.Client) {
+		fetcher.attachGoogleQuotaGroups(context.Background(), client, "token", 8<<20, info)
+	}
+
+	baseline := func() *UsageInfo {
+		now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+		return &UsageInfo{
+			UpdatedAt:        &now,
+			SubscriptionTier: "PRO",
+			AntigravityQuota: map[string]*AntigravityModelQuota{
+				"model-a": {Utilization: 40, ResetTime: "2026-10-05T00:00:00Z"},
+			},
+		}
+	}
+
+	t.Run("单端点 len==1：不 panic，结果仅含首域（prod 位）数据，无 Error/ErrorCode", func(t *testing.T) {
+		prod := newServer(200)
+		defer prod.Close()
+
+		fetcher, client := setup(t, []string{prod.URL})
+		info := baseline()
+		require.NotPanics(t, func() { probe(info, fetcher, client) })
+		require.Len(t, info.GoogleQuotaGroups, 1, "单端点时仅装配出首域（prod 位）数据")
+		require.Equal(t, "Gemini Models", info.GoogleQuotaGroups[0].Label)
+		require.Len(t, info.GoogleQuotaGroups[0].Windows, 1)
+		require.Empty(t, info.Error)
+		require.Empty(t, info.ErrorCode)
+	})
+
+	t.Run("空端点集合 len==0：不 panic，GoogleQuotaGroups 为 nil，无 Error/ErrorCode", func(t *testing.T) {
+		fetcher, client := setup(t, []string{})
+		info := baseline()
+		require.NotPanics(t, func() { probe(info, fetcher, client) })
+		require.Nil(t, info.GoogleQuotaGroups, "空端点集合 ⇒ 字段缺席（nil）")
+		require.Empty(t, info.Error)
+		require.Empty(t, info.ErrorCode)
+	})
+}

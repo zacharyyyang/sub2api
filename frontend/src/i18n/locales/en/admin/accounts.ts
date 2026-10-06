@@ -1663,7 +1663,11 @@ export default {
         groupClaudeGPT: 'Claude/GPT',
         groupOther: 'Quota',
         window5h: '5h',
-        windowWeekly: '7d'
+        windowWeekly: '7d',
+        domain: {
+          prod: 'prod',
+          daily: 'daily'
+        }
       },
       openaiReferral: {
         available: 'Invites left',

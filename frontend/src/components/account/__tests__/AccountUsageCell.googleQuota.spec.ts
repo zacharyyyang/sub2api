@@ -92,15 +92,25 @@ const groups4 = [
   {
     kind: 'claude_gpt',
     label: 'Claude/GPT',
+    domain: 'prod',
     windows: [
       { bucket_id: 'g3', kind: 'five_hour', utilization: 12 },
       { bucket_id: 'g4', kind: 'seven_day', utilization: 30 }
+    ]
+  },
+  {
+    kind: 'claude_gpt',
+    label: 'Claude/GPT',
+    domain: 'daily',
+    windows: [
+      { bucket_id: 'g5', kind: 'five_hour', utilization: 55 },
+      { bucket_id: 'g6', kind: 'seven_day', utilization: 22 }
     ]
   }
 ]
 
 describe('AccountUsageCell · Google 配额组', () => {
-  it('M1: 块一内 4 条逐模型行与 4 条组额度条并存', async () => {
+  it('M1: 块一内 4 条逐模型行与 6 条组额度条（claude_gpt 每域一组）并存', async () => {
     const wrapper = await mountCell({
       antigravity_quota: {
         'gemini-3-pro-low': { utilization: 80, reset_time: '2026-03-17T01:00:00Z' },
@@ -111,7 +121,7 @@ describe('AccountUsageCell · Google 配额组', () => {
       google_quota_groups: groups4
     })
 
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(8) // 4 逐模型 + 4 组额度
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(10) // 4 逐模型 + 6 组额度
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Pro|80|')
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Flash|60|')
     expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Image|70|')
@@ -119,16 +129,18 @@ describe('AccountUsageCell · Google 配额组', () => {
     expect(wrapper.text()).toContain('admin.accounts.googleQuota.window5h|45|')
     expect(wrapper.text()).toContain('admin.accounts.googleQuota.windowWeekly|80|')
     expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupGemini')
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT')
+    // claude_gpt 每域一组，组名行各带域后缀
+    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.prod')
+    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.daily')
   })
 
-  it('M2: 无逐模型额度、无 AI Credits 但有组额度时，块二渲染 4 条且 `-` 不出现', async () => {
+  it('M2: 无逐模型额度、无 AI Credits 但有组额度时，块二渲染 6 条且 `-` 不出现', async () => {
     const wrapper = await mountCell({
       antigravity_quota: null,
       google_quota_groups: groups4
     })
 
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(4)
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(6)
     expect(wrapper.text()).not.toContain('-')
     expect(wrapper.text()).toContain('admin.accounts.googleQuota.window5h|45|')
   })

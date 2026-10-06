@@ -40,7 +40,7 @@ function mountGroups(groups: GoogleQuotaGroup[] | null | undefined) {
 }
 
 describe('GoogleQuotaGroups', () => {
-  it('F1: 按后端顺序渲染每个组的组名行与其窗口条，Gemini 组在前', () => {
+  it('F1: 按后端顺序渲染每个组的组名行与其窗口条，claude_gpt 多域组带域后缀，Gemini 组在前', () => {
     const wrapper = mountGroups([
       makeGroup({
         windows: [makeWindow({ bucket_id: 'g1', utilization: 45 }), makeWindow({ bucket_id: 'g2', kind: 'seven_day', utilization: 80 })]
@@ -48,16 +48,27 @@ describe('GoogleQuotaGroups', () => {
       makeGroup({
         kind: 'claude_gpt',
         label: 'Claude/GPT',
+        domain: 'prod',
         windows: [makeWindow({ bucket_id: 'g3', utilization: 12 }), makeWindow({ bucket_id: 'g4', kind: 'seven_day', utilization: 30 })]
+      }),
+      makeGroup({
+        kind: 'claude_gpt',
+        label: 'Claude/GPT',
+        domain: 'daily',
+        windows: [makeWindow({ bucket_id: 'g5', utilization: 55 }), makeWindow({ bucket_id: 'g6', kind: 'seven_day', utilization: 22 })]
       })
     ])
 
-    expect(wrapper.findAll('.group-name')).toHaveLength(2)
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(4)
+    expect(wrapper.findAll('.group-name')).toHaveLength(3)
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(6)
 
     const text = wrapper.text()
+    // gemini 组（账号级）不拼域
     expect(text).toContain('admin.accounts.googleQuota.groupGemini')
-    expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT')
+    expect(text).not.toContain('admin.accounts.googleQuota.groupGemini ·')
+    // claude_gpt 组名行 = 组词条 + · + 域词条（prod / daily 各一行）
+    expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.prod')
+    expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.daily')
     // gemini 组在后端顺序中在前
     expect(text.indexOf('admin.accounts.googleQuota.groupGemini')).toBeLessThan(text.indexOf('admin.accounts.googleQuota.groupClaudeGPT'))
     // 窗口条标签与数值按窗口顺序呈现
@@ -150,5 +161,16 @@ describe('GoogleQuotaGroups', () => {
     expect(bars[0].text()).toBe('admin.accounts.googleQuota.window5h|20|')
     // 有 reset_time 的条保留时间值
     expect(bars[1].text()).toBe('admin.accounts.googleQuota.window5h|60|2026-03-17T02:30:00Z')
+  })
+
+  it('F6: claude_gpt 组 domain 缺省（v1 旧数据形态）时不拼域后缀、不报错', () => {
+    const wrapper = mountGroups([
+      makeGroup({ kind: 'claude_gpt', label: 'Claude/GPT', windows: [makeWindow({ bucket_id: 'g1', utilization: 40 })] })
+    ])
+
+    expect(wrapper.findAll('.group-name')).toHaveLength(1)
+    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT')
+    expect(wrapper.text()).not.toContain('·')
+    expect(wrapper.text()).not.toContain('admin.accounts.googleQuota.domain')
   })
 })

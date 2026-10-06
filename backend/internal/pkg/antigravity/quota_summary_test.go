@@ -202,3 +202,68 @@ func TestFetchUserQuotaSummary_CanceledCtx(t *testing.T) {
 	require.Error(t, err)
 	require.False(t, hit, "已取消的 ctx 下请求不应到达服务器")
 }
+
+// TestFetchUserQuotaSummaryForDomain_SingleShot ForDomain 单次语义（设计 §3.1 / §6 A 表）：
+// 固定探测 baseURL 单次、无 URL 回退 —— 回退会把 prod/daily 两域混成一域，坏掉「异值并存」。
+// 成功 / 非 200 / 连接失败 三种结局均只探目标域，另一域零调用。
+func TestFetchUserQuotaSummaryForDomain_SingleShot(t *testing.T) {
+	var okHits, errHits int
+	okServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		okHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(quotaSummaryRealShape))
+	}))
+	defer okServer.Close()
+	errServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		errHits++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer errServer.Close()
+	nonOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":13,"message":"quota summary denied"}}`))
+	}))
+	defer nonOK.Close()
+
+	withMockBaseURLs(t, []string{okServer.URL, errServer.URL})
+	client := mustNewClient(t, "")
+
+	t.Run("成功：只探目标域", func(t *testing.T) {
+		okHits, errHits = 0, 0
+		resp, err := client.FetchUserQuotaSummaryForDomain(context.Background(), "test-token", defaultQuotaSummaryBodyLimit, okServer.URL)
+		require.NoError(t, err)
+		require.Len(t, resp.Groups, 2)
+		require.Equal(t, 1, okHits, "目标域应恰被探测一次")
+		require.Zero(t, errHits, "另一域（回退候选）不得被探测")
+	})
+	t.Run("prod 失败：只探 prod 不回退", func(t *testing.T) {
+		okHits, errHits = 0, 0
+		_, err := client.FetchUserQuotaSummaryForDomain(context.Background(), "test-token", defaultQuotaSummaryBodyLimit, errServer.URL)
+		require.Error(t, err)
+		require.Zero(t, okHits, "目标域失败时不得回退到另一域")
+	})
+	t.Run("daily 失败：只探 daily 不回退", func(t *testing.T) {
+		okHits, errHits = 0, 0
+		// 与 prod-only 对称：目标域失败（这里 daily 与 prod 共用同一失败服务器），回退候选 = 另一域
+		_, err := client.FetchUserQuotaSummaryForDomain(context.Background(), "test-token", defaultQuotaSummaryBodyLimit, errServer.URL)
+		require.Error(t, err)
+		require.Zero(t, okHits, "目标域失败时不得回退到另一域")
+	})
+	t.Run("非 200：错误且不回退", func(t *testing.T) {
+		okHits, errHits = 0, 0
+		_, err := client.FetchUserQuotaSummaryForDomain(context.Background(), "test-token", defaultQuotaSummaryBodyLimit, nonOK.URL)
+		require.ErrorContains(t, err, "retrieveUserQuotaSummary 失败 (HTTP 403)")
+		require.Zero(t, okHits, "非 200 不得触发回退")
+		require.Zero(t, errHits, "非 200 不得触发下一 URL")
+	})
+	t.Run("连接失败：错误且不回退", func(t *testing.T) {
+		okHits, errHits = 0, 0
+		dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		deadURL := dead.URL
+		dead.Close() // 连接拒绝
+		_, err := client.FetchUserQuotaSummaryForDomain(context.Background(), "test-token", defaultQuotaSummaryBodyLimit, deadURL)
+		require.Error(t, err)
+		require.Zero(t, okHits, "连接失败不得触发回退")
+		require.Zero(t, errHits)
+	})
+}

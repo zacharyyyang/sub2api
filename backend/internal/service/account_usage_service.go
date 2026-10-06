@@ -260,8 +260,9 @@ type GoogleQuotaWindow struct {
 
 // GoogleQuotaGroup 一个官方配额组。
 type GoogleQuotaGroup struct {
-	Kind    string              `json:"kind"` // gemini / claude_gpt / other
-	Label   string              `json:"label"`
+	Kind    string              `json:"kind"`             // gemini / claude_gpt / other
+	Label   string              `json:"label"`            // 上游 displayName 清洗后（本地无词条时兜底）
+	Domain  string              `json:"domain,omitempty"` // claude_gpt 组 = prod / daily；gemini / other 组 = ""（账号级，不标域）
 	Windows []GoogleQuotaWindow `json:"windows"`
 }
 

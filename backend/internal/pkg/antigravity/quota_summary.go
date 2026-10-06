@@ -104,3 +104,50 @@ func (c *Client) FetchUserQuotaSummary(ctx context.Context, accessToken string, 
 
 	return nil, lastErr
 }
+
+// FetchUserQuotaSummaryForDomain 针对单个指定域获取官方配额组额度（双域旁路探测的下层原语）。
+// 与 FetchUserQuotaSummary 区别：固定探测 baseURL 单次、无 URL 回退（回退会把两域混成一域，
+// 坏掉「异值并存」）；成功时照常 DefaultURLAvailability.MarkSuccess(baseURL)。
+func (c *Client) FetchUserQuotaSummaryForDomain(ctx context.Context, accessToken string, bodyLimit int64, baseURL string) (*UserQuotaSummaryResponse, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, errors.New("antigravity client is not configured")
+	}
+	if bodyLimit <= 0 {
+		return nil, errors.New("retrieveUserQuotaSummary body limit must be positive")
+	}
+
+	reqBody := []byte(`{}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/v1internal:retrieveUserQuotaSummary", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("创建请求失败: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", GetUserAgentForContext(ctx))
+
+	resp, err := servertiming.Do(c.httpClient, req)
+	if err != nil {
+		return nil, fmt.Errorf("retrieveUserQuotaSummary 请求失败: %w", err)
+	}
+	respBodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit+1))
+	_ = resp.Body.Close() // 立即关闭，避免 defer 导致的资源泄漏
+	if err != nil {
+		return nil, fmt.Errorf("读取响应失败: %w", err)
+	}
+	if int64(len(respBodyBytes)) > bodyLimit {
+		return nil, fmt.Errorf("响应超过 %d 字节", bodyLimit)
+	}
+
+	// 单次无回退：非 200 直接返回错误，不继续尝试下一 URL
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("retrieveUserQuotaSummary 失败 (HTTP %d): %s", resp.StatusCode, string(respBodyBytes))
+	}
+
+	var summaryResp UserQuotaSummaryResponse
+	if err := json.Unmarshal(respBodyBytes, &summaryResp); err != nil {
+		return nil, fmt.Errorf("响应解析失败: %w", err)
+	}
+
+	DefaultURLAvailability.MarkSuccess(baseURL)
+	return &summaryResp, nil
+}

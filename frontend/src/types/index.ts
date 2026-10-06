@@ -1391,6 +1391,7 @@ export interface GoogleQuotaWindow {
 export interface GoogleQuotaGroup {
   kind: 'gemini' | 'claude_gpt' | 'other'
   label: string
+  domain?: string // 配额域（prod / daily）；gemini / other 组不携带（账号级），缺省兼容 v1 数据
   windows: GoogleQuotaWindow[]
 }
 

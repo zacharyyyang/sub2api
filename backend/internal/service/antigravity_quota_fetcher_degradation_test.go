@@ -43,7 +43,7 @@ func TestAttachGoogleQuotaGroups_Degraded(t *testing.T) {
 		require.Empty(t, info.ErrorCode, "不得写 ErrorCode")
 	}
 
-	// 指向给定 URL 的直调环境：改 BaseURLs 手法沿用 antigravity_quota_fetcher_test.go:398-426
+	// 指向给定 URL 的直调环境：BaseURLs 置双元素（两探针同指 targetURL；对位 attach 固定序访问 fetcher.go:128/:132）；手法沿用 antigravity_quota_fetcher_test.go:398-426
 	setupClient := func(t *testing.T, targetURL string) (*AntigravityQuotaFetcher, *antigravity.Client) {
 		t.Helper()
 		oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
@@ -52,7 +52,7 @@ func TestAttachGoogleQuotaGroups_Degraded(t *testing.T) {
 			antigravity.BaseURLs = oldBaseURLs
 			antigravity.DefaultURLAvailability = oldAvailability
 		})
-		antigravity.BaseURLs = []string{targetURL}
+		antigravity.BaseURLs = []string{targetURL, targetURL}
 		antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
 
 		client, err := antigravity.NewClient("")

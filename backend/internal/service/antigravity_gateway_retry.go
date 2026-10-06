@@ -46,28 +46,34 @@ type antigravityRetryLoopResult struct {
 	resp *http.Response
 }
 
-// resolveAntigravityForwardBaseURL 解析转发用 base URL。
+// resolveAntigravityForwardBaseURLs 解析转发用 base URL 序（复数：paid 账号双域轮换）。
 //
-// 显式环境变量优先。未配置时，LoadCodeAssist 返回 paidTier 的付费账号使用
-// daily 端点，其他账号继续使用生产端点，避免免费账号的 OAuth token 出现 401。
+// 显式环境变量优先且坍缩为单元素（env 已指定 ⇒ 不做双域轮换）。
+// 未配置时，LoadCodeAssist 返回 paidTier（pro / ultra）的付费账号使用 [daily, prod]
+// 双域序（决策 14：每日配额组由 daily 端点提供，prod 端点为普通额度，双域差值由
+// 配额组合并层 §2.3 消化）；其他账号（free / 异常 / 未知）继续只用生产端点，避免
+// 免费账号的 OAuth token 出现 401。
 //
 // 历史上这里改用 ForwardBaseURLs()（把 daily/sandbox 排到首位）并默认取首个地址，
 // 导致网关把带生产 OAuth token 的请求发到 daily-cloudcode-pa.sandbox.googleapis.com，
 // 上游拒绝 → 账号被 401「Invalid bearer token」/502 打入临时不可调度且无法恢复
 // （见 #3611 / #2962）。后台「测试连接」用的是生产端点，所以「测试成功但网关 401」。
-func resolveAntigravityForwardBaseURL(account *Account) string {
+func resolveAntigravityForwardBaseURLs(account *Account) []string {
 	baseURLs := antigravity.BaseURLs
 	if len(baseURLs) == 0 {
-		return ""
+		return nil
 	}
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityForwardBaseURLEnv)))
 	if (mode == "daily" || mode == "sandbox") && len(baseURLs) > 1 {
-		return baseURLs[1]
+		return []string{baseURLs[1]}
 	}
-	if mode == "" && accountHasAntigravityPaidTier(account) && len(baseURLs) > 1 {
-		return baseURLs[1]
+	if mode != "" {
+		return []string{baseURLs[0]}
 	}
-	return baseURLs[0]
+	if accountHasAntigravityPaidTier(account) && len(baseURLs) > 1 {
+		return []string{baseURLs[1], baseURLs[0]}
+	}
+	return []string{baseURLs[0]}
 }
 
 func accountHasAntigravityPaidTier(account *Account) bool {
@@ -106,8 +112,15 @@ type smartRetryResult struct {
 // handleSmartRetry 处理 OAuth 账号的智能重试逻辑
 // 将 429/503 限流处理逻辑抽取为独立函数，减少 antigravityRetryLoop 的复杂度
 func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParams, resp *http.Response, respBody []byte, baseURL string, urlIdx int, availableURLs []string) *smartRetryResult {
-	// "Resource has been exhausted" 是 URL 级别限流，切换 URL（仅 429）
+	// ① 账号×域个人配额真打满（gemini 每日额度耗尽）：换下一域但不 MarkUnavailable（S15 ①，
+	//    账号级消耗非 URL 级故障，标记会把 URL 可用性记忆跨账号污染）
+	if resp.StatusCode == http.StatusTooManyRequests && isPersonalQuotaExhausted429(respBody) && urlIdx < len(availableURLs)-1 {
+		logger.LegacyPrintf("service.antigravity_gateway", "%s URL fallback (429, personal quota exhausted): %s -> %s", p.prefix, baseURL, availableURLs[urlIdx+1])
+		return &smartRetryResult{action: smartRetryActionContinueURL}
+	}
+	// ② URL 级泛化限流（"Resource has been exhausted"）：换下一域 + MarkUnavailable（S15 ②，URL 级限流信号）
 	if resp.StatusCode == http.StatusTooManyRequests && isURLLevelRateLimit(respBody) && urlIdx < len(availableURLs)-1 {
+		antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
 		logger.LegacyPrintf("service.antigravity_gateway", "%s URL fallback (429): %s -> %s", p.prefix, baseURL, availableURLs[urlIdx+1])
 		return &smartRetryResult{action: smartRetryActionContinueURL}
 	}
@@ -504,11 +517,15 @@ func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopP
 		}
 	}
 
-	baseURL := resolveAntigravityForwardBaseURL(p.account)
-	if baseURL == "" {
+	baseURLs := resolveAntigravityForwardBaseURLs(p.account)
+	if len(baseURLs) == 0 {
 		return nil, errors.New("no antigravity forward base url configured")
 	}
-	availableURLs := []string{baseURL}
+	availableURLs := antigravity.DefaultURLAvailability.GetAvailableURLsWithBase(baseURLs)
+	if len(availableURLs) == 0 {
+		// 决策 15 守卫：探测记忆全标记不可用 ⇒ 回退未过滤序，保证至少一轮尝试（防 nil 遍历后 panic）
+		availableURLs = baseURLs
+	}
 
 	var resp *http.Response
 	var usedBaseURL string
@@ -728,6 +745,21 @@ func shouldRetryAntigravityError(statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+// isPersonalQuotaExhausted429 判断是否为「账号×域个人配额打满」（gemini 每日配额耗尽）。
+// 命中即换下一域且不 MarkUnavailable（S15 细则①）：账号级消耗、非 URL/节点级故障，
+// 标记会把 URL 可用性记忆跨账号污染。文案因子（互斥于 isURLLevelRateLimit 关键词，S15 ③）：
+// body 含 "Individual quota reached" + "Resets in"，且 reason 含 quota_exhausted（QUOTA_EXHAUSTED 小写化）。
+func isPersonalQuotaExhausted429(body []byte) bool {
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "Individual quota reached") {
+		return false
+	}
+	if !strings.Contains(bodyStr, "Resets in") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(bodyStr), "quota_exhausted")
 }
 
 // isURLLevelRateLimit 判断是否为 URL 级别的限流（应切换 URL 重试）
