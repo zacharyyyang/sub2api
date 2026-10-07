@@ -80,6 +80,7 @@ function mountCell(usage: unknown, accountId = 1001) {
   return flushPromises().then(() => wrapper)
 }
 
+// 三组六窗：gemini 账号级 1 组 + claude_gpt 每域 1 组（三期起仅 daily 组渲染）
 const groups4 = [
   {
     kind: 'gemini',
@@ -109,8 +110,18 @@ const groups4 = [
   }
 ]
 
+// 仅 prod 组（带窗口）：数据非空但全被显示策略过滤（S22 第四态输入）
+const prodOnlyGroups = [
+  {
+    kind: 'claude_gpt',
+    label: 'Claude/GPT',
+    domain: 'prod',
+    windows: [{ bucket_id: 'p1', kind: 'five_hour', utilization: 12 }]
+  }
+]
+
 describe('AccountUsageCell · Google 配额组', () => {
-  it('M1: 块一内 4 条逐模型行与 6 条组额度条（claude_gpt 每域一组）并存', async () => {
+  it('M1: 合并单块渲 daily 组条 4 条（gemini 2 + daily 2），无逐模型条、无 prod', async () => {
     const wrapper = await mountCell({
       antigravity_quota: {
         'gemini-3-pro-low': { utilization: 80, reset_time: '2026-03-17T01:00:00Z' },
@@ -121,26 +132,27 @@ describe('AccountUsageCell · Google 配额组', () => {
       google_quota_groups: groups4
     })
 
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(10) // 4 逐模型 + 6 组额度
-    expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Pro|80|')
-    expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Flash|60|')
-    expect(wrapper.text()).toContain('admin.accounts.usageWindow.gemini3Image|70|')
-    expect(wrapper.text()).toContain('admin.accounts.usageWindow.claude|50|')
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.window5h|45|')
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.windowWeekly|80|')
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupGemini')
-    // claude_gpt 每域一组，组名行各带域后缀
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.prod')
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.daily')
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(4) // 仅 daily 组条（gemini 2 + daily 2），prod 组被过滤
+    const text = wrapper.text()
+    expect(text).toContain('admin.accounts.googleQuota.groupGemini')
+    expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.daily')
+    // 无逐模型条
+    expect(text).not.toContain('admin.accounts.usageWindow.gemini3')
+    expect(text).not.toContain('admin.accounts.usageWindow.claude')
+    // 无 prod 行
+    expect(text).not.toContain('admin.accounts.googleQuota.domain.prod')
+    // daily 窗口数值照常渲染，prod 对应窗口不得挂入
+    expect(text).toContain('admin.accounts.googleQuota.window5h|55|')
+    expect(text).not.toContain('admin.accounts.googleQuota.window5h|12|')
   })
 
-  it('M2: 无逐模型额度、无 AI Credits 但有组额度时，块二渲染 6 条且 `-` 不出现', async () => {
+  it('M2: 无逐模型额度、无 AI Credits 但有组额度时，合并单块渲 4 条且 `-` 不出现', async () => {
     const wrapper = await mountCell({
       antigravity_quota: null,
       google_quota_groups: groups4
     })
 
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(6)
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(4)
     expect(wrapper.text()).not.toContain('-')
     expect(wrapper.text()).toContain('admin.accounts.googleQuota.window5h|45|')
   })
@@ -157,13 +169,37 @@ describe('AccountUsageCell · Google 配额组', () => {
     expect(wrapper.text()).toContain('25')
   })
 
-  it('M4: 组数据缺字段时挂载不抛错，有效窗口仍渲染', async () => {
+  it('M4: 组数据缺字段（undefined）时挂载不抛错，占位 `-` 且不渲逐模型条', async () => {
     const wrapper = await mountCell({
       antigravity_quota: { 'gemini-3-flash': { utilization: 10, reset_time: '2026-03-17T01:00:00Z' } },
-      google_quota_groups: [{ kind: 'gemini', label: 'Gemini', windows: [{ utilization: 12 }] }]
+      google_quota_groups: undefined
     })
 
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(2) // 1 逐模型 + 1 组额度
-    expect(wrapper.text()).toContain('admin.accounts.googleQuota.groupGemini')
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(0)
+    expect(wrapper.text()).toContain('-')
+    expect(wrapper.text()).not.toContain('admin.accounts.usageWindow.gemini3Flash')
+  })
+
+  it('M5: 有逐模型额度但组与 credits 均空时占位 `-`，无空块、不塌', async () => {
+    const wrapper = await mountCell({
+      antigravity_quota: {
+        'gemini-3-flash': { utilization: 60, reset_time: '2026-03-17T02:00:00Z' },
+        'claude-sonnet-4-5': { utilization: 50, reset_time: '2026-03-17T04:00:00Z' }
+      },
+      google_quota_groups: null
+    })
+
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(0)
+    expect(wrapper.text()).toContain('-')
+  })
+
+  it('M6: 仅 prod 组且无 credits 时格空白（非 `-` 占位、0 元素节点、不回退渲 prod）', async () => {
+    const wrapper = await mountCell({ antigravity_quota: null, google_quota_groups: prodOnlyGroups })
+
+    // 合并单块仍挂载（googleQuotaGroups.length > 0 真），但子组件过滤 prod 后渲 0 元素节点 =>
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(0)
+    expect(wrapper.text()).toBe('')
+    expect(wrapper.text()).not.toContain('-')
+    expect(wrapper.text()).not.toContain('admin.accounts.googleQuota.domain.prod')
   })
 })

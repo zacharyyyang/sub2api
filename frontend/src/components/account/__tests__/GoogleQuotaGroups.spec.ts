@@ -40,7 +40,7 @@ function mountGroups(groups: GoogleQuotaGroup[] | null | undefined) {
 }
 
 describe('GoogleQuotaGroups', () => {
-  it('F1: 按后端顺序渲染每个组的组名行与其窗口条，claude_gpt 多域组带域后缀，Gemini 组在前', () => {
+  it('F1: 过滤 prod 组后按后端顺序渲染 2 组名行 4 条，claude_gpt(daily) 带域后缀，Gemini 组在前', () => {
     const wrapper = mountGroups([
       makeGroup({
         windows: [makeWindow({ bucket_id: 'g1', utilization: 45 }), makeWindow({ bucket_id: 'g2', kind: 'seven_day', utilization: 80 })]
@@ -59,21 +59,40 @@ describe('GoogleQuotaGroups', () => {
       })
     ])
 
-    expect(wrapper.findAll('.group-name')).toHaveLength(3)
-    expect(wrapper.findAll('.usage-bar')).toHaveLength(6)
+    expect(wrapper.findAll('.group-name')).toHaveLength(2) // prod 组整组过滤，仅 gemini + claude_gpt(daily)
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(4)
 
     const text = wrapper.text()
     // gemini 组（账号级）不拼域
     expect(text).toContain('admin.accounts.googleQuota.groupGemini')
     expect(text).not.toContain('admin.accounts.googleQuota.groupGemini ·')
-    // claude_gpt 组名行 = 组词条 + · + 域词条（prod / daily 各一行）
-    expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.prod')
+    // claude_gpt 组名行 = 组词条 + · + 域词条（仅 daily 渲染，prod 组过滤）
     expect(text).toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.daily')
+    expect(text).not.toContain('admin.accounts.googleQuota.groupClaudeGPT · admin.accounts.googleQuota.domain.prod')
     // gemini 组在后端顺序中在前
     expect(text.indexOf('admin.accounts.googleQuota.groupGemini')).toBeLessThan(text.indexOf('admin.accounts.googleQuota.groupClaudeGPT'))
     // 窗口条标签与数值按窗口顺序呈现
     expect(text).toContain('admin.accounts.googleQuota.window5h|45|')
     expect(text).toContain('admin.accounts.googleQuota.windowWeekly|80|')
+    // claude_gpt(daily) 窗口数值照常渲染，prod 对应窗口不得挂入
+    expect(text).toContain('admin.accounts.googleQuota.window5h|55|')
+    expect(text).not.toContain('admin.accounts.googleQuota.window5h|12|')
+  })
+
+  it('F7: 仅 prod 组（带窗口）时过滤后为空，渲染 0 元素节点且不抛错', () => {
+    const wrapper = mountGroups([
+      makeGroup({
+        kind: 'claude_gpt',
+        label: 'Claude/GPT',
+        domain: 'prod',
+        windows: [makeWindow({ bucket_id: 'p1', utilization: 10 })]
+      })
+    ])
+
+    expect(wrapper.findAll('*')).toHaveLength(0)
+    expect(wrapper.findAll('.group-name')).toHaveLength(0)
+    expect(wrapper.findAll('.usage-bar')).toHaveLength(0)
+    expect(wrapper.text()).toBe('')
   })
 
   it.each([[null], [[]], [undefined]])('F2: groups 为 %p 时不渲染任何节点', (groups) => {

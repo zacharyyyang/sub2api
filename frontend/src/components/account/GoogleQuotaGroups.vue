@@ -41,6 +41,8 @@ const effectiveGroups = computed(() => {
   if (!props.groups || props.groups.length === 0) return []
   const result: GoogleQuotaGroup[] = []
   for (const group of props.groups) {
+    // 三期：显示收敛 daily 单域 —— prod 组合并后与 daily 字节全同（恒同冗余），整组跳过不渲染
+    if (group.domain === 'prod') continue
     const windows = (group.windows ?? []).filter(isValidWindow)
     if (windows.length === 0) continue
     result.push({ ...group, windows })
