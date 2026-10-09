@@ -2,13 +2,11 @@ package service
 
 import (
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 // GroupModelAllowlist 是 service 层的分组模型白名单（与 domain.GroupModelAllowlist
@@ -26,24 +24,6 @@ func DomainGroupModelAllowlist(cfg GroupModelAllowlist) domain.GroupModelAllowli
 // GroupModelAllowlistFromDomain 把 ent 读出的 domain 白名单转换为 service 类型。
 func GroupModelAllowlistFromDomain(cfg domain.GroupModelAllowlist) GroupModelAllowlist {
 	return GroupModelAllowlist{Enabled: cfg.Enabled, Models: cfg.Models}
-}
-
-// supplementUnmappedOpenAIModels ensures a partial mapping catalog does not
-// hide models from unmapped or passthrough OpenAI accounts (passthrough routing
-// ignores model_mapping, so it serves the same default set as an unmapped
-// account). An empty catalog is left unchanged so callers retain their existing
-// discovery fallback.
-func supplementUnmappedOpenAIModels(accounts []Account, models []string) []string {
-	if len(models) == 0 {
-		return models
-	}
-	for i := range accounts {
-		account := &accounts[i]
-		if account.Platform == PlatformOpenAI && (account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0) {
-			return dedupeAndSortModelIDs(slices.Concat(models, openai.DefaultModelIDs()))
-		}
-	}
-	return models
 }
 
 // normalizeGroupModelAllowlist 归一化管理端提交的分组模型白名单：

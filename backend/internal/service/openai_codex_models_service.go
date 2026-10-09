@@ -117,10 +117,10 @@ type OpenAIModelsResponse struct {
 	NotModified                  bool
 }
 
-// BuildGroupConfiguredCodexModelsManifest builds a Codex catalog from configured
-// public model names, supplemented by defaults for unmapped OpenAI accounts. The
-// boolean result distinguishes "no explicit configuration" from a configured
-// catalog that becomes empty after group-level filtering.
+// BuildGroupConfiguredCodexModelsManifest builds a Codex catalog from the
+// configured public model names. The boolean result distinguishes "no explicit
+// configuration" from a configured catalog that becomes empty after
+// group-level filtering.
 func (s *OpenAIGatewayService) BuildGroupConfiguredCodexModelsManifest(
 	ctx context.Context,
 	group *Group,
@@ -298,7 +298,7 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 }
 
 func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []string {
-	models := supplementUnmappedOpenAIModels(accounts, openAIConfiguredCodexModelIDs(accounts))
+	models := openAIConfiguredCodexModelIDs(accounts)
 	if group == nil || !group.ModelAllowlistEnabled() {
 		return models
 	}

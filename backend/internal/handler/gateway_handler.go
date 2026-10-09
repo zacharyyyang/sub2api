@@ -1166,13 +1166,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if platform == service.PlatformComposite {
-		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID, "", true)
-		if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-			source := availableModels
-			if len(source) == 0 {
-				source = defaultModelIDsForPlatform(service.PlatformComposite)
-			}
-			writeAllowlistedModelsList(c, service.PlatformComposite, apiKey.Group.ModelAllowlist.FilterForListing(source))
+		allowlistEnabled := apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled()
+		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID, "", true, allowlistEnabled)
+		if allowlistEnabled {
+			// 白名单启用时候选源 = 收敛键（可空），严禁「空→默认」反兜底。
+			writeAllowlistedModelsList(c, service.PlatformComposite, apiKey.Group.ModelAllowlist.FilterForListing(availableModels))
 			return
 		}
 		if len(availableModels) > 0 {
@@ -1186,7 +1184,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	// Get available models from account configurations for the selected group platform.
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
-		source := modelListingSource(platform, availableModels, defaultModelIDsForPlatform(platform))
+		source := modelListingSource(platform, availableModels, nil)
 		writeAllowlistedModelsList(c, platform, apiKey.Group.ModelAllowlist.FilterForListing(source))
 		return
 	}
@@ -1265,13 +1263,13 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 		platform = group.Platform
 	}
 	if platform == service.PlatformComposite {
-		availableModels := h.compositeAvailableModels(ctx, groupID, service.CompositeRouteEndpointResponses, false)
-		fallbackModels := defaultCodexModelIDsForPlatform(service.PlatformComposite)
+		allowlistEnabled := group.ModelAllowlistEnabled()
+		availableModels := h.compositeAvailableModels(ctx, groupID, service.CompositeRouteEndpointResponses, false, allowlistEnabled)
 		models := availableModels
-		if len(models) == 0 {
-			models = fallbackModels
+		if len(models) == 0 && !allowlistEnabled {
+			models = defaultCodexModelIDsForPlatform(service.PlatformComposite)
 		}
-		if group.ModelAllowlistEnabled() {
+		if allowlistEnabled {
 			models = group.ModelAllowlist.FilterForListing(models)
 		}
 		if filtered, err := h.gatewayService.FilterCompositeCodexModels(ctx, group.ID, models); err == nil {
@@ -1283,7 +1281,7 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 	availableModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 	fallbackModels := defaultCodexModelIDsForPlatform(platform)
 	if group.ModelAllowlistEnabled() {
-		return group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, fallbackModels))
+		return group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil))
 	}
 	if len(availableModels) > 0 {
 		return availableModels
@@ -1293,10 +1291,24 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 
 // compositeAvailableModels lists the models the composite group can serve.
 // includeSystemOne adds TypeSafe models, which only work through /v1/systemone;
-// LLM client catalogs (Codex) must exclude them.
-func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool) []string {
+// LLM client catalogs (Codex) must exclude them. allowlistEnabled gates the
+// group-level default injection: with the allowlist on, an empty sub-platform
+// keeps an empty candidate set (no platform defaults are ever merged in).
+func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool, allowlistEnabled bool) []string {
 	if h == nil || h.gatewayService == nil {
 		return nil
+	}
+	// Group fallback contract: per-platform defaults are injected only when the
+	// allowlist is disabled and every sub-platform has empty model mappings.
+	allEmpty := true
+	for _, platform := range domain.CompositePrecedencePlatformIDs() {
+		if platform == service.PlatformTypeSafe && !includeSystemOne {
+			continue
+		}
+		if len(h.gatewayService.GetAvailableModels(ctx, groupID, platform)) > 0 {
+			allEmpty = false
+			break
+		}
 	}
 	seen := make(map[string]struct{})
 	models := make([]string, 0)
@@ -1309,7 +1321,7 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 		if len(platformModels) == 0 {
 			// CN 供应商没有静态默认模型列表（defaultModelIDsForPlatform 的
 			// default 分支是 Claude 列表），composite 下只暴露账号映射键。
-			if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) {
+			if _, ok := schedulablePlatforms[platform]; ok && !service.IsMultiProtocolAPIKeyProvider(platform) && !allowlistEnabled && allEmpty {
 				platformModels = defaultModelIDsForPlatform(platform)
 			}
 		}
@@ -1452,13 +1464,14 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 }
 
 // modelListingSource 汇总模型列表过滤的候选来源：账号映射键（availableModels）
-// 与平台默认列表（fallbackModels）。账号映射为空时回落默认列表；Anthropic
-// 平台两者取并集，其余平台以账号映射键为准。
+// 与平台默认列表（fallbackModels）。账号映射为空时回落默认列表；
+// Anthropic 平台在传入非空 fallback 时并入平台默认列表（OAuth 账号默认可见性）；
+// 白名单分支传入 nil fallback，使空映射保持为空（白名单启用时严禁「空→默认」反兜底）。
 func modelListingSource(platform string, availableModels, fallbackModels []string) []string {
 	if len(availableModels) == 0 {
 		return fallbackModels
 	}
-	if platform == service.PlatformAnthropic {
+	if platform == service.PlatformAnthropic && len(fallbackModels) > 0 {
 		return mergeModelIDs(availableModels, fallbackModels)
 	}
 	return availableModels
