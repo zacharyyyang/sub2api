@@ -60,7 +60,7 @@ func (s *agDomainStubUpstream) DoWithTLS(req *http.Request, proxyURL string, acc
 }
 
 // antigravityDomainURLs 组装测试假 URL 序（oauth 序 = [prod, daily]，与 BaseURLs 全局一致）。
-// resolveAntigravityForwardBaseURLs 对 paid 账号返回 [daily, prod]。
+// resolveAntigravityForwardBaseURLs 对任意消费级账号返回 [daily] 单域。
 func antigravityDomainURLs() (dailyURL, prodURL string) {
 	return "https://daily.example.test", "https://prod.example.test"
 }
@@ -125,16 +125,16 @@ func (h *noOpHandleError) fn(ctx context.Context, prefix string, account *Accoun
 	return nil
 }
 
-// TestAntigravityRetryLoop_PersonalQuotaExhausted_FallbackWithoutMarkUnavailable — E1：
-// daily 真打满 429（个人配额耗尽）⇒ 换 prod 重试成功且 daily **不** MarkUnavailable
-// （S15 ①：账号×域消耗非 URL 级故障，标记会跨账号污染可用性记忆）。
-func TestAntigravityRetryLoop_PersonalQuotaExhausted_FallbackWithoutMarkUnavailable(t *testing.T) {
+// TestAntigravityRetryLoop_PersonalQuotaExhausted_DirectSwitch — E1（TC-10）：
+// 消费级账号默认序 [daily] 单域，daily 真打满 429（个人配额耗尽）⇒ 不换域、不 MarkUnavailable，
+// 直接返回账号切换信号（S15 ①：账号×域消耗非 URL 级故障，标记会跨账号污染可用性记忆）。
+func TestAntigravityRetryLoop_PersonalQuotaExhausted_DirectSwitch(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
 		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: quotaExhausted429Body()}, // daily 真打满
-		// prod 未命中 → 默认 200 OK
+		// prod 不应被访问（单域序无第二跳）
 	}}
 
 	handleErr := &noOpHandleError{}
@@ -152,31 +152,33 @@ func TestAntigravityRetryLoop_PersonalQuotaExhausted_FallbackWithoutMarkUnavaila
 		handleError:  handleErr.fn,
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.resp)
-	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	// 单元素序 429 直切：账号切换信号，无响应对象
+	require.Error(t, err)
+	var switchErr *AntigravityAccountSwitchError
+	require.ErrorAs(t, err, &switchErr)
+	require.Equal(t, int64(1), switchErr.OriginalAccountID)
+	require.Nil(t, result)
 
-	// 换 prod 成功：先 daily 后 prod
-	require.Len(t, upstream.calls, 2)
+	// ① 目的域：仅 daily 一次调用；② prod 调用次数 = 0
+	require.Len(t, upstream.calls, 1)
 	require.True(t, strings.HasPrefix(upstream.calls[0], dailyURL))
-	require.True(t, strings.HasPrefix(upstream.calls[1], prodURL))
+	require.False(t, strings.HasPrefix(upstream.calls[0], prodURL))
 
-	// E1 核心断言：daily **无**不可用标记（判据①不 MarkUnavailable）
+	// ④ daily **无**不可用标记（账号级消耗非 URL 级故障，判据①不 MarkUnavailable）
 	require.True(t, antigravity.DefaultURLAvailability.IsAvailable(dailyURL), "daily should NOT be marked unavailable after personal quota exhausted")
 	require.False(t, handleErr.called)
 }
 
-// TestAntigravityRetryLoop_URLLevelRateLimit_FallbackWithMarkUnavailable — E2：
-// daily 域级泛化 429（"Resource has been exhausted"）⇒ 换 prod 成功且 daily **被** MarkUnavailable
-// （S15 ②：URL 级限流信号）。
-func TestAntigravityRetryLoop_URLLevelRateLimit_FallbackWithMarkUnavailable(t *testing.T) {
+// TestAntigravityRetryLoop_URLLevelRateLimit_DirectSwitch — E2（TC-11）：
+// 消费级账号默认序 [daily] 单域，daily 域级泛化 429（"Resource has been exhausted"）⇒
+// 单元素序无下一域（判据②换域条件 urlIdx < len-1 不成立）⇒ 不换域、不 MarkUnavailable，直切账号。
+func TestAntigravityRetryLoop_URLLevelRateLimit_DirectSwitch(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
 		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: urlLevel429Body()}, // daily URL 级限流
+		// prod 不应被访问（单域序无第二跳）
 	}}
 
 	svc := &AntigravityGatewayService{accountRepo: repo}
@@ -192,31 +194,33 @@ func TestAntigravityRetryLoop_URLLevelRateLimit_FallbackWithMarkUnavailable(t *t
 		accountRepo:  repo,
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.resp)
-	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	// 单元素序 429 直切：账号切换信号，无响应对象
+	require.Error(t, err)
+	var switchErr *AntigravityAccountSwitchError
+	require.ErrorAs(t, err, &switchErr)
+	require.Equal(t, int64(1), switchErr.OriginalAccountID)
+	require.Nil(t, result)
 
-	// 换 prod 成功
-	require.Len(t, upstream.calls, 2)
+	// ① 目的域：仅 daily 一次调用；② prod 调用次数 = 0
+	require.Len(t, upstream.calls, 1)
 	require.True(t, strings.HasPrefix(upstream.calls[0], dailyURL))
-	require.True(t, strings.HasPrefix(upstream.calls[1], prodURL))
+	require.False(t, strings.HasPrefix(upstream.calls[0], prodURL))
 
-	// E2 核心断言：daily **被** MarkUnavailable（判据②）
-	require.False(t, antigravity.DefaultURLAvailability.IsAvailable(dailyURL), "daily should be marked unavailable after URL-level rate limit")
-	require.True(t, antigravity.DefaultURLAvailability.IsAvailable(prodURL))
+	// ④ daily **无**不可用标记（判据②的标记需 urlIdx < len-1，单域下不标记）
+	require.True(t, antigravity.DefaultURLAvailability.IsAvailable(dailyURL), "daily should NOT be marked unavailable (single-domain, no next URL)")
 }
 
-// TestAntigravityRetryLoop_ConnectionError_Fallback — E3：
-// daily 连接错误 ⇒ 既有连接错误分支（:578-581）换 prod 成功（不新增分支、不 MarkUnavailable）。
-func TestAntigravityRetryLoop_ConnectionError_Fallback(t *testing.T) {
+// TestAntigravityRetryLoop_ConnectionError_SingleDomainRetriesExhausted — E3：
+// 消费级账号默认序 [daily] 单域，daily 连接错误 ⇒ 无下一域可换（urlIdx < len-1 不成立），
+// 走既有单域退避重试（antigravityMaxRetries=3，约 3s：1s + 2s），耗尽后返回重试失败硬错
+// （设计 §2.2：503 / 连接错误 → 走既有单域退避重试或失败转移，单域下即退避重试）。
+func TestAntigravityRetryLoop_ConnectionError_SingleDomainRetriesExhausted(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
 		{base: dailyURL, err: connectionRefusedErr()}, // daily 连接错误
-		// prod 未命中 → 默认 200 OK
+		// prod 不应被访问（单域序无第二跳）
 	}}
 
 	svc := &AntigravityGatewayService{accountRepo: repo}
@@ -232,31 +236,32 @@ func TestAntigravityRetryLoop_ConnectionError_Fallback(t *testing.T) {
 		accountRepo:  repo,
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.resp)
-	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	// 单域退避重试耗尽 → 重试失败硬错
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "upstream request failed after retries")
+	require.Nil(t, result)
 
-	// 连接错误分支换 prod 成功
-	require.Len(t, upstream.calls, 2)
-	require.True(t, strings.HasPrefix(upstream.calls[0], dailyURL))
-	require.True(t, strings.HasPrefix(upstream.calls[1], prodURL))
+	// 仅 daily 三次尝试（antigravityMaxRetries）；② prod 调用次数 = 0
+	require.Len(t, upstream.calls, 3)
+	for _, callURL := range upstream.calls {
+		require.True(t, strings.HasPrefix(callURL, dailyURL), "single domain must only hit daily, got %s", callURL)
+	}
+	require.False(t, strings.HasPrefix(upstream.calls[0], prodURL))
 
 	// 连接错误分支不产生不可用记忆（既有行为）
 	require.True(t, antigravity.DefaultURLAvailability.IsAvailable(dailyURL))
 }
 
-// TestAntigravityRetryLoop_BothDomainsFail_SwitchAccount — E4：
-// paid 两域尝试序内均 429（daily 真打满 → 换 prod；prod 模型限流，最后一域）⇒
-// prod 不命中判据①②（urlIdx == len-1）→ 落既有 default → 账号切换信号（原语义）。
-func TestAntigravityRetryLoop_BothDomainsFail_SwitchAccount(t *testing.T) {
+// TestAntigravityRetryLoop_ModelRateLimit_DirectSwitch — E4：
+// 消费级账号默认序 [daily] 单域，daily 模型级限流（retryDelay 60s ⇒ 情况1 限流模型并切换账号）：
+// 不命中判据①②③（非个人配额 / URL 级），单域下同样落既有模型限流分支（原语义）。
+func TestAntigravityRetryLoop_ModelRateLimit_DirectSwitch(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
-		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: quotaExhausted429Body()}, // daily 真打满 → 换 prod
-		{base: prodURL, statusCode: http.StatusTooManyRequests, body: modelRateLimit429Body()},  // prod 模型限流（最后一域）
+		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: modelRateLimit429Body()}, // daily 模型级限流
+		// prod 不应被访问（单域序无第二跳）
 	}}
 
 	handleErr := &noOpHandleError{}
@@ -274,31 +279,33 @@ func TestAntigravityRetryLoop_BothDomainsFail_SwitchAccount(t *testing.T) {
 		handleError:  handleErr.fn,
 	})
 
-	// 两域耗尽 → 账号切换信号（既有语义）
+	// 模型级限流（非判据①②③）→ 账号切换信号（既有语义）
 	require.Error(t, err)
 	var switchErr *AntigravityAccountSwitchError
 	require.ErrorAs(t, err, &switchErr)
 	require.Nil(t, result)
 
-	// 两域各被尝试一次
-	require.Len(t, upstream.calls, 2)
+	// ① 目的域：仅 daily 一次调用；② prod 调用次数 = 0
+	require.Len(t, upstream.calls, 1)
 	require.True(t, strings.HasPrefix(upstream.calls[0], dailyURL))
-	require.True(t, strings.HasPrefix(upstream.calls[1], prodURL))
+	require.False(t, strings.HasPrefix(upstream.calls[0], prodURL))
 
-	// prod 最后一域走模型限流分支 → repo 收到 SetModelRateLimit 调用，handleError 不触发
+	// 模型限流分支 → repo 收到 SetModelRateLimit 调用，handleError 不触发；daily 无不可用标记
 	require.GreaterOrEqual(t, len(repo.modelRateLimitCalls), 1)
 	require.False(t, handleErr.called)
+	require.True(t, antigravity.DefaultURLAvailability.IsAvailable(dailyURL))
 }
 
-// TestAntigravityRetryLoop_FreeTier_SingleProd_NoDomainFallback — E5：
-// free（非 paid 档）账号 ⇒ 域序坍缩为 [prod] 单元素 ⇒ 429 不换域，直接落既有账号切换线（零回归）。
-func TestAntigravityRetryLoop_FreeTier_SingleProd_NoDomainFallback(t *testing.T) {
+// TestAntigravityRetryLoop_FreeTier_SingleDaily_SwitchAccount — E5：
+// free 账号默认序同样坍缩为 [daily] 单域（TC-03）⇒ daily 模型级限流走既有模型限流线切号，
+// prod 零访问（free 档同样不做双域）。
+func TestAntigravityRetryLoop_FreeTier_SingleDaily_SwitchAccount(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
-		{base: prodURL, statusCode: http.StatusTooManyRequests, body: modelRateLimit429Body()}, // prod 模型限流
-		// daily 不应被访问
+		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: modelRateLimit429Body()}, // daily 模型限流
+		// prod 不应被访问
 	}}
 
 	freeAccount := &Account{
@@ -324,23 +331,23 @@ func TestAntigravityRetryLoop_FreeTier_SingleProd_NoDomainFallback(t *testing.T)
 		accountRepo:  repo,
 	})
 
-	// 单元素序内 429 → 账号切换信号（既有语义，不换域）
+	// 模型级限流 → 账号切换信号（既有语义）
 	require.Error(t, err)
 	var switchErr *AntigravityAccountSwitchError
 	require.ErrorAs(t, err, &switchErr)
 	require.Nil(t, result)
 
-	// 只访问 prod，daily 零访问（零回归：free 档不做双域）
+	// 只访问 daily，prod 零访问（free 档不做双域，默认序同为 daily）
 	require.NotEmpty(t, upstream.calls)
 	for _, callURL := range upstream.calls {
-		require.True(t, strings.HasPrefix(callURL, prodURL), "free tier must only hit prod, got %s", callURL)
-		require.False(t, strings.HasPrefix(callURL, dailyURL))
+		require.True(t, strings.HasPrefix(callURL, dailyURL), "free tier must only hit daily, got %s", callURL)
+		require.False(t, strings.HasPrefix(callURL, prodURL))
 	}
 }
 
 // TestAntigravityRetryLoop_AllMarkedUnavailable_GuardFallsBackToUnfiltered — E6：
-// daily + prod 双标记并存（探测记忆过滤结果为空）⇒ 空集守卫回退未过滤序 [daily, prod] 续试，
-// 不再零次尝试 / 无 {resp: nil} 解引用；两域仍败 ⇒ 落既有账号切换线。
+// daily + prod 双标记并存（探测记忆过滤结果为空）⇒ 空集守卫回退未过滤序 [daily] 续试，
+// 不再零次尝试 / 无 {resp: nil} 解引用；daily 真打满 429 ⇒ 单域直切账号切换信号。
 func TestAntigravityRetryLoop_AllMarkedUnavailable_GuardFallsBackToUnfiltered(t *testing.T) {
 	dailyURL, prodURL := antigravityDomainURLs()
 	repo := setupAntigravityForwardDomainTest(t, dailyURL, prodURL)
@@ -349,10 +356,11 @@ func TestAntigravityRetryLoop_AllMarkedUnavailable_GuardFallsBackToUnfiltered(t 
 	antigravity.DefaultURLAvailability.MarkUnavailable(dailyURL)
 	antigravity.DefaultURLAvailability.MarkUnavailable(prodURL)
 	require.Empty(t, antigravity.DefaultURLAvailability.GetAvailableURLsWithBase([]string{dailyURL, prodURL}))
+	require.Empty(t, antigravity.DefaultURLAvailability.GetAvailableURLsWithBase([]string{dailyURL}))
 
 	upstream := &agDomainStubUpstream{responses: []agDomainStubResponse{
-		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: quotaExhausted429Body()}, // daily 真打满 → 换 prod
-		{base: prodURL, statusCode: http.StatusTooManyRequests, body: modelRateLimit429Body()},  // prod 模型限流（最后一域）
+		{base: dailyURL, statusCode: http.StatusTooManyRequests, body: quotaExhausted429Body()}, // daily 真打满
+		// prod 不应被访问（单域序无第二跳）
 	}}
 
 	svc := &AntigravityGatewayService{accountRepo: repo}
@@ -372,7 +380,9 @@ func TestAntigravityRetryLoop_AllMarkedUnavailable_GuardFallsBackToUnfiltered(t 
 	require.NotEmpty(t, upstream.calls, "guard fallback must still attempt requests")
 	require.True(t, strings.HasPrefix(upstream.calls[0], dailyURL))
 
-	// 两域仍败 → 账号切换信号（既有语义）
+	// 单域直切：仅 daily 一次尝试（② prod 调用次数 = 0）→ 账号切换信号
+	require.Len(t, upstream.calls, 1)
+	require.False(t, strings.HasPrefix(upstream.calls[0], prodURL))
 	require.Error(t, err)
 	var switchErr *AntigravityAccountSwitchError
 	require.ErrorAs(t, err, &switchErr)

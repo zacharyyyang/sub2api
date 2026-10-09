@@ -104,7 +104,7 @@ func (s *stubAntigravityAccountRepo) UpdateExtra(ctx context.Context, id int64, 
 	return nil
 }
 
-func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) {
+func TestAntigravityRetryLoop_SingleDomain429_DirectSwitch(t *testing.T) {
 	t.Setenv(antigravityForwardBaseURLEnv, "")
 
 	oldBaseURLs := append([]string(nil), antigravity.BaseURLs...)
@@ -119,7 +119,7 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 	antigravity.BaseURLs = []string{base1, base2}
 	antigravity.DefaultURLAvailability = antigravity.NewURLAvailability(time.Minute)
 
-	upstream := &stubAntigravityUpstream{firstBase: base1, secondBase: base2}
+	upstream := &stubAntigravityUpstream{firstBase: base2, secondBase: base1}
 	account := &Account{
 		ID:          1,
 		Name:        "acc-1",
@@ -147,20 +147,33 @@ func TestAntigravityRetryLoop_NoURLFallback_UsesConfiguredBaseURL(t *testing.T) 
 		},
 	})
 
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.resp)
-	defer func() { _ = result.resp.Body.Close() }()
-	require.Equal(t, http.StatusTooManyRequests, result.resp.StatusCode)
-	require.True(t, handleErrorCalled)
-	require.Len(t, upstream.calls, antigravityMaxRetries)
+	var switchErr *AntigravityAccountSwitchError
+	require.ErrorAs(t, err, &switchErr)
+	require.Equal(t, int64(1), switchErr.OriginalAccountID)
+	require.Nil(t, result)
+	require.False(t, handleErrorCalled)
+	require.Len(t, upstream.calls, 1)
 	for _, callURL := range upstream.calls {
-		require.True(t, strings.HasPrefix(callURL, base1))
+		require.True(t, strings.HasPrefix(callURL, base2))
 	}
 
 	available := antigravity.DefaultURLAvailability.GetAvailableURLs()
-	require.NotEmpty(t, available)
-	require.Equal(t, base1, available[0])
+	require.Equal(t, []string{base1, base2}, available)
+
+	// TC-09：零端点 → loop 入口报配置错误、零网络请求（含已限流模型 corner：端点守卫先于预检查）。
+	antigravity.BaseURLs = nil
+	upstream2 := &stubAntigravityUpstream{}
+	account.Extra = map[string]any{modelRateLimitsKey: map[string]any{
+		"claude-sonnet-4-5": map[string]any{"rate_limit_reset_at": time.Now().Add(2 * time.Second).Format(time.RFC3339)},
+	}}
+	baseParams := antigravityRetryLoopParams{prefix: "[test]", ctx: context.Background(), account: account, httpUpstream: upstream2}
+	for _, model := range []string{"", "claude-sonnet-4-5"} { // corner：已限流模型下配置错误仍优先
+		baseParams.requestedModel = model
+		result2, err2 := svc.antigravityRetryLoop(baseParams)
+		require.ErrorContains(t, err2, "no antigravity forward base url configured")
+		require.Nil(t, result2)
+		require.Empty(t, upstream2.calls)
+	}
 }
 
 // TestHandleUpstreamError_429_ModelRateLimit 测试 429 模型限流场景
@@ -1061,33 +1074,20 @@ func TestResolveAntigravityForwardBaseURLs(t *testing.T) {
 		name    string
 		env     string
 		single  bool // 模拟单端点部署（len(BaseURLs) == 1）
+		zero    bool // 模拟零端点部署（len(BaseURLs) == 0）
 		account *Account
 		want    []string
 	}{
-		{
-			name: "pro defaults to daily-first dual", account: &Account{Credentials: map[string]any{"plan_type": " Pro "}},
-			want: []string{dailyURL, prodURL},
-		},
-		{
-			name: "ultra defaults to daily-first dual", account: &Account{Credentials: map[string]any{"plan_type": "ULTRA"}},
-			want: []string{dailyURL, prodURL},
-		},
-		{name: "free defaults to prod single", account: &Account{Credentials: map[string]any{"plan_type": "free"}}, want: []string{prodURL}},
-		{name: "abnormal defaults to prod single", account: &Account{Credentials: map[string]any{"plan_type": "Abnormal"}}, want: []string{prodURL}},
-		{name: "unknown defaults to prod single", account: &Account{Credentials: map[string]any{"plan_type": "enterprise"}}, want: []string{prodURL}},
-		{name: "malformed defaults to prod single", account: &Account{Credentials: map[string]any{"plan_type": map[string]any{"name": "pro"}}}, want: []string{prodURL}},
-		{name: "missing defaults to prod single", account: &Account{Credentials: map[string]any{}}, want: []string{prodURL}},
-		{name: "nil account defaults to prod single", account: nil, want: []string{prodURL}},
-		{
-			name: "daily override collapses to daily single for free tier", env: " daily ",
-			account: &Account{Credentials: map[string]any{"plan_type": "free"}},
-			want:    []string{dailyURL},
-		},
-		{
-			name: "sandbox override collapses to daily single", env: "sandbox",
-			account: &Account{Credentials: map[string]any{"plan_type": "pro"}},
-			want:    []string{dailyURL},
-		},
+		{name: "pro defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": " Pro "}}, want: []string{dailyURL}},
+		{name: "ultra defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": "ULTRA"}}, want: []string{dailyURL}},
+		{name: "free defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": "free"}}, want: []string{dailyURL}},
+		{name: "abnormal defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": "Abnormal"}}, want: []string{dailyURL}},
+		{name: "unknown defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": "enterprise"}}, want: []string{dailyURL}},
+		{name: "malformed defaults to daily single", account: &Account{Credentials: map[string]any{"plan_type": map[string]any{"name": "pro"}}}, want: []string{dailyURL}},
+		{name: "missing defaults to daily single", account: &Account{Credentials: map[string]any{}}, want: []string{dailyURL}},
+		{name: "nil account defaults to daily single", account: nil, want: []string{dailyURL}},
+		{name: "daily override collapses to daily single for free tier", env: " daily ", account: &Account{Credentials: map[string]any{"plan_type": "free"}}, want: []string{dailyURL}},
+		{name: "sandbox override collapses to daily single", env: "sandbox", account: &Account{Credentials: map[string]any{"plan_type": "pro"}}, want: []string{dailyURL}},
 		{
 			name: "prod override collapses to prod single for paid tier", env: " PROD ",
 			account: &Account{Credentials: map[string]any{"plan_type": "pro"}},
@@ -1098,11 +1098,14 @@ func TestResolveAntigravityForwardBaseURLs(t *testing.T) {
 			account: &Account{Credentials: map[string]any{"plan_type": "pro"}},
 			want:    []string{prodURL},
 		},
+		{name: "zero endpoints returns nil", zero: true, account: &Account{Credentials: map[string]any{"plan_type": "pro"}}, want: nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.single {
+			if tt.zero {
+				antigravity.BaseURLs = nil
+			} else if tt.single {
 				antigravity.BaseURLs = []string{prodURL}
 			} else {
 				antigravity.BaseURLs = []string{prodURL, dailyURL}

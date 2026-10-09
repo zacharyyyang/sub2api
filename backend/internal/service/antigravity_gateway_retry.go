@@ -46,13 +46,14 @@ type antigravityRetryLoopResult struct {
 	resp *http.Response
 }
 
-// resolveAntigravityForwardBaseURLs 解析转发用 base URL 序（复数：paid 账号双域轮换）。
+// resolveAntigravityForwardBaseURLs 解析转发用 base URL 序（消费级账号统一收敛 daily 单域）。
 //
-// 显式环境变量优先且坍缩为单元素（env 已指定 ⇒ 不做双域轮换）。
-// 未配置时，LoadCodeAssist 返回 paidTier（pro / ultra）的付费账号使用 [daily, prod]
-// 双域序（决策 14：每日配额组由 daily 端点提供，prod 端点为普通额度，双域差值由
-// 配额组合并层 §2.3 消化）；其他账号（free / 异常 / 未知）继续只用生产端点，避免
-// 免费账号的 OAuth token 出现 401。
+// 显式环境变量优先且坍缩为单元素（env 已指定 ⇒ 不做双域轮换）：
+//   - "daily" / "sandbox" ⇒ [baseURLs[1]]（daily 端点）；"prod" / 其它非空值 ⇒ [baseURLs[0]]（显式定向）。
+//
+// 未配置时任意消费级账号（free / pro / ultra / 未知 / nil）在 len >= 2 时统一返回
+// [baseURLs[1]]（daily 单域：消费级对 prod 生成端点无资格，隐式回退必 429 白打）；
+// 零端点（len == 0）返回 nil（调用方按配置错误处理，零网络请求）；单端点安全降级 [baseURLs[0]]（防越界）。
 //
 // 历史上这里改用 ForwardBaseURLs()（把 daily/sandbox 排到首位）并默认取首个地址，
 // 导致网关把带生产 OAuth token 的请求发到 daily-cloudcode-pa.sandbox.googleapis.com，
@@ -70,8 +71,8 @@ func resolveAntigravityForwardBaseURLs(account *Account) []string {
 	if mode != "" {
 		return []string{baseURLs[0]}
 	}
-	if accountHasAntigravityPaidTier(account) && len(baseURLs) > 1 {
-		return []string{baseURLs[1], baseURLs[0]}
+	if len(baseURLs) > 1 {
+		return []string{baseURLs[1]}
 	}
 	return []string{baseURLs[0]}
 }
@@ -123,6 +124,15 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		antigravity.DefaultURLAvailability.MarkUnavailable(baseURL)
 		logger.LegacyPrintf("service.antigravity_gateway", "%s URL fallback (429): %s -> %s", p.prefix, baseURL, availableURLs[urlIdx+1])
 		return &smartRetryResult{action: smartRetryActionContinueURL}
+	}
+	// ③ 单元素序（消费级默认 daily 单域）：两类 429 无下一域可换 ⇒ 不换域不标记，直切账号（AC-2）
+	if len(availableURLs) == 1 && resp.StatusCode == http.StatusTooManyRequests &&
+		(isPersonalQuotaExhausted429(respBody) || isURLLevelRateLimit(respBody)) {
+		logger.LegacyPrintf("service.antigravity_gateway", "%s single-domain 429: %s -> switch account", p.prefix, baseURL)
+		return &smartRetryResult{action: smartRetryActionBreakWithResp, switchError: &AntigravityAccountSwitchError{
+			OriginalAccountID: p.account.ID,
+			IsStickySession:   p.isStickySession,
+		}}
 	}
 
 	category := antigravity429Unknown
@@ -478,6 +488,10 @@ func (s *AntigravityGatewayService) handleSingleAccountRetryInPlace(
 
 // antigravityRetryLoop 执行带 URL fallback 的重试循环
 func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopParams) (*antigravityRetryLoopResult, error) {
+	baseURLs := resolveAntigravityForwardBaseURLs(p.account)
+	if len(baseURLs) == 0 {
+		return nil, errors.New("no antigravity forward base url configured")
+	}
 	// 预检查：模型限流 + overages 启用 + 积分未耗尽 → 直接注入 AI Credits
 	overagesInjected := false
 	if p.requestedModel != "" && p.account.Platform == PlatformAntigravity &&
@@ -517,10 +531,6 @@ func (s *AntigravityGatewayService) antigravityRetryLoop(p antigravityRetryLoopP
 		}
 	}
 
-	baseURLs := resolveAntigravityForwardBaseURLs(p.account)
-	if len(baseURLs) == 0 {
-		return nil, errors.New("no antigravity forward base url configured")
-	}
 	availableURLs := antigravity.DefaultURLAvailability.GetAvailableURLsWithBase(baseURLs)
 	if len(availableURLs) == 0 {
 		// 决策 15 守卫：探测记忆全标记不可用 ⇒ 回退未过滤序，保证至少一轮尝试（防 nil 遍历后 panic）
