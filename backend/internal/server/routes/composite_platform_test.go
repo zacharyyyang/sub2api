@@ -368,3 +368,110 @@ func TestCompositeLiveRouteDispatchesBySessionModelNotTopLevelAlias(t *testing.T
 
 	require.Equal(t, http.StatusNoContent, w.Code)
 }
+
+// 正向：composite 分组 + wb 路由目标 × 两 CC 端点（/v1/chat/completions 与根别名
+// /chat/completions）→ compositeTargetPlatformMiddleware 解析出 TargetPlatform=wb
+// + UpstreamModel 改写（行为式断言；设计 §6 :392，先例 :86-135 同式）。
+func TestCompositeTargetPlatformMiddlewareResolvesWBOnChatCompletions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []service.CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        1,
+				PublicModel:    "gpt-5.5",
+				MatchType:      service.CompositeRouteMatchExact,
+				TargetPlatform: service.PlatformWB,
+				UpstreamModel:  "fast-model",
+				Endpoint:       service.CompositeRouteEndpointAny,
+				Priority:       100,
+				Enabled:        true,
+			},
+		},
+	})
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeTargetPlatformMiddleware(resolver))
+	for _, path := range []string{"/v1/chat/completions", "/chat/completions"} {
+		router.POST(path, func(c *gin.Context) {
+			platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+			require.True(t, ok)
+			require.Equal(t, service.PlatformWB, platform)
+
+			upstreamModel, ok := service.ResolvedUpstreamModelFromContext(c.Request.Context())
+			require.True(t, ok)
+			require.Equal(t, "fast-model", upstreamModel)
+
+			body, err := io.ReadAll(c.Request.Body)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"model":"fast-model","messages":[]}`, string(body))
+			c.Status(http.StatusNoContent)
+		})
+	}
+
+	for _, path := range []string{"/v1/chat/completions", "/chat/completions"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5","messages":[]}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusNoContent, w.Code)
+	}
+}
+
+// 负向：composite→wb × 非 CC 端点（/v1/messages /v1/responses 含 subpath、
+// count_tokens）→ middleware 仍先解析出 wb 目标（断言 getGroupPlatform(c)==wb，
+// gateway.go:539-549 读已解析目标），legacy 不改道是共享谓词无 wb case 的结构事实
+// （KDR-9，分发闭包本体不抽函数、不重复断言；设计 §6 :392）。
+func TestCompositeTargetPlatformMiddlewareResolvesWBTargetOnNonCCPaths(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	resolver := service.NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []service.CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        1,
+				PublicModel:    "gpt-5.5",
+				MatchType:      service.CompositeRouteMatchExact,
+				TargetPlatform: service.PlatformWB,
+				UpstreamModel:  "fast-model",
+				Endpoint:       service.CompositeRouteEndpointAny,
+				Priority:       100,
+				Enabled:        true,
+			},
+		},
+	})
+	router.Use(gin.HandlerFunc(servermiddleware.APIKeyAuthMiddleware(func(c *gin.Context) {
+		groupID := int64(1)
+		c.Set(string(servermiddleware.ContextKeyAPIKey), &service.APIKey{
+			GroupID: &groupID,
+			Group:   &service.Group{ID: groupID, Platform: service.PlatformComposite},
+		})
+		c.Next()
+	})))
+	router.Use(compositeTargetPlatformMiddleware(resolver))
+	for _, path := range []string{"/v1/messages", "/v1/responses", "/v1/responses/input_tokens", "/v1/messages/count_tokens"} {
+		router.POST(path, func(c *gin.Context) {
+			require.Equal(t, service.PlatformWB, getGroupPlatform(c),
+				"非 CC 端点仍须已解析 wb 目标（legacy 不改道 = 共享谓词无 wb case 的结构事实）")
+			platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
+			require.True(t, ok)
+			require.Equal(t, service.PlatformWB, platform)
+			c.Status(http.StatusNoContent)
+		})
+	}
+
+	for _, path := range []string{"/v1/messages", "/v1/responses", "/v1/responses/input_tokens", "/v1/messages/count_tokens"} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5.5"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusNoContent, w.Code)
+	}
+}

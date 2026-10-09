@@ -36,12 +36,21 @@ func TestOpenAICompatibleTextTargetAllowsCompositeProviders(t *testing.T) {
 		{model: "glm-5.2", platform: service.PlatformZhipu},
 		{model: "deepseek-v3.2", platform: service.PlatformDeepseek},
 		{model: "MiniMax-M3", platform: service.PlatformMiniMax},
+		{model: "gpt-5.5", platform: service.PlatformWB},
 	}
 	for _, path := range []string{"/v1/messages", "/v1/chat/completions", "/v1/responses", "/v1/responses/input_tokens", "/v1/messages/count_tokens"} {
 		for _, provider := range providers {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest("POST", path, nil)
 			apiKey := &service.APIKey{Group: &service.Group{Platform: service.PlatformComposite}}
+
+			// wb 模型不走 DetectModelPlatform 前缀分类（composite_platform.go:90 无 wb
+			// 分支，裸 gpt-5.5 会被 gpt- 前缀误判为 openai）：wb 目标只能由 middleware
+			// 合成路由预解析进 context；此处预置模拟该生产路径（ensureCompositeTargetPlatform
+			// 对已解析值 early-return，composite_platform.go:17-19）。
+			if provider.platform == service.PlatformWB {
+				c.Request = c.Request.WithContext(service.WithResolvedTargetPlatform(c.Request.Context(), service.PlatformWB))
+			}
 
 			require.True(t, openAICompatibleTextTargetAllowed(c, apiKey, provider.model), "path=%s model=%s", path, provider.model)
 			platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context())
@@ -58,7 +67,7 @@ func TestResponsesWebSocketCompositePlatformGuardKeepsOpenAIAndGrokOnly(t *testi
 	require.True(t, isResponsesWebSocketCompositePlatform(service.PlatformGrok))
 	for _, platform := range []string{
 		service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax,
-		service.PlatformAnthropic, service.PlatformGemini,
+		service.PlatformAnthropic, service.PlatformGemini, service.PlatformWB,
 	} {
 		require.False(t, isResponsesWebSocketCompositePlatform(platform), "platform=%s", platform)
 	}

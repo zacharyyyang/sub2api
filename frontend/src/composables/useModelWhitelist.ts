@@ -252,6 +252,26 @@ const perplexityModels = [
   'llama-3-sonar-small-32k-chat', 'llama-3-sonar-large-32k-chat'
 ]
 
+// wb 企业账号模型白名单（批次档 §1:29 钉死 21 个）
+const wbModels = [
+  'default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model',
+  'hy4-preview', 'hy3',
+  'deepseek-v4.1-flash',
+  'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4',
+  'gemini-3.5-flash',
+  'glm-5.3-flash', 'glm-5.3', 'glm-5.2',
+  'kimi-k3', 'kimi-k2.6', 'kimi-k2.8-preview'
+]
+
+// wb 独有模型（其余 10 个已存在于既有各数组）：仅用于补全 allModelsList，
+// 避免重复选项；wb 平台白名单本身用 wbModels。
+const wbOnlyModels = [
+  'default-model', 'fast-model', 'balanced-model', 'primary-model', 'deep-model',
+  'hy4-preview', 'hy3',
+  'deepseek-v4.1-flash',
+  'kimi-k3', 'kimi-k2.6', 'kimi-k2.8-preview'
+]
+
 // 所有模型（去重）
 const allModelsList: string[] = [
   ...openaiModels,
@@ -271,7 +291,8 @@ const allModelsList: string[] = [
   ...baiduModels,
   ...sparkModels,
   ...hunyuanModels,
-  ...perplexityModels
+  ...perplexityModels,
+  ...wbOnlyModels
 ]
 
 // 转换为下拉选项格式
@@ -476,6 +497,7 @@ export function getModelsByPlatform(platform: string): string[] {
       'hy4-preview', 'hy3', 'omen-alpha'
     ]
     case 'typesafe': return ['jev-latest']
+    case 'wb': return wbModels
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

@@ -292,7 +292,8 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 // handler 调度入口仍需导出，保持导出名。）
 func NormalizeOpenAICompatiblePlatform(platform string) string {
 	switch platform {
-	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo:
+	case PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo,
+		PlatformWB:
 		return platform
 	default:
 		return PlatformOpenAI
@@ -402,7 +403,12 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "account_model_not_owned"
 		}
 	}
-	if account.Platform != platform || !account.IsOpenAICompatible() {
+	if account.Platform != platform {
+		return "platform_mismatch"
+	}
+	// wb 企业平台经调度池定点放行，但 IsOpenAICompatible() 恒 false（wb 401
+	// 错误语义独立，不能并入通用 openai 兼容谓词），平台匹配即不再检查该谓词。
+	if account.Platform != PlatformWB && !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {

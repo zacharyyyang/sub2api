@@ -116,6 +116,7 @@ export default {
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
+        wb: 'WB Enterprise',
       },
       cnProviders: {
         accountMode: {
@@ -1657,6 +1658,10 @@ export default {
         activeQuery: 'Query',
         estimatedTotalCost: 'Est. total ${cost}',
         estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
+      },
+      wbCredits: {
+        remaining: 'Credits remaining',
+        expiresAt: ' (expires {date})'
       },
       googleQuota: {
         groupGemini: 'Gemini',

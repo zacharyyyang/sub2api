@@ -235,9 +235,11 @@ func RegisterGatewayRoutes(
 		gateway.GET("/responses", func(c *gin.Context) {
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
-		// OpenAI Chat Completions API: auto-route based on group platform
+		// OpenAI Chat Completions API: auto-route based on group platform.
+		// wb 是经 synthesis 路由解析出的目标平台：共享谓词无 wb 分支（KDR-9 零改动），
+		// 此处定点析取放行 composite→wb 分组到 OpenAI 网关腿（设计 §2.8 分发点①）。
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -397,9 +399,10 @@ func RegisterGatewayRoutes(
 		})
 		codexDirect.GET("/models", codexModelsHandler)
 	}
-	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform
+	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform.
+	// 与 /v1 分发点①同式追加 wb 析取（设计 §2.8 分发点②，共享谓词零改动）。
 	rootRoute(http.MethodPost, "/chat/completions", bodyLimit, func(c *gin.Context) {
-		if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+		if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}
