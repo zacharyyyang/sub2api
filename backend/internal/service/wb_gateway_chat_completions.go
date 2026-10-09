@@ -26,14 +26,22 @@ func (s *OpenAIGatewayService) InvalidateWBToken(id int64) {
 	}
 }
 
+// wbStreamOptions 是 OpenAI 兼容入站 stream_options 参数的结构化声明。
+// WB 网关在 CLI 流式结束时已默认输出含 usage 的终端 chunk，因此仅需解析
+// include_usage，无需将参数映射传递给下游 CLI。
+type wbStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 type wbInbound struct {
 	Model    string `json:"model"`
 	Messages []struct {
 		Role    string  `json:"role"`
 		Content *string `json:"content"`
 	} `json:"messages"`
-	Stream bool            `json:"stream"`
-	Tools  json.RawMessage `json:"tools"`
+	Stream        bool             `json:"stream"`
+	Tools         json.RawMessage  `json:"tools"`
+	StreamOptions *wbStreamOptions `json:"stream_options"`
 }
 
 func wbStrictJSON(raw []byte, dst any) error {
@@ -49,9 +57,26 @@ func wbStrictJSON(raw []byte, dst any) error {
 	return nil
 }
 
+// wbDecodeInboundJSON 是 HTTP 入站专用解码器：不启用 DisallowUnknownFields，
+// 兼容标准 OpenAI SDK / 兼容客户端默认携带的常规参数（stream_options、
+// temperature、user 等）；同时保留严格 JSON 语法与尾部多余数据校验，拒绝
+// 畸形 JSON 与多段粘包。内部协议解析（wbMapTools 工具声明）仍走 wbStrictJSON
+// 严格模式，两者互不影响。
+func wbDecodeInboundJSON(raw []byte, dst any) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("unexpected trailing JSON")
+	}
+	return nil
+}
+
 func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 	var req wbInbound
-	if err := wbStrictJSON(body, &req); err != nil {
+	if err := wbDecodeInboundJSON(body, &req); err != nil {
 		return req, "", nil, err
 	}
 	valid := false

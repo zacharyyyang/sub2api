@@ -135,7 +135,7 @@ func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {
 	process := &wbCLIProcess{
 		cmd:    cmd,
 		stdout: io.NopCloser(&stdout),
-		stderr: &bytes.Buffer{},
+		stderr: &wbStderrBuffer{},
 	}
 
 	req := wbInbound{Model: "claude-sonnet-4.5", Stream: false}

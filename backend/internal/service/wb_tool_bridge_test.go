@@ -22,16 +22,57 @@ func TestWBInbound(t *testing.T) {
 	req, prompt, _, err := wbParseInbound([]byte(`{"model":"glm-5.3-flash","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":"a"},{"role":"user","content":"v"}]}`))
 	require.NoError(t, err)
 	require.False(t, req.Stream)
+	require.Nil(t, req.StreamOptions)
 	require.Equal(t, "System: s\n\nUser: u\n\nAssistant: a\n\nUser: v", prompt)
-	for _, raw := range []string{
-		`{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"x"}]}`,
-		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`,
-		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"x","name":"n"}]}`,
-		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"x"}],"temperature":1}`,
+	// 解码器级拒绝：语法畸形 / 尾部多余 JSON / 字段类型不匹配。
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"trailing JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "unexpected trailing JSON"},
+		{"malformed JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}`, ""},
+		{"non-string content", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, ""},
+		// 业务校验级拒绝：硬约束全部保留。
+		{"unsupported model", `{"model":"unsupported-model","messages":[{"role":"user","content":"hi"}]}`, "unsupported model"},
+		{"empty messages", `{"model":"glm-5.3-flash","messages":[]}`, "messages must not be empty"},
+		{"unsupported role", `{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"x"}]}`, `unsupported role "tool"`},
 	} {
-		_, _, _, err := wbParseInbound([]byte(raw))
-		require.Error(t, err)
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, err := wbParseInbound([]byte(tc.raw))
+			require.Error(t, err)
+			if tc.want != "" {
+				require.ErrorContains(t, err, tc.want)
+			}
+		})
 	}
+}
+
+// TestWBInboundCompat：AC-1/AC-2 —— 入站放宽未知字段阻断后，标准 OpenAI
+// 客户端默认携带的参数（stream_options、temperature、user、消息级 name）
+// 与显式 stream_options:null 均被接受，不再触发 400。
+func TestWBInboundCompat(t *testing.T) {
+	req, _, _, err := wbParseInbound([]byte(`{"model":"glm-5.3-flash","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"hi"}]}`))
+	require.NoError(t, err)
+	require.True(t, req.Stream)
+	require.NotNil(t, req.StreamOptions)
+	require.True(t, req.StreamOptions.IncludeUsage)
+	for _, raw := range []string{
+		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"temperature":0.7,"user":"client-123"}`,
+		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"x","name":"n"}]}`,
+		`{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}],"stream_options":null}`,
+	} {
+		req, _, _, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Nil(t, req.StreamOptions)
+	}
+}
+
+// TestWBToolStrictModeUnchanged：回归 —— 内部工具声明仍走 wbStrictJSON
+// 严格模式，未知字段必须被拒绝（仅 HTTP 入站放宽，wbMapTools 不受影响）。
+func TestWBToolStrictModeUnchanged(t *testing.T) {
+	_, err := wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"echo","description":"Echo text","parameters":{"type":"object","properties":{}},"extra_field":1}}]`))
+	require.ErrorContains(t, err, "invalid tool declaration")
 }
 
 func TestWBTools(t *testing.T) {
