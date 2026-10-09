@@ -28,7 +28,15 @@
 
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
-        <div v-if="!isCNApiKeyAccount || editApiProtocol !== 'adaptive'">
+        <!-- WB Enterprise：四件套凭证掩码编辑（通用 apikey 的 base_url/API Key 语义不适用） -->
+        <div v-if="account.platform === 'wb'" class="space-y-4">
+          <WbCredentialFields
+            :key="account.id"
+            ref="wbCredentialFieldsRef"
+            v-model="wbCredentials"
+          />
+        </div>
+        <div v-if="account.platform !== 'wb' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
@@ -204,7 +212,7 @@
           </div>
           <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
         </div>
-        <div>
+        <div v-if="account.platform !== 'wb'">
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
             v-model="editApiKey"
@@ -3136,6 +3144,7 @@ import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
+import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
@@ -3352,6 +3361,10 @@ interface TempUnschedRuleForm {
 const submitting = ref(false)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
+
+// WB Enterprise：四件套凭证（掩码编辑；未修改键保持原值）
+const wbCredentials = ref<Record<string, string>>({})
+const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -4370,6 +4383,11 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     }
   }
 
+  // WB Enterprise：预填原凭证——WbCredentialFields 以掩码回显，未修改键提交时保持原值
+  if (newAccount.platform === 'wb' && newAccount.credentials) {
+    wbCredentials.value = { ...(newAccount.credentials as Record<string, string>) }
+  }
+
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
@@ -5166,8 +5184,40 @@ const handleSubmit = async () => {
       }
     }
 
-    // For apikey type, handle credentials update
-    if (props.account.type === 'apikey') {
+    // WB Enterprise：apikey 型凭证独立分支——无 base_url / API Key / CN 等通用 apikey
+    // 字段语义；四件套掩码编辑，未修改键保持原值；模型映射等共享尾部与通用分支一致
+    if (props.account.type === 'apikey' && props.account.platform === 'wb') {
+      if (!wbCredentialFieldsRef.value?.isValid()) {
+        appStore.showError('请填写全部必填凭证：Client ID / Client Secret / PT Key / Enterprise ID')
+        return
+      }
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const wbCredentials = { ...currentCredentials } as Record<string, unknown>
+      const collected = wbCredentialFieldsRef.value.collect()
+      for (const [key, value] of Object.entries(collected)) {
+        if (value && value.trim()) {
+          wbCredentials[key] = value
+        } else {
+          delete wbCredentials[key]
+        }
+      }
+
+      // Model mapping 共享尾部（与通用 apikey 分支一致）
+      const wbModelMapping = buildModelRestrictionMapping()
+      if (wbModelMapping) {
+        wbCredentials.model_mapping = wbModelMapping
+      } else {
+        delete wbCredentials.model_mapping
+      }
+
+      applyInterceptWarmup(wbCredentials, interceptWarmupRequests.value, 'edit')
+      applyAccountSchedulingThresholdOverridePatch(wbCredentials, currentCredentials)
+      if (!applyTempUnschedConfig(wbCredentials)) {
+        return
+      }
+
+      updatePayload.credentials = wbCredentials
+    } else if (props.account.type === 'apikey') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value
       const shouldApplyModelMapping = !(props.account.platform === 'openai' && openaiPassthroughEnabled.value)

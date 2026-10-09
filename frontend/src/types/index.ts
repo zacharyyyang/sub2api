@@ -918,7 +918,7 @@ export interface UpdateGroupRequest {
 
 // ==================== Account & Proxy Types ====================
 
-export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe'
+export type AccountPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'kimi' | 'zhipu' | 'deepseek' | 'minimax' | 'opencode_go' | 'typesafe' | 'wb'
 export type AccountType = 'oauth' | 'setup-token' | 'apikey' | 'upstream' | 'bedrock' | 'service_account'
 export type OAuthAddMethod = 'oauth' | 'setup-token'
 export type ProxyProtocol = 'http' | 'https' | 'socks5' | 'socks5h'
@@ -1468,6 +1468,12 @@ export interface AccountUsageInfo {
   grok_local_usage_7d?: WindowStats | null
   grok_local_usage_monthly?: WindowStats | null
   grok_billing?: GrokBillingSummary | null
+  // wb 企业积分（overview API credit 项：remaining/total/expires_at）
+  wb_enterprise_credits?: {
+    remaining?: number
+    total?: number
+    expires_at?: string
+  } | null
   subscription_tier?: string
   subscription_tier_raw?: string
   ai_credits?: Array<{

@@ -626,9 +626,17 @@
         color="purple"
       />
 
+      <!-- WB Enterprise credits (overview API credit item) -->
+      <div
+        v-if="wbCreditsDisplay"
+        class="text-[10px] text-gray-500 dark:text-gray-400"
+      >
+        💳 {{ t('admin.accounts.wbCredits.remaining') }}: {{ wbCreditsDisplay.remaining }} / {{ wbCreditsDisplay.total }}{{ wbCreditsExpiresLabel }}
+      </div>
+
       <!-- No data at all -->
       <div
-        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
+        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !wbCreditsDisplay && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
         class="text-xs text-gray-400"
       >-</div>
     </div>
@@ -744,6 +752,11 @@ const shouldFetchUsage = computed(() => {
   }
   if (props.account.platform === 'openai') {
     return props.account.type === 'oauth'
+  }
+  if (props.account.platform === 'wb') {
+    // wb 无 OAuth；积分数据源 = 单账号 usage 端点（无批管理器时自取）。
+    // 有 requestBatchedUsage 时由父侧批路径优先（isBatchManaged 分支短路）。
+    return true
   }
   return false
 })
@@ -1484,6 +1497,29 @@ const quotaTotalBar = computed((): QuotaBarInfo | null => {
   const limit = props.account.quota_limit ?? 0
   if (limit <= 0) return null
   return makeQuotaBar(props.account.quota_used ?? 0, limit)
+})
+
+// WB Enterprise 企业积分（usageInfo.wb_enterprise_credits：overview API credit 项）。
+// 字段缺失/畸形（remaining/total 非数字）→ null 不渲染，不造 0 兜底（设计 AC3）。
+const wbCreditsDisplay = computed<{ remaining: number; total: number; expiresAt: string | null } | null>(() => {
+  if (props.account.platform !== 'wb') return null
+  const credits = usageInfo.value?.wb_enterprise_credits
+  if (!credits) return null
+  const remaining = credits.remaining
+  const total = credits.total
+  if (typeof remaining !== 'number' || typeof total !== 'number') return null
+  return {
+    remaining,
+    total,
+    expiresAt: typeof credits.expires_at === 'string' && credits.expires_at ? credits.expires_at : null
+  }
+})
+
+// expires_at 缺失/空 → 省略括号段（i18n 键自带语言括号与空格）
+const wbCreditsExpiresLabel = computed(() => {
+  const expiresAt = wbCreditsDisplay.value?.expiresAt
+  if (!expiresAt) return ''
+  return t('admin.accounts.wbCredits.expiresAt', { date: expiresAt })
 })
 
 const handleQuotaResetAccountUpdated = (account: Account) => {

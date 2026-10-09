@@ -223,6 +223,9 @@ func (f *ChannelMonitorQuotaFetcher) fetchUncached(ctx context.Context, accountI
 		return f.fetchCNBalance(ctx, account, now)
 	case domain.PlatformOpenCodeGo:
 		return f.fetchCNQuota(ctx, account, now)
+	case domain.PlatformWB:
+		// wb 走用量服务值通道（积分额度旁路探测，失败仅 Warn）
+		return f.fetchUsage(ctx, account, now)
 	default:
 		return f.fetchUsage(ctx, account, now)
 	}

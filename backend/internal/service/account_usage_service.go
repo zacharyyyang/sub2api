@@ -120,8 +120,10 @@ type UsageCache struct {
 	apiCache          sync.Map           // accountID -> *apiUsageCache
 	windowStatsCache  sync.Map           // accountID -> *windowStatsCache
 	antigravityCache  sync.Map           // accountID -> *antigravityUsageCache
+	wbCache           sync.Map           // accountID -> *antigravityUsageCache（wb 积分快照）
 	apiFlight         singleflight.Group // 防止同一账号的并发请求击穿缓存（Anthropic）
 	antigravityFlight singleflight.Group // 防止同一 Antigravity 账号的并发请求击穿缓存
+	wbFlight          singleflight.Group // 防止同一 wb 账号的并发积分探测击穿缓存
 	openAIProbeCache  sync.Map           // accountID -> time.Time
 	grokProbeCache    sync.Map           // accountID -> last billing probe attempt
 }
@@ -227,6 +229,9 @@ type UsageInfo struct {
 
 	// Antigravity 官方配额组额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode）
 	GoogleQuotaGroups []GoogleQuotaGroup `json:"google_quota_groups,omitempty"`
+
+	// WB 企业积分额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode；无数据显示 = 字段 nil）
+	WbEnterpriseCredits *WbEnterpriseCredits `json:"wb_enterprise_credits,omitempty"`
 
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
@@ -399,6 +404,14 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 			s.tryClearRecoverableAccountError(ctx, account)
 		}
 		return usage, err
+	}
+
+	// WB 平台：使用 WbQuotaFetcher 获取积分额度（值通道旁路）。
+	// 不做认证错误恢复：积分探测是 pt_key 管理面鉴权，不证明 client_credentials
+	// 推理凭证已恢复；恢复证据应由相关认证/推理成功路径提供——避免积分失败
+	// （fetcher 失败返回 empty,nil）误清账号认证错误、误置 active。
+	if account.Platform == PlatformWB {
+		return s.getWBUsage(ctx, account)
 	}
 
 	if account.Platform == PlatformGrok {
@@ -1113,6 +1126,60 @@ func (s *AccountUsageService) getAntigravityUsage(ctx context.Context, account *
 	if !ok || usage == nil {
 		now := time.Now()
 		return &UsageInfo{UpdatedAt: &now}, nil
+	}
+	return usage, nil
+}
+
+// getWBUsage 获取 wb 企业账号积分额度（值通道旁路，结构照 getAntigravityUsage）：
+// 缓存 3 分钟 + singleflight 防击穿；探测失败仅在 FetchQuota 内 Warn，
+// 返回含 UpdatedAt 的空 UsageInfo，不写 Error/ErrorCode（与 GoogleQuotaGroups 旁路同语义）。
+// fetcher 零依赖（管理面直连，http.DefaultClient 尊重环境代理），懒构造即可。
+func (s *AccountUsageService) getWBUsage(ctx context.Context, account *Account) (*UsageInfo, error) {
+	now := time.Now()
+	empty := &UsageInfo{UpdatedAt: &now}
+	if account == nil {
+		return empty, nil
+	}
+
+	// 1. 缓存（3 分钟）
+	if cached, ok := s.cache.wbCache.Load(account.ID); ok {
+		if cache, ok := cached.(*antigravityUsageCache); ok && time.Since(cache.timestamp) < apiCacheTTL {
+			return cache.usageInfo, nil
+		}
+	}
+
+	// 2. singleflight 防止并发击穿
+	flightKey := fmt.Sprintf("wb-usage:%d", account.ID)
+	result, flightErr, _ := s.cache.wbFlight.Do(flightKey, func() (any, error) {
+		// 再次检查缓存（等待期间可能已被填充）
+		if cached, ok := s.cache.wbCache.Load(account.ID); ok {
+			if cache, ok := cached.(*antigravityUsageCache); ok && time.Since(cache.timestamp) < apiCacheTTL {
+				return cache.usageInfo, nil
+			}
+		}
+
+		// 独立超时上下文：探测不随调用方 cancel 传染
+		fetchCtx, fetchCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer fetchCancel()
+
+		fetcher := NewWbQuotaFetcher(nil, "")
+		fetchResult, err := fetcher.FetchQuota(fetchCtx, account, "")
+		if err != nil {
+			return empty, nil
+		}
+		s.cache.wbCache.Store(account.ID, &antigravityUsageCache{
+			usageInfo: fetchResult.UsageInfo,
+			timestamp: time.Now(),
+		})
+		return fetchResult.UsageInfo, nil
+	})
+
+	if flightErr != nil {
+		return nil, flightErr
+	}
+	usage, ok := result.(*UsageInfo)
+	if !ok || usage == nil {
+		return empty, nil
 	}
 	return usage, nil
 }

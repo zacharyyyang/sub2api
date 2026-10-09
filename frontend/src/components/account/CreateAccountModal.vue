@@ -160,6 +160,20 @@
             <PlatformIcon platform="grok" size="sm" />
             Grok
           </button>
+          <button
+            type="button"
+            @click="selectWBPlatform()"
+            data-testid="platform-tab-wb"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'wb'
+                ? 'bg-white text-blue-600 shadow-sm dark:bg-dark-600 dark:text-blue-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="wb" size="sm" />
+            WB Enterprise
+          </button>
         </div>
         <!-- Multi-protocol API-key providers: Kimi / Zhipu GLM / DeepSeek / OpenCode -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
@@ -1370,8 +1384,44 @@
         </div>
       </div>
 
-      <!-- API Key input (only for apikey type, excluding Antigravity which has its own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity'" class="space-y-4">
+      <!-- WB Enterprise credentials（client_id / client_secret / pt_key / enterprise_id 必填 + cli_path 可选） -->
+      <div v-if="form.type === 'apikey' && form.platform === 'wb'" class="space-y-4">
+        <WbCredentialFields ref="wbCredentialFieldsRef" v-model="wbCredentials" />
+
+        <!-- 上游倍率自动探测：wb 也是 API-key 账号，复用通用开关 -->
+        <div class="flex items-center justify-between gap-4 border-t border-gray-200 pt-4 dark:border-dark-600">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.upstreamBilling.autoProbe') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.upstreamBilling.autoProbeHint') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="upstreamBillingAutoProbeEnabled"
+            data-testid="upstream-billing-auto-probe-wb"
+            :aria-label="t('admin.accounts.upstreamBilling.autoProbe')"
+          />
+        </div>
+
+        <!-- WB Enterprise 模型限制（仅白名单模式） -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <ModelWhitelistSelector
+            v-model="allowedModels"
+            :model-mappings="modelMappings"
+            :platform="form.platform"
+            :sync-credentials="syncPreviewCredentials"
+            @upstream-synced="upstreamModelsPreviewed = true"
+          />
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+          </p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">WB Enterprise 仅支持白名单模式。</p>
+        </div>
+      </div>
+
+      <!-- API Key input (only for apikey type, excluding Antigravity / WB which have their own fields) -->
+      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'wb'" class="space-y-4">
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -3955,6 +4005,7 @@ import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
+import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
   applyAntigravityProjectID,
@@ -4173,6 +4224,10 @@ const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
 const upstreamBillingAutoProbeEnabled = ref(true)
 
+// WB Enterprise 平台凭证（四件套必填 + cli_path 可选）
+const wbCredentials = ref<Record<string, string>>({})
+const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
+
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
 const accountMode = ref<CnAccountMode>('payg')
 const openCodeAccountMode = ref<OpenCodeAccountMode>('zen')
@@ -4297,6 +4352,15 @@ function selectTypeSafePlatform() {
   accountCategory.value = 'apikey'
   apiKeyBaseUrl.value = 'https://api.typesafe.ai'
   allowedModels.value = ['jev-latest']
+}
+
+// 切换 WB Enterprise 平台：apikey 型，仅白名单模型限制。
+function selectWBPlatform() {
+  form.platform = 'wb'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  modelRestrictionMode.value = 'whitelist'
+  allowedModels.value = [...getModelsByPlatform('wb')]
 }
 // 账号类型 / 协议变更时同步默认 base url。
 watch(openCodeAccountMode, (mode, previousMode) => {
@@ -4762,6 +4826,10 @@ const form = reactive({
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
   if (form.platform === 'antigravity' && antigravityAccountType.value === 'upstream') {
+    return false
+  }
+  // WB Enterprise 只有 apikey 型，不需要 OAuth 流程
+  if (form.platform === 'wb') {
     return false
   }
   // Bedrock 类型不需要 OAuth 流程
@@ -5352,6 +5420,7 @@ const resetForm = () => {
   apiKeyValue.value = ''
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
+  wbCredentials.value = {}
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -5790,6 +5859,30 @@ const handleSubmit = async () => {
       tier_id: 'vertex'
     }
     await createAccountAndFinish(form.platform, 'service_account' as AccountType, credentials)
+    return
+  }
+
+  // WB Enterprise 平台：apikey 型，四件套凭证直接创建
+  if (form.platform === 'wb') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!wbCredentialFieldsRef.value?.isValid()) {
+      appStore.showError('请填写全部必填凭证：Client ID / Client Secret / PT Key / Enterprise ID')
+      return
+    }
+    const credentials: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(wbCredentials.value)) {
+      if (value && value.trim()) {
+        credentials[key] = value
+      }
+    }
+    const wbModelMapping = buildModelMappingObject('whitelist', allowedModels.value, modelMappings.value)
+    if (wbModelMapping) {
+      credentials.model_mapping = wbModelMapping
+    }
+    await createAccountAndFinish('wb', 'apikey', credentials)
     return
   }
 

@@ -1698,4 +1698,112 @@ describe('AccountUsageCell', () => {
     expect(wrapper.text()).not.toContain('7d S')
     expect(wrapper.text()).not.toContain('7d F')
   })
+  // 数据源：父侧传入 batchedUsage 时优先（批路径）；未提供批管理器时 wb 自拉
+  // getUsage（shouldFetchUsage 对 wb 恒 true——单账号 usage 端点已含 wb_enterprise_credits）。
+  it('wb 账号无批管理器时自拉 getUsage 并渲染积分行', async () => {
+    getUsage.mockResolvedValue({
+      wb_enterprise_credits: { remaining: 19472, total: 20000, expires_at: '2027-03-24' }
+    })
+    const account = makeAccount({ id: 5003, platform: 'wb', type: 'apikey' })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledWith(5003)
+    expect(wrapper.text()).toContain('admin.accounts.wbCredits.remaining')
+    expect(wrapper.text()).toContain('19472 / 20000')
+  })
+
+  it('wb 账号企业积分齐全时渲染剩余积分行（expires_at 缺失则省略到期段）', async () => {
+    const account = makeAccount({ id: 5001, platform: 'wb', type: 'apikey' })
+
+    // ①a：remaining/total/expires_at 齐 → 「剩余积分 … / …（… 到期）」
+    const withExpiry = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          wb_enterprise_credits: { remaining: 19537, total: 20000, expires_at: '2027-03-24' }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(withExpiry.text()).toContain('admin.accounts.wbCredits.remaining')
+    expect(withExpiry.text()).toContain('19537 / 20000')
+    expect(withExpiry.text()).toContain('admin.accounts.wbCredits.expiresAt')
+
+    // ①b：expires_at 缺失 → 省略括号段（i18n 键自带括号/空格）
+    const withoutExpiry = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          wb_enterprise_credits: { remaining: 19537, total: 20000 }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(withoutExpiry.text()).toContain('admin.accounts.wbCredits.remaining')
+    expect(withoutExpiry.text()).toContain('19537 / 20000')
+    expect(withoutExpiry.text()).not.toContain('admin.accounts.wbCredits.expiresAt')
+  })
+
+  it('wb 积分行渲染时不再叠加 `-` 占位符', async () => {
+    const account = makeAccount({ id: 5001, platform: 'wb', type: 'apikey' })
+    const wrapper = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          wb_enterprise_credits: { remaining: 19537, total: 20000 }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('19537 / 20000')
+    expect(wrapper.text()).not.toContain('-')
+  })
+
+  it('wb 企业积分缺失或畸形时不渲染积分行、不显示 0 兜底', async () => {
+    const account = makeAccount({ id: 5002, platform: 'wb', type: 'apikey' })
+
+    // ②a：wb_enterprise_credits 为 nil → 无数据显示，不渲染积分行
+    const nilUsage = mount(AccountUsageCell, {
+      props: { account, batchedUsage: null, requestBatchedUsage: vi.fn() },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(nilUsage.text()).not.toContain('admin.accounts.wbCredits.remaining')
+
+    // ②b：字段畸形（非 number）→ 解析失败，无积分行、无 0 兜底（设计 §6 错误表 / §8 UI 决策）
+    const malformed = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          wb_enterprise_credits: { remaining: 'bad' as unknown as number, total: 'bad' as unknown as number }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(malformed.text()).not.toContain('admin.accounts.wbCredits.remaining')
+    expect(malformed.text()).not.toMatch(/0/)
+  })
 })
