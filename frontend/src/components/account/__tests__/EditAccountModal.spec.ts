@@ -55,6 +55,7 @@ vi.mock('vue-i18n', async () => {
 })
 
 import EditAccountModal from '../EditAccountModal.vue'
+import WbCredentialFields from '../WbCredentialFields.vue'
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -277,6 +278,26 @@ function buildGrokAPIKeyAccount() {
     credentials: {},
     credentials_status: { has_api_key: true },
     concurrency: 2
+  } as any
+}
+function buildWbAccount() {
+  return {
+    ...buildAccount(),
+    id: 15,
+    name: 'WorkBuddy Enterprise',
+    platform: 'wb',
+    type: 'apikey',
+    credentials: {
+      client_id: 'wb-cid-123',
+      enterprise_id: 'wb-eid-456',
+      model_mapping: {
+        'claude-3-7-sonnet': 'claude-3-7-sonnet'
+      }
+    },
+    credentials_status: {
+      has_client_secret: true,
+      has_pt_key: true
+    }
   } as any
 }
 
@@ -1631,6 +1652,61 @@ describe('EditAccountModal', () => {
 
     expect(updateAccountMock).not.toHaveBeenCalled()
   })
+  it('allows saving wb account when backend redacted client_secret and pt_key but credentials_status reports they exist', async () => {
+    const account = buildWbAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const updatePayload = updateAccountMock.mock.calls[0]?.[1]
+    expect(updatePayload?.credentials?.client_id).toBe('wb-cid-123')
+    expect(updatePayload?.credentials?.enterprise_id).toBe('wb-eid-456')
+    // 用户未输入新密钥时，payload 不应带 client_secret / pt_key，由后端合并保留旧值
+    expect(updatePayload?.credentials).not.toHaveProperty('client_secret')
+    expect(updatePayload?.credentials).not.toHaveProperty('pt_key')
+  })
+
+  it('allows saving wb account when user provides new client_secret and pt_key', async () => {
+    const account = buildWbAccount()
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+    updateAccountMock.mockResolvedValue(account)
+
+    const wrapper = mountModal(account)
+
+    const wbInputs = wrapper.findComponent(WbCredentialFields).findAll('input')
+    // inputs inside WbCredentialFields: [0] client_id, [1] client_secret, [2] pt_key, [3] enterprise_id, [4] cli_path
+    await wbInputs[1].setValue('new-client-secret')
+    await wbInputs[2].setValue('new-pt-key')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    const updatePayload = updateAccountMock.mock.calls[0]?.[1]
+    expect(updatePayload?.credentials?.client_secret).toBe('new-client-secret')
+    expect(updatePayload?.credentials?.pt_key).toBe('new-pt-key')
+  })
+
+  it('blocks wb account save when neither credentials_status nor form provides client_secret / pt_key', async () => {
+    const account = buildWbAccount()
+    account.credentials_status = { has_client_secret: false, has_pt_key: false }
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset()
+    checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
+
+    const wrapper = mountModal(account)
+
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).not.toHaveBeenCalled()
+  })
+
 
   it('loads and submits Antigravity configured project fallback', async () => {
     const account = buildAntigravityAccount('configured-project')

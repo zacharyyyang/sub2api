@@ -34,6 +34,8 @@
             :key="account.id"
             ref="wbCredentialFieldsRef"
             v-model="wbCredentials"
+            :credentials-status="account.credentials_status"
+            :is-edit="true"
           />
         </div>
         <div v-if="account.platform !== 'wb' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
