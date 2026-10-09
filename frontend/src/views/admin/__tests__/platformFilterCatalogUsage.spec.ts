@@ -26,7 +26,7 @@ describe('admin platform filters', () => {
       'src/views/admin/ops/components/OpsDashboardHeader.vue'
     ]) {
       const source = readSource(path)
-      expect(source).toContain("import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'")
+      expect(source).toMatch(/import \{.*CONCRETE_PLATFORM_OPTIONS.*\} from '@\/constants\/platforms'/)
       expect(source).toMatch(/platformOptions\s*=.*CONCRETE_PLATFORM_OPTIONS|pOpts.*\.\.\.CONCRETE_PLATFORM_OPTIONS/s)
     }
   })

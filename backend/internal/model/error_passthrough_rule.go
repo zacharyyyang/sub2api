@@ -50,22 +50,15 @@ const (
 	PlatformWB          = domain.PlatformWB
 )
 
-// AllPlatforms 返回所有支持的平台列表
+// AllPlatforms 返回所有支持的平台列表（平台清单，按展示顺序）。
 func AllPlatforms() []string {
-	return []string{
-		PlatformAnthropic,
-		PlatformOpenAI,
-		PlatformGemini,
-		PlatformAntigravity,
-		PlatformGrok,
-		PlatformKimi,
-		PlatformZhipu,
-		PlatformDeepseek,
-		PlatformMiniMax,
-		PlatformOpenCodeGo,
-		PlatformTypeSafe,
-		PlatformWB,
+	platforms := domain.ConcretePlatformIDs()
+	for _, p := range platforms {
+		if p == PlatformWB {
+			return platforms
+		}
 	}
+	return append(platforms, PlatformWB)
 }
 
 // Validate 验证规则配置的有效性
