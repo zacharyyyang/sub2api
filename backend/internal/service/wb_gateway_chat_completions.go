@@ -169,13 +169,17 @@ func wbConsumeCLI(ctx context.Context, c *gin.Context, process *wbCLIProcess, re
 		_, _ = c.Writer.WriteString(frame)
 		c.Writer.Flush()
 	}
-	fail := func(status int, code, message string) (*OpenAIForwardResult, error) {
-		for _, secret := range append(secrets, token) {
-			message = maskSecret(message, secret)
-			code = maskSecret(code, secret)
+		fail := func(status int, code, message string, partialResult ...*OpenAIForwardResult) (*OpenAIForwardResult, error) {
+			for _, secret := range append(secrets, token) {
+				message = maskSecret(message, secret)
+				code = maskSecret(code, secret)
+			}
+			var res *OpenAIForwardResult
+			if len(partialResult) > 0 {
+				res = partialResult[0]
+			}
+			return res, wbWriteError(c, status, code, message, emitted)
 		}
-		return nil, wbWriteError(c, status, code, message, emitted)
-	}
 	scanner := bufio.NewScanner(process.stdout)
 	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
 	var completion *wbLineFrame
@@ -220,9 +224,14 @@ scan:
 		}
 		return fail(502, wbErrStreamNoCompletion, "wb CLI exited without result/success")
 	}
-	if !accumulator.CheckFulltext(completion.text) {
-		return fail(502, wbErrFulltextMismatch, "wb streamed text differs from completion result")
-	}
+		if !accumulator.CheckFulltext(completion.text) {
+			u := completion.usage
+			partial := &OpenAIForwardResult{
+				Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,
+				Usage: OpenAIUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheCreationInputTokens: u.CacheCreation, CacheReadInputTokens: u.CacheRead},
+			}
+			return fail(502, wbErrFulltextMismatch, "wb streamed text differs from completion result", partial)
+		}
 	if req.Stream {
 		emit(buildWbTerminalFrame(completion.usage))
 		emit(wbDoneFrame)

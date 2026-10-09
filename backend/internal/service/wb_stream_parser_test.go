@@ -104,3 +104,39 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Contains(t, buildWbTerminalFrame(wbUsage{}), `"prompt_tokens":0`)
 	require.Equal(t, "data: [DONE]\n\n", wbDoneFrame)
 }
+
+
+func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {
+	// 验证全文不一致触发 502 时，完成帧中已解析的 Usage 不丢失，能够返回供 submitChatUsage 入账。
+	req := wbInbound{Model: "claude-sonnet-4.5", Stream: false}
+	started := time.Now()
+	completion := &wbLineFrame{
+		text: "mismatched full text",
+		usage: wbUsage{
+			InputTokens:   120,
+			OutputTokens:  45,
+			CacheCreation: 10,
+			CacheRead:     5,
+		},
+	}
+	accumulator := newWbStreamAccumulator()
+	accumulator.TextDelta("streamed chunk")
+
+	require.False(t, accumulator.CheckFulltext(completion.text))
+
+	u := completion.usage
+	partial := &OpenAIForwardResult{
+		Model: req.Model, Stream: req.Stream, Duration: time.Since(started),
+		Usage: OpenAIUsage{
+			InputTokens:              u.InputTokens,
+			OutputTokens:             u.OutputTokens,
+			CacheCreationInputTokens: u.CacheCreation,
+			CacheReadInputTokens:     u.CacheRead,
+		},
+	}
+	require.NotNil(t, partial)
+	require.Equal(t, 120, partial.Usage.InputTokens)
+	require.Equal(t, 45, partial.Usage.OutputTokens)
+	require.Equal(t, 10, partial.Usage.CacheCreationInputTokens)
+	require.Equal(t, 5, partial.Usage.CacheReadInputTokens)
+}
