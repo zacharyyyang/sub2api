@@ -414,6 +414,11 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 	if input.Platform == PlatformTypeSafe && input.Type != AccountTypeAPIKey {
 		return nil, errors.New("typesafe accounts only support apikey credentials")
 	}
+	if input.Platform == PlatformWB {
+		if err := ValidateWBRequiredCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -658,6 +663,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err := NormalizeOpenCodeGoProtocolRulesCredentials(account.Credentials); err != nil {
 			return nil, err
 		}
+		// wb 账号四件套必填：编辑合并后校验最终存储形状（含保留的敏感键）
+		if account.Platform == PlatformWB {
+			if err := ValidateWBRequiredCredentials(account.Credentials); err != nil {
+				return nil, err
+			}
+		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
 	}
@@ -900,6 +911,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		}
 	}
 
+	if account.Platform == PlatformWB {
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateWBToken(int64) }); ok {
+			invalidator.InvalidateWBToken(account.ID)
+		}
+	}
+
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
 	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
 	if input.ProxyID != nil && !account.IsCredentialShadow() {
@@ -1039,6 +1056,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				return nil, infraerrors.Newf(http.StatusBadRequest, "SPARK_SHADOW_NO_CREDENTIALS",
 					"spark shadow account %d cannot hold credentials; manage credentials on the parent account", acc.ID)
 			}
+			// wb 账号必填四件套：仓库 BulkUpdate 是 JSONB 键合并语义
+			// （COALESCE(credentials, '{}'::jsonb) || $payload，见 account_repo.go），
+			// 最终存储形状 = existing ∪ incoming（incoming 覆盖同键）。校验按合并后形状进行——
+			// 与单账号更新路径的「合并后校验」对齐不变量，同时不误拒只带部分键的合法局部更新；
+			// 缺键/空白在写入前整体拒绝。
+			if acc != nil && acc.Platform == PlatformWB {
+				if err := ValidateWBRequiredCredentials(mergeWBCredentials(acc.Credentials, input.Credentials)); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -1171,6 +1198,16 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 		return nil, err
 	}
 
+	if len(input.Credentials) > 0 {
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateWBToken(int64) }); ok {
+			for _, account := range cachedTargets {
+				if account != nil && account.Platform == PlatformWB {
+					invalidator.InvalidateWBToken(account.ID)
+				}
+			}
+		}
+	}
+
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
 	if repoUpdates.ProxyID != nil {
 		var effectiveProxyID *int64
@@ -1295,6 +1332,9 @@ func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
 	}
 	if err := s.accountRepo.Delete(ctx, id); err != nil {
 		return err
+	}
+	if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateWBToken(int64) }); ok {
+		invalidator.InvalidateWBToken(id)
 	}
 	return nil
 }

@@ -1867,6 +1867,12 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
+	// wb 企业平台定点放行：IsOpenAICompatible()(wb) 恒 false（wb 401 错误语义独立），
+	// 能力闸仅放行 chat_completions（wb 网关腿 = OpenAI 兼容 chat 接口）；空 capability
+	// 的无能力约束入口已在上方提前放行，属既有行为延续。
+	if a.Platform == PlatformWB {
+		return capability == OpenAIEndpointCapabilityChatCompletions
+	}
 	if !a.IsOpenAICompatible() {
 		return false
 	}

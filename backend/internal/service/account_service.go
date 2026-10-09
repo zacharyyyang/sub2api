@@ -525,6 +525,21 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo:
 		// 国产 OpenAI 兼容供应商与 OpenCode：凭证为 API Key，实际可用性经余额/额度探测与转发路径验证。
 		return nil
+	case PlatformWB:
+		// wb 企业账号：必填四件套校验 + 换发冒烟（client_credentials 打真实 token 端点）。
+		// CLI 路径发现（cli_path）属派遣②（wb_cli_runner），此处不覆盖。
+		if err := ValidateWBRequiredCredentials(account.Credentials); err != nil {
+			return err
+		}
+		smokeCtx, cancel := context.WithTimeout(ctx, wbTokenExchangeTimeout)
+		defer cancel()
+		if _, _, err := wbExchangeClientCredentials(
+			smokeCtx, nil, DefaultWbTokenURL,
+			account.GetCredential(wbCredentialClientID), account.GetCredential(wbCredentialClientSecret),
+		); err != nil {
+			return fmt.Errorf("wb token exchange smoke test failed: %w", err)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported platform: %s", account.Platform)
 	}

@@ -33,6 +33,9 @@ const (
 	// 值保持 opencode_go 以兼容已落库的分组、配额与 Composite 路由 CHECK。
 	PlatformOpenCodeGo = "opencode_go"
 	PlatformComposite  = "composite"
+	// PlatformWB 是 wb 企业（腾讯 CodeBuddy CLI 租户）平台。
+	// 凭证 = client_id / client_secret / pt_key / enterprise_id（四件套必填）+ cli_path（CLI 发现链用）。
+	PlatformWB = "wb"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -170,6 +173,32 @@ var DefaultAntigravityModelMapping = map[string]string{
 	// 其他官方模型
 	"gpt-oss-120b-medium":    "gpt-oss-120b-medium",
 	"tab_flash_lite_preview": "tab_flash_lite_preview",
+}
+
+// WbModelWhitelist 是 wb 企业平台（CodeBuddy CLI）的模型白名单（21 id），
+// 录自批次档 §1 探针 `codebuddy-provider list` 清单，按原文一字不改钉死。
+var WbModelWhitelist = []string{
+	"default-model",
+	"fast-model",
+	"balanced-model",
+	"primary-model",
+	"deep-model",
+	"hy4-preview",
+	"hy3",
+	"deepseek-v4.1-flash",
+	"gpt-6-astra",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"gpt-5.5",
+	"gpt-5.4",
+	"gemini-3.5-flash",
+	"glm-5.3-flash",
+	"glm-5.3",
+	"glm-5.2",
+	"kimi-k3",
+	"kimi-k2.6",
+	"kimi-k2.8-preview",
 }
 
 // DefaultBedrockModelMapping 是 AWS Bedrock 平台的默认模型映射

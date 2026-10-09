@@ -12,6 +12,8 @@ var SensitiveCredentialKeys = []string{
 	// 云服务凭据
 	"aws_secret_access_key", "aws_session_token",
 	"service_account_json", "service_account", "private_key",
+	// wb 企业账号（client_credentials 流）：secret 与 pt_key 绝不出现在响应、编辑合并时保留
+	"client_secret", "pt_key",
 }
 
 var sensitiveCredentialKeySet = func() map[string]struct{} {

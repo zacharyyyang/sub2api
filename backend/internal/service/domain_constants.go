@@ -51,6 +51,7 @@ const (
 	PlatformTypeSafe   = domain.PlatformTypeSafe
 	PlatformOpenCodeGo = domain.PlatformOpenCodeGo
 	PlatformComposite  = domain.PlatformComposite
+	PlatformWB         = domain.PlatformWB
 	// PlatformKiro is retained for unsupported-platform threshold tests and legacy
 	// account rows. Scheduling-threshold evaluation never pauses kiro accounts.
 	PlatformKiro = "kiro"
