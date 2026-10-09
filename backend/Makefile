@@ -5,6 +5,7 @@ LDFLAGS ?= -s -w -X main.Version=$(VERSION)
 
 build:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/server ./cmd/server
+	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o bin/wb-mcp-bridge ./cmd/wb-mcp-bridge
 
 generate:
 	go generate ./ent
