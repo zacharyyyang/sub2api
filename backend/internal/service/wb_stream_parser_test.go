@@ -139,8 +139,8 @@ func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {
 	}
 
 	req := wbInbound{Model: "claude-sonnet-4.5", Stream: false}
-	res, err := wbConsumeCLI(context.Background(), c, process, req, "test-token", nil)
-
+	started := time.Now()
+	res, err := wbConsumeCLI(context.Background(), c, process, req, "test-token", started)
 	// 1. 验证错误语义：返回 502 全文不一致错误
 	require.Error(t, err)
 	require.Equal(t, http.StatusBadGateway, rec.Code)
