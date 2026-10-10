@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1185,11 +1186,24 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled() {
 		source := modelListingSource(platform, availableModels, nil)
-		writeAllowlistedModelsList(c, platform, apiKey.Group.ModelAllowlist.FilterForListing(source))
+		if platform == service.PlatformWB {
+			source = wbIntersectWhitelist(source)
+		}
+		filtered := apiKey.Group.ModelAllowlist.FilterForListing(source)
+		if platform == service.PlatformWB {
+			// FilterForListing 会把命中条目的配置原文写进输出（如 gpt-5.6-sol-thinking
+			// 经 -thinking 归一命中白名单键 gpt-5.6-sol 后仍输出原文），出口再与白名单
+			// 求交一次，钉死「WB 列表只含白名单内键」（KDR-8）。
+			filtered = wbIntersectWhitelist(filtered)
+		}
+		writeAllowlistedModelsList(c, platform, filtered)
 		return
 	}
 
 	if len(availableModels) > 0 {
+		if platform == service.PlatformWB {
+			availableModels = wbIntersectWhitelist(availableModels)
+		}
 		writeModelsList(c, platform, availableModels)
 		return
 	}
@@ -1210,6 +1224,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 	if platform == service.PlatformTypeSafe {
 		writeModelsList(c, platform, []string{typesafe.JevLatestModel})
+		return
+	}
+
+	if platform == service.PlatformWB {
+		writeModelsList(c, service.PlatformWB, slices.Clone(domain.WbModelWhitelist))
 		return
 	}
 
@@ -1280,6 +1299,24 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 
 	availableModels := h.gatewayService.GetAvailableModels(ctx, groupID, platform)
 	fallbackModels := defaultCodexModelIDsForPlatform(platform)
+	if platform == service.PlatformWB {
+		// WB 发现链路统一出口求交门（KDR-8）：候选集与 fallback 均先与白名单求交，
+		// fallback 求交恒等无害。回退判定以「求交前的源是否为空」为准（AC-26-01）：
+		// 显式 mapping 全为白名单外键（非空源被求交清空）时 [] 是终态，绝不回退
+		// 白名单默认；仅零账号/未映射（空源）才回退平台默认。
+		sourceHadModels := len(availableModels) > 0
+		availableModels = wbIntersectWhitelist(availableModels)
+		fallbackModels = wbIntersectWhitelist(fallbackModels)
+		if group.ModelAllowlistEnabled() {
+			// FilterForListing 输出可写入白名单外键（配置原文 -thinking 变体经归一
+			// 命中白名单键后仍写出原文），出口再求交一次钉死白名单边界（KDR-8）。
+			return wbIntersectWhitelist(group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil)))
+		}
+		if !sourceHadModels {
+			return fallbackModels
+		}
+		return availableModels
+	}
 	if group.ModelAllowlistEnabled() {
 		return group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil))
 	}
@@ -1477,6 +1514,22 @@ func modelListingSource(platform string, availableModels, fallbackModels []strin
 	return availableModels
 }
 
+// wbIntersectWhitelist 将候选模型 ID 与 WB 平台白名单求交（单一事实源
+// domain.WbModelWhitelist，constants.go）：白名单外键一律剔除，合法键保持原有
+// 相对顺序；求交为空返回空切片（配合 KDR-8：空交集即终态，不回退平台默认）。
+func wbIntersectWhitelist(models []string) []string {
+	if len(models) == 0 {
+		return []string{}
+	}
+	keep := make([]string, 0, len(models))
+	for _, m := range models {
+		if slices.Contains(domain.WbModelWhitelist, m) {
+			keep = append(keep, m)
+		}
+	}
+	return keep
+}
+
 func defaultCodexModelIDsForPlatform(platform string) []string {
 	switch platform {
 	case service.PlatformDeepseek:
@@ -1532,6 +1585,8 @@ func defaultModelIDsForPlatform(platform string) []string {
 			}
 		}
 		return ids
+	case service.PlatformWB:
+		return slices.Clone(domain.WbModelWhitelist)
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {

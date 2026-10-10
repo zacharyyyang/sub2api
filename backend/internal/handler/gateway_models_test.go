@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -1359,6 +1360,307 @@ func TestGatewayModels_AllowlistEmptySourceKeepsEmptyListing(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Empty(t, modelIDsForTest(got.Data))
+}
+
+// Scenario: WB groups with unmapped accounts (no credentials or credentials
+// without model_mapping) advertise exactly the WB whitelist on /v1/models —
+// never Claude defaults (AC-26-01) — and GetModelMapping resolves to the
+// id→id identity mapping over the whitelist (AC-26-04①).
+func TestGatewayModels_WBUnmappedAccountsListsWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7701
+	accounts := []service.Account{
+		{ID: 1, Platform: service.PlatformWB},
+		{ID: 2, Platform: service.PlatformWB, Credentials: map[string]any{}},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: accounts},
+	})
+
+	for range 2 {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+			Group: &service.Group{ID: groupID, Platform: service.PlatformWB},
+		})
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		require.Equal(t, "list", got.Object)
+		ids := modelIDsForTest(got.Data)
+		require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+		for _, id := range ids {
+			require.NotContains(t, id, "claude-")
+		}
+	}
+
+	mapping := accounts[0].GetModelMapping()
+	require.Len(t, mapping, len(domain.WbModelWhitelist))
+	for _, id := range domain.WbModelWhitelist {
+		require.Equal(t, id, mapping[id])
+	}
+}
+
+// Scenario: an explicit model_mapping on a WB account is intersected with the
+// whitelist — off-whitelist keys are dropped, and an all-invalid mapping yields
+// an empty list with 200 (AC-26-01 hard boundary).
+func TestGatewayModels_WBExplicitMappingIntersectWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name    string
+		mapping map[string]any
+		want    []string
+	}{
+		{"mixed mapping keeps whitelist keys only", map[string]any{
+			"gpt-5.5":           "gpt-5.5",
+			"claude-sonnet-4-5": "claude-sonnet-4-5",
+		}, []string{"gpt-5.5"}},
+		{"all-invalid mapping returns empty list", map[string]any{
+			"claude-sonnet-4-5": "claude-sonnet-4-5",
+		}, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const groupID int64 = 7702
+			h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+				byGroup: map[int64][]service.Account{
+					groupID: {{
+						ID:          1,
+						Platform:    service.PlatformWB,
+						Credentials: map[string]any{"model_mapping": tt.mapping},
+					}},
+				},
+			})
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+				Group: &service.Group{ID: groupID, Platform: service.PlatformWB},
+			})
+			h.Models(c)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var got gatewayModelsResponseForTest
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			require.Equal(t, tt.want, modelIDsForTest(got.Data))
+		})
+	}
+}
+
+// Scenario: a WB group with no accounts falls back to the whitelist — never to
+// Claude defaults (KDR-8 fallback leg).
+func TestGatewayModels_WBNoAccountsFallsBackToWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7703
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{},
+	})
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformWB},
+	})
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	for _, id := range ids {
+		require.NotContains(t, id, "claude-")
+	}
+}
+
+// Scenario: default model IDs for WB come from the whitelist, and the Codex
+// default delegates to the same source (AC-26-02).
+func TestDefaultModelIDsForPlatform_WBUsesWhitelist(t *testing.T) {
+	wbIDs := defaultModelIDsForPlatform(service.PlatformWB)
+	require.Equal(t, domain.WbModelWhitelist, wbIDs)
+	require.Equal(t, wbIDs, defaultCodexModelIDsForPlatform(service.PlatformWB))
+}
+
+// Scenario: a WB group with a model allowlist filters the whitelist source
+// down to the allowed models.
+func TestGatewayModels_WBAllowlistFiltersWithinWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7704
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{
+			groupID: {{ID: 1, Platform: service.PlatformWB}},
+		},
+	})
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{
+			ID:       groupID,
+			Platform: service.PlatformWB,
+			ModelAllowlist: service.GroupModelAllowlist{
+				Enabled: true,
+				Models:  []string{"gpt-5.5"},
+			},
+		},
+	})
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"gpt-5.5"}, modelIDsForTest(got.Data))
+}
+
+// Scenario: a WB group with a model allowlist that intersects nothing returns
+// an empty list — both for a mapped account whose keys are all filtered out and
+// for a group with no accounts at all.
+func TestGatewayModels_WBAllowlistEmptyIntersectionReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name     string
+		accounts []service.Account
+	}{
+		{"mapped keys filtered out", []service.Account{{
+			ID:          1,
+			Platform:    service.PlatformWB,
+			Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.5": "gpt-5.5"}},
+		}}},
+		{"no accounts", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			groupID := int64(7705)
+			h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+				byGroup: map[int64][]service.Account{groupID: tt.accounts},
+			})
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+				Group: &service.Group{
+					ID:       groupID,
+					Platform: service.PlatformWB,
+					ModelAllowlist: service.GroupModelAllowlist{
+						Enabled: true,
+						Models:  []string{"claude-sonnet-4-5"},
+					},
+				},
+			})
+			h.Models(c)
+			require.Equal(t, http.StatusOK, rec.Code)
+			var got gatewayModelsResponseForTest
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			require.Empty(t, modelIDsForTest(got.Data))
+		})
+	}
+}
+
+// Scenario: a WB account with non-nil credentials but no model_mapping resolves
+// to the whitelist identity mapping too (resolveModelMapping branch ②,
+// AC-26-04①).
+func TestGatewayModels_WBAccountCredentialsNoMapping(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7706
+	account := service.Account{
+		ID:          1,
+		Platform:    service.PlatformWB,
+		Credentials: map[string]any{},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformWB},
+	})
+	h.Models(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.ElementsMatch(t, domain.WbModelWhitelist, modelIDsForTest(got.Data))
+
+	mapping := account.GetModelMapping()
+	require.Len(t, mapping, len(domain.WbModelWhitelist))
+	for _, id := range domain.WbModelWhitelist {
+		require.Equal(t, id, mapping[id])
+	}
+}
+// Codex 发现链路（/models?client_version=）对 WB 分组同样执行白名单钉死：账号显式
+// mapping 全为白名单外键时，manifest 模型列表为空（非空源被求交清空 = 终态，
+// AC-26-01 硬边界，绝不回退白名单默认）。
+func TestGatewayCodexModels_WBAllOffWhitelistMappingReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7707
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5": "claude-sonnet-4-5",
+				"gpt-5.6-sol-x":     "gpt-5.6-sol-x",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/models?client_version=0.147.0", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{ID: groupID, Platform: service.PlatformWB},
+	})
+
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, codexModelSlugsForTest(got.Models))
+}
+
+// Codex 发现链路 allowlist 分支的出口求交（KDR-8 出口门）：allowlist 配置原文
+// gpt-5.6-sol-thinking 经 -thinking 归一命中白名单键 gpt-5.6-sol，FilterForListing
+// 写出配置原文；出口再与白名单求交将该变体剔除，不留泄露口子。
+func TestGatewayCodexModels_WBAllowlistThinkingVariantExcluded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7708
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.6-sol": "gpt-5.6-sol",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/models?client_version=0.147.0", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		Group: &service.Group{
+			ID:       groupID,
+			Platform: service.PlatformWB,
+			ModelAllowlist: service.GroupModelAllowlist{
+				Enabled: true,
+				Models:  []string{"gpt-5.6-sol-thinking"},
+			},
+		},
+	})
+
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, codexModelSlugsForTest(got.Models))
 }
 
 func modelIDsForTest(models []gatewayModelItemForTest) []string {

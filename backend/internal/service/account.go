@@ -636,6 +636,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
 		}
+		if a.Platform == domain.PlatformWB {
+			return wbDefaultModelMapping()
+		}
 		// Bedrock 默认映射由 forwardBedrock 统一处理（需配合 region prefix 调整）
 		return nil
 	}
@@ -649,6 +652,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		}
 		if a.Platform == domain.PlatformGrok {
 			return xai.DefaultModelMapping()
+		}
+		if a.Platform == domain.PlatformWB {
+			return wbDefaultModelMapping()
 		}
 		return nil
 	}
@@ -697,6 +703,17 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		return xai.DefaultModelMapping()
 	}
 	return nil
+}
+
+// wbDefaultModelMapping 从 domain.WbModelWhitelist 构建 WB 平台默认恒等映射
+// （id → id）：未配置 model_mapping 的 WB 账号在发现链路上贡献 21 个白名单键。
+// 单一事实源在 constants.go，本函数不新建任何模型 ID 列表。
+func wbDefaultModelMapping() map[string]string {
+	m := make(map[string]string, len(domain.WbModelWhitelist))
+	for _, id := range domain.WbModelWhitelist {
+		m[id] = id
+	}
+	return m
 }
 
 func mapPtr(m map[string]any) uintptr {
