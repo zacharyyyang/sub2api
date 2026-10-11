@@ -40,6 +40,14 @@ func TestMain(m *testing.M) {
 			}
 			os.Exit(0)
 		}
+		if tok == "__FAKE__:argv-sse" {
+			fmt.Printf("ARGS:%q\n", os.Args[1:])
+			fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"a"}}}`)
+			fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`)
+			fmt.Println(`{"type":"assistant","message":{"id":"a","content":[{"type":"text","text":"hello world"}]}}`)
+			fmt.Println(`{"type":"result","subtype":"success","result":"hello world","usage":{"input_tokens":10,"output_tokens":2}}`)
+			os.Exit(0)
+		}
 		wd, _ := os.Getwd()
 		fmt.Printf("ARGS:%q\nENV:%s\nCWD:%s\nPROMPT:%s\n", os.Args[1:], strings.Join(os.Environ(), "|"), wd, body)
 		os.Exit(0)

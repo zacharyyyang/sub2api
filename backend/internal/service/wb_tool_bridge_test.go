@@ -151,8 +151,9 @@ func TestWBInboundToolHistory(t *testing.T) {
 	}
 }
 
-// TestWBToolStrictModeUnchanged：回归 —— 内部工具声明仍走 wbStrictJSON
-// 严格模式，未知字段必须被拒绝（仅 HTTP 入站放宽，wbMapTools 不受影响）。
+// TestWBToolStrictModeUnchanged：回归 —— 注册工具声明仍走 wbStrictJSON
+// 严格模式，未知字段必须被拒绝（宽容仅作用于未注册工具声明，注册工具 =
+// 服务端代执行契约，fail-closed 不变）。
 func TestWBToolStrictModeUnchanged(t *testing.T) {
 	_, err := wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"echo","description":"Echo text","parameters":{"type":"object","properties":{}},"extra_field":1}}]`))
 	require.ErrorContains(t, err, "invalid tool declaration")
@@ -192,8 +193,9 @@ func TestWBTools(t *testing.T) {
 	require.Equal(t, "ECHO: hello", text)
 	_, err = ExecuteWBBridgeTool(declarations, "Glob", json.RawMessage(`{}`))
 	require.ErrorContains(t, err, wbErrBridgeToolUnmatched)
-	_, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
-	require.ErrorContains(t, err, "unknown")
+	tools, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
+	require.NoError(t, err)
+	require.Empty(t, tools)
 	cfg.Close()
 	_, err = os.Stat(cfg.Path)
 	require.True(t, os.IsNotExist(err))

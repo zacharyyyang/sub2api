@@ -75,27 +75,49 @@ func wbMapTools(raw json.RawMessage) ([]WBBridgeTool, error) {
 	}
 	var entries []json.RawMessage
 	if string(raw) == "null" || json.Unmarshal(raw, &entries) != nil {
-		return nil, fmt.Errorf("tools must be an array")
+		return nil, fmt.Errorf("tools must be an array") // 顶层形态校验：不变
 	}
 	var tools []WBBridgeTool
-	var unsupported []string
 	for _, entry := range entries {
+		// ── 阶段一 · 对象性检查 + 名称归属探针（宽容面：仅判定归属，不校验声明形状）──
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(entry, &obj); err != nil || obj == nil {
+			// 条目为 null 或非对象（数字/字符串/布尔/数组）→ 结构性畸形，归属不可判定 → 报错
+			return nil, fmt.Errorf("invalid tool declaration: tool entry must be an object")
+		}
+		name := wbProbeToolName(obj) // 仅提取 function.name（string）；其余字段一律不触碰
+		if name == "" {
+			continue // 名称缺失 / 为空 / 非字符串 → 无法归属 → 按未注册处置静默剔除
+		}
+		// ── 阶段二 · 注册工具严格契约解码（服务端代执行 = 契约面，fail-closed）──
+		if wbBridgeRegistry[name] == nil {
+			continue // 未注册工具：客户端自理，静默剔除，不注入服务端 MCP
+		}
 		var t wbOpenAITool
-		if err := wbStrictJSON(entry, &t); err != nil {
+		if err := wbStrictJSON(entry, &t); err != nil { // 注册工具 = 服务端契约：严格重解码
 			return nil, fmt.Errorf("invalid tool declaration: %w", err)
 		}
 		if t.Type != "function" {
 			return nil, fmt.Errorf("unsupported tool type %q", t.Type)
 		}
-		if wbBridgeRegistry[t.Function.Name] == nil {
-			unsupported = append(unsupported, t.Function.Name)
-		}
 		tools = append(tools, WBBridgeTool{t.Function.Name, t.Function.Description, t.Function.Parameters})
 	}
-	if len(unsupported) != 0 {
-		return nil, fmt.Errorf("%s: unsupported tools: %s", wbErrBridgeToolUnmatched, strings.Join(unsupported, ", "))
+	return tools, ValidateWBBridgeTools(tools) // 去重 / schema / 注册表防御，语义与现网一致
+}
+
+// wbProbeToolName：宽容名称探针——只取 function.name 字符串作为归属键。
+// function 缺失 / function 非对象 / name 缺失 / name 为空 / name 非字符串 → 一律返回 ""，
+// 由调用方按「未注册」处置（静默剔除）；探针不校验任何其他字段（未知字段照常忽略）。
+func wbProbeToolName(obj map[string]json.RawMessage) string {
+	fnRaw, ok := obj["function"]
+	if !ok {
+		return ""
 	}
-	return tools, ValidateWBBridgeTools(tools)
+	var fn struct{ Name string }
+	if err := json.Unmarshal(fnRaw, &fn); err != nil {
+		return "" // 无法提取 string name（function 非对象 / name 类型异常）→ 未注册处置
+	}
+	return fn.Name
 }
 
 type wbToolConfig struct {

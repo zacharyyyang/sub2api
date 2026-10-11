@@ -82,8 +82,8 @@ func wbStrictJSON(raw []byte, dst any) error {
 // wbDecodeInboundJSON 是 HTTP 入站专用解码器：不启用 DisallowUnknownFields，
 // 兼容标准 OpenAI SDK / 兼容客户端默认携带的常规参数（stream_options、
 // temperature、user 等）；同时保留严格 JSON 语法与尾部多余数据校验，拒绝
-// 畸形 JSON 与多段粘包。内部协议解析（wbMapTools 工具声明）仍走 wbStrictJSON
-// 严格模式，两者互不影响。
+// 畸形 JSON 与多段粘包。wbMapTools 的 wbStrictJSON 严格模式仅覆盖命中注册表
+// 的工具声明；未注册工具声明宽容解码后静默剔除，两者互不影响。
 func wbDecodeInboundJSON(raw []byte, dst any) error {
 	d := json.NewDecoder(bytes.NewReader(raw))
 	if err := d.Decode(dst); err != nil {
@@ -209,11 +209,7 @@ func (s *OpenAIGatewayService) forwardWBChatCompletions(ctx context.Context, c *
 	started := time.Now()
 	req, prompt, tools, err := wbParseInbound(body)
 	if err != nil {
-		code := wbErrUnsupportedInbound
-		if strings.Contains(err.Error(), wbErrBridgeToolUnmatched) {
-			code = wbErrBridgeToolUnmatched
-		}
-		return nil, wbWriteError(c, 400, code, err.Error(), false)
+		return nil, wbWriteError(c, 400, wbErrUnsupportedInbound, err.Error(), false)
 	}
 	ctx, cancel := context.WithTimeout(ctx, wbCLIDefaultTimeout)
 	defer cancel()
