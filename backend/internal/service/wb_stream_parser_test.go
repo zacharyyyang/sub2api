@@ -113,7 +113,6 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Equal(t, "data: [DONE]\n\n", wbDoneFrame)
 }
 
-
 func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

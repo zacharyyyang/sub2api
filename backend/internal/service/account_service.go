@@ -522,21 +522,21 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 	case PlatformTypeSafe:
 		// TypeSafe credentials are API keys; inference failures drive health and cooldown state.
 		return nil
-		case PlatformWB:
-			// wb 企业账号：必填四件套校验 + 换发冒烟（client_credentials 打真实 token 端点）。
-			// CLI 路径发现（cli_path）属派遣②（wb_cli_runner），此处不覆盖。
-			if err := ValidateWBRequiredCredentials(account.Credentials); err != nil {
-				return err
-			}
-			smokeCtx, cancel := context.WithTimeout(ctx, wbTokenExchangeTimeout)
-			defer cancel()
-			if _, _, err := wbExchangeClientCredentials(
-				smokeCtx, nil, DefaultWbTokenURL,
-				account.GetCredential(wbCredentialClientID), account.GetCredential(wbCredentialClientSecret),
-			); err != nil {
-				return fmt.Errorf("wb token exchange smoke test failed: %w", err)
-			}
-			return nil
+	case PlatformWB:
+		// wb 企业账号：必填四件套校验 + 换发冒烟（client_credentials 打真实 token 端点）。
+		// CLI 路径发现（cli_path）属派遣②（wb_cli_runner），此处不覆盖。
+		if err := ValidateWBRequiredCredentials(account.Credentials); err != nil {
+			return err
+		}
+		smokeCtx, cancel := context.WithTimeout(ctx, wbTokenExchangeTimeout)
+		defer cancel()
+		if _, _, err := wbExchangeClientCredentials(
+			smokeCtx, nil, DefaultWbTokenURL,
+			account.GetCredential(wbCredentialClientID), account.GetCredential(wbCredentialClientSecret),
+		); err != nil {
+			return fmt.Errorf("wb token exchange smoke test failed: %w", err)
+		}
+		return nil
 	default:
 		if IsMultiProtocolAPIKeyProvider(account.Platform) {
 			// 多协议 API Key 供应商（国产厂商与聚合平台）：凭证为 API Key，实际可用性
