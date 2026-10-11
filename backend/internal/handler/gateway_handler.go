@@ -1168,12 +1168,18 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	if platform == service.PlatformComposite {
 		allowlistEnabled := apiKey != nil && apiKey.Group != nil && apiKey.Group.ModelAllowlistEnabled()
-		availableModels := h.compositeAvailableModels(c.Request.Context(), groupID, "", true, allowlistEnabled)
+		availableModels, wbKeys := h.compositeAvailableModels(c.Request.Context(), groupID, "", true, allowlistEnabled, apiKey.Group.ModelAllowlist)
 		if allowlistEnabled {
 			// 白名单启用时候选源 = 收敛键（可空），严禁「空→默认」反兜底。
-			writeAllowlistedModelsList(c, service.PlatformComposite, apiKey.Group.ModelAllowlist.FilterForListing(availableModels))
+			// WB 贡献键已在 WB 腿内与白名单求交钉死（白名单原文，KDR-8）；消费端
+			// FilterForListing 会把命中条目的配置原文（-thinking/大小写变体，∉21
+			// 白名单）膨胀进输出，与专用分支出口再求交同构（:1197）：WB 键不再过
+			// 消费端过滤，以已钉死原文直通并入——变体条目原文永不进列表。
+			filtered := apiKey.Group.ModelAllowlist.FilterForListing(availableModels)
+			writeAllowlistedModelsList(c, service.PlatformComposite, append(filtered, wbKeys...))
 			return
 		}
+		availableModels = append(availableModels, wbKeys...)
 		if len(availableModels) > 0 {
 			writeModelsList(c, service.PlatformComposite, availableModels)
 			return
@@ -1251,6 +1257,11 @@ func (h *GatewayHandler) CodexModels(c *gin.Context) {
 	}
 	modelIDs := h.codexModelIDsForGroup(c.Request.Context(), apiKey.Group, forcedPlatform)
 	modelIDs = service.FilterCodexModelIDsForGroup(modelIDs, apiKey.Group)
+	// FilterCodexModelIDsForGroup 的 allowlist 收窄按归一化命中（EqualFold /
+	// -thinking，group_model_allowlist.go:208-226）会重新写出 WB 白名单键的变体
+	// 条目原文（KDR-8 第三处再注入），出口再钉死一次：命中 WB 白名单键的条目
+	// 一律还原为白名单键原文，非 WB 键原样保留。
+	modelIDs = pinWBWhitelistOriginalKeys(modelIDs)
 	body, err := h.gatewayService.BuildCodexModelsManifestForGroup(
 		c.Request.Context(),
 		apiKey.Group,
@@ -1275,7 +1286,6 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 	if h == nil || h.gatewayService == nil || group == nil {
 		return nil
 	}
-
 	groupID := &group.ID
 	platform := strings.TrimSpace(platformOverride)
 	if platform == "" {
@@ -1283,13 +1293,16 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 	}
 	if platform == service.PlatformComposite {
 		allowlistEnabled := group.ModelAllowlistEnabled()
-		availableModels := h.compositeAvailableModels(ctx, groupID, service.CompositeRouteEndpointResponses, false, allowlistEnabled)
-		models := availableModels
+		availableModels, wbKeys := h.compositeAvailableModels(ctx, groupID, service.CompositeRouteEndpointResponses, false, allowlistEnabled, group.ModelAllowlist)
+		models := append(availableModels, wbKeys...)
 		if len(models) == 0 && !allowlistEnabled {
 			models = defaultCodexModelIDsForPlatform(service.PlatformComposite)
 		}
 		if allowlistEnabled {
-			models = group.ModelAllowlist.FilterForListing(models)
+			// 同 Models 消费端（:1172-1181）：WB 贡献键已在腿内钉死（白名单原文），
+			// 直通并入；FilterForListing 只作用于非 WB 候选，避免 -thinking/大小写
+			// 变体条目原文重新膨胀进输出（KDR-8）。
+			models = append(group.ModelAllowlist.FilterForListing(availableModels), wbKeys...)
 		}
 		if filtered, err := h.gatewayService.FilterCompositeCodexModels(ctx, group.ID, models); err == nil {
 			return filtered
@@ -1331,9 +1344,9 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 // LLM client catalogs (Codex) must exclude them. allowlistEnabled gates the
 // group-level default injection: with the allowlist on, an empty sub-platform
 // keeps an empty candidate set (no platform defaults are ever merged in).
-func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool, allowlistEnabled bool) []string {
+func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *int64, endpoint string, includeSystemOne bool, allowlistEnabled bool, allowlist service.GroupModelAllowlist) ([]string, []string) {
 	if h == nil || h.gatewayService == nil {
-		return nil
+		return nil, nil
 	}
 	// Group fallback contract: per-platform defaults are injected only when the
 	// allowlist is disabled and every sub-platform has empty model mappings.
@@ -1374,6 +1387,36 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 			models = append(models, model)
 		}
 	}
+	// WB 收集腿：whitebox 企业平台只暴露白名单键，显式映射与白名单求交后才并入；
+	// 全为白名单外键（求交集空）且 allowlist 关闭时回退白名单默认，绝不带出 Claude 全量默认。
+	wbRaw := h.gatewayService.GetAvailableModels(ctx, groupID, service.PlatformWB)
+	wbValid := wbIntersectWhitelist(wbRaw)
+	if _, wbSchedulable := schedulablePlatforms[service.PlatformWB]; len(wbValid) == 0 && !allowlistEnabled && wbSchedulable {
+		wbValid = slices.Clone(domain.WbModelWhitelist)
+	}
+	// WB 腿在腿内即完成白名单边界钉死（KDR-8）：FilterForListing 会把命中条目
+	// 的配置原文写进输出（allowlistSourcePatternAllowsModel 的 EqualFold /
+	// -thinking 归一化，group_model_allowlist.go:208-226），条目原文可能是白名单键
+	// 的变体（大小写、-thinking），∉ 21 白名单——再与白名单求交一次，变体/大小写
+	// 条目原文被剔除、合法键条目原文保留（共存配置下合法键不失），wbKeys 只含
+	// 白名单键原文。消费端对 wbKeys 直通并入（不再过 FilterForListing，否则
+	// 变体条目原文重新膨胀进输出），同构于专用分支出口再求交（:1192-1197）；
+	// 混合组 precedence 键不经此处，不受影响。
+	if allowlistEnabled && allowlist.Enabled {
+		wbValid = wbIntersectWhitelist(allowlist.FilterForListing(wbValid))
+	}
+	wbKeys := make([]string, 0, len(wbValid))
+	for _, model := range wbValid {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		wbKeys = append(wbKeys, model)
+	}
 	// A route can expose a public ID that no account model mapping contains.
 	// On lookup failure, retain the existing account-derived catalog only.
 	if routeModels, err := h.gatewayService.GetCompositeRouteModels(ctx, groupID, endpoint, includeSystemOne); err == nil {
@@ -1384,7 +1427,7 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 			}
 		}
 	}
-	return models
+	return models, wbKeys
 }
 
 func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
@@ -1528,6 +1571,51 @@ func wbIntersectWhitelist(models []string) []string {
 		}
 	}
 	return keep
+}
+
+// pinWBWhitelistOriginalKeys 将 Codex 消费端出口处被 FilterCodexModelIDsForGroup
+// 再注入的 WB 白名单键变体条目还原为白名单键原文：条目或其 -thinking 变体经
+// 大小写不敏感归一化命中 domain.WbModelWhitelist 时输出白名单键原文（去重），
+// 其余条目（非 WB 键族）原样直通（KDR-8 第三处再注入防线，:1259-1262）。
+func pinWBWhitelistOriginalKeys(modelIDs []string) []string {
+	if len(modelIDs) == 0 {
+		return modelIDs
+	}
+	out := make([]string, 0, len(modelIDs))
+	seen := make(map[string]struct{}, len(modelIDs))
+	for _, id := range modelIDs {
+		key := wbWhitelistKeyForVariant(id)
+		if key == "" {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+			continue
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, key)
+	}
+	return out
+}
+
+// wbWhitelistKeyForVariant 返回与条目大小写不敏感等价（含 -thinking 前缀剥离）的
+// WB 白名单键原文；条目不属于白名单键族时返回空串。
+func wbWhitelistKeyForVariant(entry string) string {
+	trimmed := strings.TrimSpace(entry)
+	if trimmed == "" {
+		return ""
+	}
+	base := strings.TrimSuffix(trimmed, "-thinking")
+	for _, key := range domain.WbModelWhitelist {
+		if strings.EqualFold(base, key) {
+			return key
+		}
+	}
+	return ""
 }
 
 func defaultCodexModelIDsForPlatform(platform string) []string {

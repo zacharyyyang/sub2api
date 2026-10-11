@@ -1587,6 +1587,7 @@ func TestGatewayModels_WBAccountCredentialsNoMapping(t *testing.T) {
 		require.Equal(t, id, mapping[id])
 	}
 }
+
 // Codex 发现链路（/models?client_version=）对 WB 分组同样执行白名单钉死：账号显式
 // mapping 全为白名单外键时，manifest 模型列表为空（非空源被求交清空 = 终态，
 // AC-26-01 硬边界，绝不回退白名单默认）。
@@ -2097,4 +2098,451 @@ func TestGatewayModels_CompositeCodexRouteLookupErrorKeepsFallback(t *testing.T)
 			}
 		})
 	}
+}
+
+// ============================================================
+// composite 下挂载 WB 账号的模型探测泄露治理（compositeAvailableModels WB 收集腿）：
+// 纯 WB 组只能看到 21 白名单键（domain.WbModelWhitelist），严禁经 :1181/:1289 回退
+// 带出 precedence 平台的 Claude/OpenAI 全量默认；混合组为既有注入行为 ∪ 21 纯增量；
+// allowlist 开启时空候选 = 严格 []（KDR-4 终态，无地板回退）。
+// ============================================================
+
+// newCompositeModelsRequestForTest 构造一次 GET 模型列表请求（任意 path），context 挂
+// composite 分组的 APIKey；处理器调用与断言由调用方执行。
+func newCompositeModelsRequestForTest(group *service.Group, path string) (*gin.Context, *httptest.ResponseRecorder) {
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, path, nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: group})
+	return c, rec
+}
+
+// requireNoClaudeForTest 探测泄露守卫：任何 claude-* 前缀（:1181 地板形状）都算泄露。
+func requireNoClaudeForTest(t *testing.T, ids []string) {
+	t.Helper()
+	for _, id := range ids {
+		require.False(t, strings.HasPrefix(id, "claude-"), "unexpected claude model leaked: %s", id)
+	}
+}
+
+// AC-27-01 纯 WB composite：/v1/models = 21 白名单，无任何 claude-* 与默认泄漏。
+func TestGatewayModels_CompositeWBOnlyListsWhitelistNoClaude(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6001
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	// 集合相等（顺序不构成契约）：恰好 21 白名单键，不多不少。
+	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	requireNoClaudeForTest(t, ids)
+}
+
+// AC-27-01 混合组无回归：precedence 行为不变（openai 无映射 → 逐平台默认注入，
+// allEmpty 成立）+ wb 纯增量（21 白名单并集，去重）。
+func TestGatewayModels_CompositeWBMixedWithPrecedencePlatform(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6002
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{
+			groupID: {
+				{ID: 1, Platform: service.PlatformOpenAI},
+				{ID: 2, Platform: service.PlatformWB},
+			},
+		},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	// 精确并集断言：openai 默认 ∪ 21 白名单，无额外模型。
+	want := unionModelIDsForTest(defaultModelIDsForPlatform(service.PlatformOpenAI), domain.WbModelWhitelist)
+	require.ElementsMatch(t, want, ids)
+	require.NotContains(t, ids, "claude-sonnet-4-5")
+}
+
+// AC-27-01 白名单规范化：命中键保留；allowlist 中的非 WB 默认键（claude-*）不泄漏。
+func TestGatewayModels_CompositeWBAllowlistFiltersWithinWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6003
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.5", "claude-sonnet-4-5"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// 候选源 = 21 白名单键：gpt-5.5 命中保留；claude-sonnet-4-5 不是白名单键 → 恰好一个键。
+	require.ElementsMatch(t, []string{"gpt-5.5"}, modelIDsForTest(got.Data))
+}
+
+// AC-27-01 白名单不命中：空列表 []，不回退任何默认模型（#24 空交集契约）。
+func TestGatewayModels_CompositeWBAllowlistEmptyIntersection(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6004
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"not-a-real-model"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, modelIDsForTest(got.Data))
+}
+
+// AC-27-01 显式 mapping 求交：白名单合法键保留、外键剔除（KDR-8 出口求交）。
+func TestGatewayModels_CompositeWBExplicitMappingKeepsLegalKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6005
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.5":           "gpt-5.5",
+				"claude-sonnet-4-5": "claude-sonnet-4-5",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	// 混合键 mapping：gpt-5.5 ∈ 白名单保留；claude-sonnet-4-5 ∉ 白名单剔除。
+	require.ElementsMatch(t, []string{"gpt-5.5"}, ids)
+	require.NotContains(t, ids, "claude-sonnet-4-5")
+}
+
+// AC-27-01 显式 mapping 全外键 + allowlist 关闭：保守注入 21 白名单（KDR-4），
+// composite 默认 100+（如 claude-opus-4-6）不得出现（防 :1181 地板）。
+func TestGatewayModels_CompositeWBExplicitMappingAllIllegalFallsBackToWhitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6006
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5": "claude-sonnet-4-5",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	ids := modelIDsForTest(got.Data)
+	// wbRaw 非空（外键）但求交为空 → 键控保守注入：恰好 21 白名单，无默认泄漏。
+	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	require.NotContains(t, ids, "claude-sonnet-4-5")
+	requireNoClaudeForTest(t, ids)
+}
+
+// AC-27-01 显式 mapping 全外键 + allowlist 开启：/v1/models 严格 []（KDR-4 终态，
+// 无 :1181/:1174 地板回退）——空候选是终态而非“空 → 默认”。
+func TestGatewayModels_CompositeWBAllExternalMappingAllowlistReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6007
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5": "claude-sonnet-4-5",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.5"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// allowlist 开启时求交空 = 严格 []：保守注入条件（!allowlistEnabled）不成立，
+	// FilterForListing(∅) → []，:1181 复合分支地板不触发。
+	require.Empty(t, modelIDsForTest(got.Data))
+}
+
+// AC-27-01 显式 mapping 全外键 + allowlist 开启：Codex manifest 严格 []（KDR-4 终态，
+// 无 :1289 默认回退）——Codex 消费端与 /v1/models 同收敛。
+func TestCodexModels_CompositeWBAllExternalMappingAllowlistReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6008
+	account := service.Account{
+		ID:       1,
+		Platform: service.PlatformWB,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"claude-sonnet-4-5": "claude-sonnet-4-5",
+			},
+		},
+	}
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {account}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.5"},
+		},
+	}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// codexModelIDsForGroup composite 分支：allowlist 开启时空候选不落 defaultCodex 兜底
+	// （len==0 && !allowlistEnabled 不成立）→ manifest 空。
+	require.Empty(t, codexModelSlugsForTest(got.Models))
+}
+
+// AC-27-02 Codex 消费端同收敛：纯 WB composite manifest = 21 白名单，无 Claude 默认。
+func TestCodexModels_CompositeWBNoDefaultLeak(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6009
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	slugs := codexModelSlugsForTest(got.Models)
+	// 候选 = 21 白名单（非空）→ 不落 defaultCodex 兜底：manifest 恰好 21 白名单键。
+	require.ElementsMatch(t, domain.WbModelWhitelist, slugs)
+	require.NotContains(t, slugs, "claude-sonnet-4-5")
+	require.NotContains(t, slugs, "claude-opus-4-6")
+}
+
+// AC-27-01 出口重写防线：allowlist 条目 gpt-5.6-sol-thinking 经 -thinking 归一化命中
+// 白名单键 gpt-5.6-sol（group_model_allowlist.go 归一匹配后输出条目原文），条目原文
+// ∉ 21 白名单 → 不得带出（与专用 WB 分支出口再求交 :1193-1198 同语义，KDR-8）。
+func TestGatewayModels_CompositeWBAllowlistThinkingVariantReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6010
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.6-sol-thinking"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// 变体条目只能经归一化命中：白名单键 gpt-5.6-sol 在 WB 腿被预演剔除 → 严格 []。
+	require.Empty(t, modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "gpt-5.6-sol-thinking")
+}
+
+// AC-27-01 出口重写防线：allowlist 条目 GPT-5.6-SOL 经 EqualFold 大小写不敏感命中
+// 白名单键 gpt-5.6-sol，条目原文 ∉ 21 白名单 → 不得带出（KDR-8 精确匹配）。
+func TestGatewayModels_CompositeWBAllowlistCaseVariantReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6011
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"GPT-5.6-SOL"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// 大写变体条目经 EqualFold 命中白名单键 → 预演剔除 → 严格 []（非 1 项大写键）。
+	require.Empty(t, modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "GPT-5.6-SOL")
+}
+
+// AC-27-02 Codex 消费端同收敛：-thinking 变体条目不得带出白名单外原文键。
+func TestCodexModels_CompositeWBAllowlistThinkingVariantReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6012
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.6-sol-thinking"},
+		},
+	}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, codexModelSlugsForTest(got.Models))
+}
+
+// AC-27-02 Codex 消费端同收敛：大小写变体条目不得带出白名单外原文键。
+func TestCodexModels_CompositeWBAllowlistCaseVariantReturnsEmpty(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6013
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"GPT-5.6-SOL"},
+		},
+	}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Empty(t, codexModelSlugsForTest(got.Models))
+}
+
+// AC-27-01 合法原键与变体条目并存：allowlist 同时含 gpt-5.6-sol 与
+// gpt-5.6-sol-thinking 时，合法键自身必须保留（条目原文命中候选键），仅
+// 变体条目原文被白名单交集剔除——不得因「预演输出 >1 项」整体淘汰合法键。
+func TestGatewayModels_CompositeWBAllowlistLegalKeyWithVariantKeepsLegalKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6014
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.6-sol", "gpt-5.6-sol-thinking"},
+		},
+	}, "/v1/models")
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	// 合法键保留、变体原文键剔除：恰好 gpt-5.6-sol 一项。
+	require.ElementsMatch(t, []string{"gpt-5.6-sol"}, modelIDsForTest(got.Data))
+	require.NotContains(t, modelIDsForTest(got.Data), "gpt-5.6-sol-thinking")
+}
+
+// AC-27-02 Codex 消费端同收敛：合法原键保留、变体条目仅以白名单键形式出现。
+func TestCodexModels_CompositeWBAllowlistLegalKeyWithVariantKeepsLegalKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 6015
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformWB}}},
+	})
+
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:       groupID,
+		Platform: service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{
+			Enabled: true,
+			Models:  []string{"gpt-5.6-sol", "gpt-5.6-sol-thinking"},
+		},
+	}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.ElementsMatch(t, []string{"gpt-5.6-sol"}, codexModelSlugsForTest(got.Models))
+	require.NotContains(t, codexModelSlugsForTest(got.Models), "gpt-5.6-sol-thinking")
+}
+
+// unionModelIDsForTest 按出现顺序做并集去重（测试期望构造用，集合语义）。
+func unionModelIDsForTest(lists ...[]string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	for _, list := range lists {
+		for _, id := range list {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
