@@ -702,6 +702,14 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				"total_accounts", len(accounts))
 			return nil, fmt.Errorf("%w supporting model: %s (channel pricing restriction)", ErrNoAvailableAccounts, requestedModel)
 		}
+		stats := s.collectSelectionFailureStats(ctx, accounts, requestedModel, platform, excludedIDs, useMixed)
+		slog.Warn("no schedulable account after all gates",
+			"group_id", derefGroupID(groupID),
+			"model", requestedModel,
+			"platform", platform,
+			"total_accounts", stats.Total,
+			"summary", summarizeSelectionFailureStats(stats),
+		)
 		return nil, ErrNoAvailableAccounts
 	}
 

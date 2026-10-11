@@ -29,7 +29,16 @@ func newAliyunCaptchaTestTarget(t *testing.T, handler http.HandlerFunc) (*aliyun
 	return verifier, cred
 }
 
+// clearProxyEnv 清空代理相关环境变量，确保本机/全局代理配置不会影响这些用例的真实 HTTP 链路。
+func clearProxyEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+		t.Setenv(k, "")
+	}
+}
+
 func TestAliyunCaptchaVerifier_VerifySuccess(t *testing.T) {
+	clearProxyEnv(t)
 	var capturedParam, capturedSceneID string
 	verifier, cred := newAliyunCaptchaTestTarget(t, func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
@@ -48,6 +57,7 @@ func TestAliyunCaptchaVerifier_VerifySuccess(t *testing.T) {
 }
 
 func TestAliyunCaptchaVerifier_VerifyResultFalse(t *testing.T) {
+	clearProxyEnv(t)
 	verifier, cred := newAliyunCaptchaTestTarget(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"Code":"Success","RequestId":"req-2","Success":true,"Result":{"VerifyResult":false,"VerifyCode":"F002"}}`))
@@ -60,6 +70,7 @@ func TestAliyunCaptchaVerifier_VerifyResultFalse(t *testing.T) {
 }
 
 func TestAliyunCaptchaVerifier_APIErrorNormalized(t *testing.T) {
+	clearProxyEnv(t)
 	verifier, cred := newAliyunCaptchaTestTarget(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -74,6 +85,7 @@ func TestAliyunCaptchaVerifier_APIErrorNormalized(t *testing.T) {
 }
 
 func TestAliyunCaptchaVerifier_TransportError(t *testing.T) {
+	clearProxyEnv(t)
 	server := httptest.NewServer(http.NotFoundHandler())
 	endpoint := strings.TrimPrefix(server.URL, "http://")
 	server.Close() // 立即关闭，制造连接失败
