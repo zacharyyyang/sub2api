@@ -36,7 +36,7 @@ func TestWBInbound(t *testing.T) {
 		// 业务校验级拒绝：硬约束全部保留。
 		{"unsupported model", `{"model":"unsupported-model","messages":[{"role":"user","content":"hi"}]}`, "unsupported model"},
 		{"empty messages", `{"model":"glm-5.3-flash","messages":[]}`, "messages must not be empty"},
-		{"unsupported role", `{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"x"}]}`, `unsupported role "tool"`},
+		{"unsupported role", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, `unsupported role "developer"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, _, err := wbParseInbound([]byte(tc.raw))
@@ -65,6 +65,89 @@ func TestWBInboundCompat(t *testing.T) {
 		req, _, _, err := wbParseInbound([]byte(raw))
 		require.NoError(t, err)
 		require.Nil(t, req.StreamOptions)
+	}
+}
+
+// TestWBInboundToolHistory：设计档 §6 用例表（16 组）+ 5 组补强（17-21：
+// assistant content 空串判定、system/user content 缺失与显式 null 的
+// fail-closed 边界）—— 工具历史（role:tool / function）与 assistant
+// content:null（摘要 / 空串兜底）折叠为确定性文本、不再 400；未变分支（未知
+// 角色、system/user content 缺失、解码层拒绝）保持原行为。
+func TestWBInboundToolHistory(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		want        string // 期望折叠 prompt（errContains 为空时）
+		errContains string // 期望错误片段（非空时 = 期望 400）
+	}{
+		// 1 纯文本四段（既有断言回归）
+		{"1 纯文本四段", `{"model":"glm-5.3-flash","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":"a"},{"role":"user","content":"v"}]}`, "System: s\n\nUser: u\n\nAssistant: a\n\nUser: v", ""},
+		// 2 tool 带 tool_call_id
+		{"2 tool 带 tool_call_id", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","content":"ok"}]}`, "Tool[call_1]: ok", ""},
+		// 3 function 带 name（legacy）
+		{"3 function 带 name", `{"model":"glm-5.3-flash","messages":[{"role":"function","name":"get_weather","content":"sunny"}]}`, "Tool[get_weather]: sunny", ""},
+		// 4 tool 无 id 无 name
+		{"4 tool 无 id 无 name", `{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"bare"}]}`, "Tool: bare", ""},
+		// 5 assistant content:null 带 tool_calls → 摘要（name 列表）
+		{"5 assistant null+tool_calls 摘要", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file"}},{"id":"c2","function":{"name":"get_weather"}}]}]}`, "Assistant: [calls: create_file, get_weather]", ""},
+		// 6 assistant content:null 无 tool_calls → 空串兜底
+		{"6 assistant null 无 tool_calls 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null}]}`, "Assistant: ", ""},
+		// 7 tool content:null → 空内容不 400
+		{"7 tool content null 空内容", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"c9","content":null}]}`, "Tool[c9]: ", ""},
+		// 8 tool_calls 无 function.name → id 降级
+		{"8 assistant null tool_calls 无 name id 降级", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c9"}]}]}`, "Assistant: [calls: c9]", ""},
+		// 9 完整多轮回合（user → assistant[calls] → tool → assistant），四段顺序折叠
+		{"9 完整多轮回合", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"请创建文件并查询天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file"}},{"id":"c2","function":{"name":"get_weather"}}]},{"role":"tool","tool_call_id":"call_1","content":"文件已创建"},{"role":"assistant","content":"已创建完成"}]}`, "User: 请创建文件并查询天气\n\nAssistant: [calls: create_file, get_weather]\n\nTool[call_1]: 文件已创建\n\nAssistant: 已创建完成", ""},
+		// 10 未知角色仍 400
+		{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
+		// 11 user content 缺失仍 400
+		{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
+		// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
+		{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
+		// 13 尾部多余 JSON → 解码层拒绝（行为不变）
+		{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
+		// 14 tool_calls name 与 ID 均空 → unknown 兜底
+		{"14 摘要 name 与 ID 皆空 unknown 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"","function":{"name":""}}]}]}`, "Assistant: [calls: unknown]", ""},
+		// 15 tool 消息 tool_call_id 与 name 并存 → ToolCallID 优先
+		{"15 tool id 与 name 并存 ID 优先", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}]}`, "Tool[call_1]: sunny", ""},
+		// 16 assistant content 非空与 tool_calls 并存 → 原 content 优先、不追加摘要
+		{"16 assistant content 非空与 tool_calls 并存", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"已调用工具，先做总结","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: 已调用工具，先做总结", ""},
+		// 17 assistant content 空串（非 nil）→ 保持原样拼接（设计 §2.2：content ≠ nil 走原样分支，即使空串也不触发摘要）
+		{"17 assistant content 空串保持原样", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: ", ""},
+		// 18 assistant content 空串（非 nil）无 tool_calls → 原样拼接（输出与空串兜底同形）
+		{"18 assistant content 空串无 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":""}]}`, "Assistant: ", ""},
+		// 19 system content 缺失 → 400（fail-closed 边界，设计 §6 行 11 的 system 侧补齐）
+		{"19 system content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"system"}]}`, "", "messages[0].content must be a string"},
+		// 20 user content 显式 null → 400
+		{"20 user content 显式 null", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":null}]}`, "", "messages[0].content must be a string"},
+		// 21 system content 显式 null → 400
+		{"21 system content 显式 null", `{"model":"glm-5.3-flash","messages":[{"role":"system","content":null}]}`, "", "messages[0].content must be a string"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, prompt, _, err := wbParseInbound([]byte(tc.raw))
+			if tc.errContains != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tc.errContains)
+				return
+			}
+			if tc.want == "" {
+				// 解码层类型错误：仅需 Error，不断言具体文本（与既有用例一致）
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, prompt)
+			// 折叠-装配结构不变量：每条消息恰好折叠为一个 segment，Join 结果与
+			// wbParseInbound 输出逐字节一致（不依赖分隔符计数，正文含 \n\n 亦不受影响）。
+			var segs []string
+			for i, m := range req.Messages {
+				seg, err := wbFoldInboundMessage(i, m)
+				require.NoError(t, err)
+				segs = append(segs, seg)
+			}
+			require.Equal(t, prompt, strings.Join(segs, "\n\n"))
+		})
 	}
 }
 

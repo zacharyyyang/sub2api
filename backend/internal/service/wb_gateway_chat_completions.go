@@ -33,15 +33,37 @@ type wbStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
+// wbInboundFunctionCall 是入站 tool_calls 内 function 对象的结构化声明
+// （仅用于入站解析与折叠，不映射给下游 CLI）。
+type wbInboundFunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// wbInboundToolCall 是入站 assistant 消息 tool_calls 数组元素的结构化声明。
+type wbInboundToolCall struct {
+	ID       string                `json:"id"`
+	Type     string                `json:"type"`
+	Function wbInboundFunctionCall `json:"function"`
+}
+
+// wbInboundMessage 是入站 messages 数组元素的具名结构体。Content 保持 *string
+// （与现有解码行为一致）；ToolCallID / Name / ToolCalls 为可选字段，仅用于
+// 工具历史折叠，零值 = 缺省。
+type wbInboundMessage struct {
+	Role       string              `json:"role"`
+	Content    *string             `json:"content"`
+	ToolCallID *string             `json:"tool_call_id,omitempty"`
+	Name       *string             `json:"name,omitempty"`
+	ToolCalls  []wbInboundToolCall `json:"tool_calls,omitempty"`
+}
+
 type wbInbound struct {
-	Model    string `json:"model"`
-	Messages []struct {
-		Role    string  `json:"role"`
-		Content *string `json:"content"`
-	} `json:"messages"`
-	Stream        bool             `json:"stream"`
-	Tools         json.RawMessage  `json:"tools"`
-	StreamOptions *wbStreamOptions `json:"stream_options"`
+	Model         string             `json:"model"`
+	Messages      []wbInboundMessage `json:"messages"`
+	Stream        bool               `json:"stream"`
+	Tools         json.RawMessage    `json:"tools"`
+	StreamOptions *wbStreamOptions   `json:"stream_options"`
 }
 
 func wbStrictJSON(raw []byte, dst any) error {
@@ -94,17 +116,82 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 	}
 	parts := make([]string, len(req.Messages))
 	for i, message := range req.Messages {
-		prefix := map[string]string{"system": "System", "user": "User", "assistant": "Assistant"}[message.Role]
-		if prefix == "" {
-			return req, "", nil, fmt.Errorf("unsupported role %q: server-executed tools do not expose tool_calls", message.Role)
+		segment, err := wbFoldInboundMessage(i, message)
+		if err != nil {
+			return req, "", nil, err
 		}
-		if message.Content == nil {
-			return req, "", nil, fmt.Errorf("messages[%d].content must be a string", i)
-		}
-		parts[i] = prefix + ": " + *message.Content
+		parts[i] = segment
 	}
 	tools, err := wbMapTools(req.Tools)
 	return req, strings.Join(parts, "\n\n"), tools, err
+}
+
+// wbFoldInboundMessage 将单条入站消息折叠为确定性 prompt segment（每条消息
+// 恰好一个 segment）。system / user 保持 System:/User: 纯文本折叠；tool /
+// function 按 Tool[<id|name>]: <content> 折叠（均无则 Tool: <content>，
+// content 为 nil 视为空）；assistant 仅在 content 为 nil（含 tool_calls 摘要
+// Assistant: [calls: <name>, ...] / 无则空串兜底 Assistant: ）时特殊折叠，
+// content 非 nil（含空串）一律原样拼接；未知角色仍 400。
+func wbFoldInboundMessage(i int, message wbInboundMessage) (string, error) {
+	switch message.Role {
+	case "system", "user":
+		if message.Content == nil {
+			return "", fmt.Errorf("messages[%d].content must be a string", i)
+		}
+		prefix := "System"
+		if message.Role == "user" {
+			prefix = "User"
+		}
+		return prefix + ": " + *message.Content, nil
+	case "assistant":
+		if message.Content != nil {
+			return "Assistant: " + *message.Content, nil
+		}
+		if len(message.ToolCalls) > 0 {
+			return "Assistant: [calls: " + wbToolCallSummary(message.ToolCalls) + "]", nil
+		}
+		return "Assistant: ", nil
+	case "tool", "function":
+		content := ""
+		if message.Content != nil {
+			content = *message.Content
+		}
+		return "Tool" + wbToolBracket(message) + ": " + content, nil
+	default:
+		return "", fmt.Errorf("unsupported role %q", message.Role)
+	}
+}
+
+// wbToolBracket 计算 tool / function 消息折叠时的方括号括注：ToolCallID 优先，
+// 为空则降级取 Name；两者皆空返回空串（不输出方括号），对应契约
+// Tool[<id|name>]: <content> / Tool: <content>。
+func wbToolBracket(message wbInboundMessage) string {
+	switch {
+	case message.ToolCallID != nil && *message.ToolCallID != "":
+		return "[" + *message.ToolCallID + "]"
+	case message.Name != nil && *message.Name != "":
+		return "[" + *message.Name + "]"
+	default:
+		return ""
+	}
+}
+
+// wbToolCallSummary 将 assistant 消息的 tool_calls 折叠为摘要列表：每个调用取
+// Function.Name，为空则取 ID，两者皆空取 unknown；逗号 + 空格连接（按入站
+// 顺序），arguments 不进入摘要（KDR-3）。
+func wbToolCallSummary(calls []wbInboundToolCall) string {
+	names := make([]string, len(calls))
+	for i, call := range calls {
+		switch {
+		case call.Function.Name != "":
+			names[i] = call.Function.Name
+		case call.ID != "":
+			names[i] = call.ID
+		default:
+			names[i] = "unknown"
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 func wbWriteError(c *gin.Context, status int, code, message string, streamed bool) error {
@@ -194,17 +281,17 @@ func wbConsumeCLI(ctx context.Context, c *gin.Context, process *wbCLIProcess, re
 		_, _ = c.Writer.WriteString(frame)
 		c.Writer.Flush()
 	}
-		fail := func(status int, code, message string, partialResult ...*OpenAIForwardResult) (*OpenAIForwardResult, error) {
-			for _, secret := range append(secrets, token) {
-				message = maskSecret(message, secret)
-				code = maskSecret(code, secret)
-			}
-			var res *OpenAIForwardResult
-			if len(partialResult) > 0 {
-				res = partialResult[0]
-			}
-			return res, wbWriteError(c, status, code, message, emitted)
+	fail := func(status int, code, message string, partialResult ...*OpenAIForwardResult) (*OpenAIForwardResult, error) {
+		for _, secret := range append(secrets, token) {
+			message = maskSecret(message, secret)
+			code = maskSecret(code, secret)
 		}
+		var res *OpenAIForwardResult
+		if len(partialResult) > 0 {
+			res = partialResult[0]
+		}
+		return res, wbWriteError(c, status, code, message, emitted)
+	}
 	scanner := bufio.NewScanner(process.stdout)
 	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
 	var completion *wbLineFrame
@@ -249,14 +336,14 @@ scan:
 		}
 		return fail(502, wbErrStreamNoCompletion, "wb CLI exited without result/success")
 	}
-		if !accumulator.CheckFulltext(completion.text) {
-			u := completion.usage
-			partial := &OpenAIForwardResult{
-				Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,
-				Usage: OpenAIUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheCreationInputTokens: u.CacheCreation, CacheReadInputTokens: u.CacheRead},
-			}
-			return fail(502, wbErrFulltextMismatch, "wb streamed text differs from completion result", partial)
+	if !accumulator.CheckFulltext(completion.text) {
+		u := completion.usage
+		partial := &OpenAIForwardResult{
+			Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,
+			Usage: OpenAIUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheCreationInputTokens: u.CacheCreation, CacheReadInputTokens: u.CacheRead},
 		}
+		return fail(502, wbErrFulltextMismatch, "wb streamed text differs from completion result", partial)
+	}
 	if req.Stream {
 		emit(buildWbTerminalFrame(completion.usage))
 		emit(wbDoneFrame)
