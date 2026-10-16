@@ -38,7 +38,17 @@
             :is-edit="true"
           />
         </div>
-        <div v-if="account.platform !== 'wb' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
+        <!-- Qoder：四件套凭证掩码编辑（通用 apikey 的 base_url/API Key 语义不适用） -->
+        <div v-if="account.platform === 'qoder'" class="space-y-4">
+          <QoderCredentialFields
+            :key="account.id"
+            ref="qoderCredentialFieldsRef"
+            v-model="qoderCredentials"
+            :credentials-status="account.credentials_status"
+            :is-edit="true"
+          />
+        </div>
+        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
@@ -235,7 +245,7 @@
           </div>
           <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
         </div>
-        <div v-if="account.platform !== 'wb'">
+        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder'">
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
             v-model="editApiKey"
@@ -3168,6 +3178,7 @@ import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
+import QoderCredentialFields from '@/components/account/QoderCredentialFields.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
@@ -3395,6 +3406,10 @@ const editApiKey = ref('')
 // WB Enterprise：四件套凭证（掩码编辑；未修改键保持原值）
 const wbCredentials = ref<Record<string, string>>({})
 const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
+
+// Qoder：四件套凭证 + 可选高级项（掩码编辑；未修改键保持原值）
+const qoderCredentials = ref<Record<string, string>>({})
+const qoderCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -4428,6 +4443,29 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     wbCredentials.value = { ...(newAccount.credentials as Record<string, string>) }
   }
 
+  // Qoder：预填原凭证——QoderCredentialFields 对敏感键留空保持原值，非敏感键直接回显
+  if (newAccount.platform === 'qoder' && newAccount.credentials) {
+    const rawCreds = newAccount.credentials as Record<string, unknown>
+    const qoderKeys = [
+      'access_token',
+      'refresh_token',
+      'uid',
+      'org_id',
+      'machine_id',
+      'umid_token',
+      'machine_type',
+      'token_expires_at',
+      'refresh_token_expires_at'
+    ]
+    const nextCreds: Record<string, string> = {}
+    for (const k of qoderKeys) {
+      if (rawCreds[k] != null && rawCreds[k] !== '') {
+        nextCreds[k] = String(rawCreds[k])
+      }
+    }
+    qoderCredentials.value = nextCreds
+  }
+
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
@@ -5215,7 +5253,7 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
-    if (props.account.type === 'apikey') {
+    if (props.account.type === 'apikey' && props.account.platform !== 'qoder') {
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
       if (upstreamBillingRateSyncEnabled.value) {
@@ -5256,6 +5294,41 @@ const handleSubmit = async () => {
       }
 
       updatePayload.credentials = wbCredentials
+    } else if (props.account.type === 'apikey' && props.account.platform === 'qoder') {
+      if (!qoderCredentialFieldsRef.value?.isValid()) {
+        appStore.showError('请填写全部必填凭证：Access Token / Refresh Token / User ID (uid) / Organization ID (org_id)')
+        return
+      }
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const nextQoderCredentials = { ...currentCredentials } as Record<string, unknown>
+      const collected = qoderCredentialFieldsRef.value.collect()
+      for (const [key, value] of Object.entries(collected)) {
+        if (value && value.trim()) {
+          if (key === 'token_expires_at' || key === 'refresh_token_expires_at') {
+            nextQoderCredentials[key] = Number(value.trim())
+          } else {
+            nextQoderCredentials[key] = value.trim()
+          }
+        } else {
+          delete nextQoderCredentials[key]
+        }
+      }
+
+      // Model mapping 共享尾部（与通用 apikey 分支一致）
+      const qoderModelMapping = buildModelRestrictionMapping()
+      if (qoderModelMapping) {
+        nextQoderCredentials.model_mapping = qoderModelMapping
+      } else {
+        delete nextQoderCredentials.model_mapping
+      }
+
+      applyInterceptWarmup(nextQoderCredentials, interceptWarmupRequests.value, 'edit')
+      applyAccountSchedulingThresholdOverridePatch(nextQoderCredentials, currentCredentials)
+      if (!applyTempUnschedConfig(nextQoderCredentials)) {
+        return
+      }
+
+      updatePayload.credentials = nextQoderCredentials
     } else if (props.account.type === 'apikey') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value

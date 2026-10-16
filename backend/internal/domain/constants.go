@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Status constants
 const (
 	StatusActive   = "active"
@@ -42,6 +47,8 @@ const (
 	// PlatformWB 是 wb 企业（腾讯 CodeBuddy CLI 租户）平台。
 	// 凭证 = client_id / client_secret / pt_key / enterprise_id（四件套必填）+ cli_path（CLI 发现链用）。
 	PlatformWB = "wb"
+	// PlatformQoder 是 Qoder 桌面端原生平台（通道 B 加密 SSE 推理协议 + WASM 签名）。
+	PlatformQoder = "qoder"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -243,4 +250,108 @@ var DefaultBedrockModelMapping = map[string]string{
 	// Claude Haiku
 	"claude-haiku-4-5":          "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+// QoderModelWhitelist 是 Qoder 平台对外暴露的 14 个唯一可读模型白名单。
+var QoderModelWhitelist = []string{
+	"sonus-fable5.1",
+	"cantus-opus5.5",
+	"ultimate-gpt6.1sol",
+	"Qwen3.8-Max",
+	"Qwen3.8-Flash",
+	"Qwen3.7-Max",
+	"Qwen3.7-Plus",
+	"Kimi-K3",
+	"Kimi-K2.8-Preview",
+	"GLM-5.3",
+	"GLM-5.3-Flash",
+	"DeepSeek-V4-Pro",
+	"DeepSeek-Flash",
+	"MiniMax-M3",
+}
+
+// QoderNativeModels 是 Qoder 上游支持的 18 个原生模型 ID（14 具体 + 4 泛档位）。
+var QoderNativeModels = []string{
+	"auto",
+	"ultimate",
+	"fast",
+	"performance",
+	"efficient",
+	"smodel",
+	"cmodel",
+	"qmodel_38max",
+	"qfmodel",
+	"qmodel_latest",
+	"qmodel",
+	"kmodel_latest",
+	"kmodel",
+	"gmodel",
+	"gfmodel",
+	"dmodel",
+	"dfmodel",
+	"mmodel",
+}
+
+// QoderModelAliasToNative 是 14 个可读别名到上游原生模型 ID 的映射。
+var QoderModelAliasToNative = map[string]string{
+	"sonus-fable5.1":     "smodel",
+	"cantus-opus5.5":     "cmodel",
+	"ultimate-gpt6.1sol": "ultimate",
+	"Qwen3.8-Max":        "qmodel_38max",
+	"Qwen3.8-Flash":      "qfmodel",
+	"Qwen3.7-Max":        "qmodel_latest",
+	"Qwen3.7-Plus":       "qmodel",
+	"Kimi-K3":            "kmodel_latest",
+	"Kimi-K2.8-Preview":  "kmodel",
+	"GLM-5.3":            "gmodel",
+	"GLM-5.3-Flash":      "gfmodel",
+	"DeepSeek-V4-Pro":    "dmodel",
+	"DeepSeek-Flash":     "dfmodel",
+	"MiniMax-M3":         "mmodel",
+}
+
+var (
+	qoderNativeLowerMap    = make(map[string]string, len(QoderNativeModels))
+	qoderAliasLowerToNat   = make(map[string]string, len(QoderModelAliasToNative))
+	qoderResolveLowerToKey = make(map[string]string, len(QoderModelAliasToNative)+len(QoderNativeModels))
+)
+
+func init() {
+	for _, n := range QoderNativeModels {
+		lower := strings.ToLower(n)
+		qoderNativeLowerMap[lower] = n
+		qoderResolveLowerToKey[lower] = n
+	}
+	for alias, native := range QoderModelAliasToNative {
+		lowerAlias := strings.ToLower(alias)
+		qoderAliasLowerToNat[lowerAlias] = native
+		qoderResolveLowerToKey[lowerAlias] = alias
+		qoderResolveLowerToKey[strings.ToLower(native)] = alias
+	}
+}
+
+// NormalizeQoderModel 将 32 个合法模型名（14 可读别名 + 18 原生 ID，大小写无关）归一为 18 个原生模型 ID 之一。
+func NormalizeQoderModel(model string) (string, error) {
+	m := strings.TrimSpace(model)
+	lower := strings.ToLower(m)
+	if nat, ok := qoderNativeLowerMap[lower]; ok {
+		return nat, nil
+	}
+	if nat, ok := qoderAliasLowerToNat[lower]; ok {
+		return nat, nil
+	}
+	if m == "" {
+		m = "(empty)"
+	}
+	return "", fmt.Errorf("unsupported model: %s", m)
+}
+
+// ResolveQoderModel 将 32 个合法模型名解析为规范查找键（14 别名或 14 具体原生 ID 返回唯一可读别名键，4 泛档位返回小写档位名）。
+func ResolveQoderModel(model string) (string, bool) {
+	m := strings.TrimSpace(model)
+	if m == "" {
+		return "", false
+	}
+	key, ok := qoderResolveLowerToKey[strings.ToLower(m)]
+	return key, ok
 }

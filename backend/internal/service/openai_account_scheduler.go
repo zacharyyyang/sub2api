@@ -532,7 +532,7 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	// 平台为 wb 时跳过该谓词，谓词本体不动。
 	if shouldClearStickySession(account, req.RequestedModel) ||
 		account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) ||
-		(!account.IsOpenAICompatible() && account.Platform != PlatformWB) ||
+		(!account.IsOpenAICompatible() && account.Platform != PlatformWB && account.Platform != PlatformQoder) ||
 		!account.IsSchedulable() {
 		clearBinding()
 		return nil, false, nil
@@ -1461,7 +1461,7 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		// wb 企业平台定点放行（与粘性闸同式）：IsOpenAICompatible() 对 wb 恒 false，
 		// 平台为 wb 时跳过该谓词，谓词本体不动。
 		if account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) ||
-			(!account.IsOpenAICompatible() && account.Platform != PlatformWB) {
+			(!account.IsOpenAICompatible() && account.Platform != PlatformWB && account.Platform != PlatformQoder) {
 			filterStats.exclude("platform_mismatch")
 			continue
 		}

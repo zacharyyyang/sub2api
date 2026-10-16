@@ -322,6 +322,7 @@ export default {
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
         wb: 'wb 企业',
+        qoder: 'Qoder',
       },
       cnProviders: {
         accountMode: {
@@ -543,6 +544,10 @@ export default {
         estimatedTotalCostTooltip: '根据当前窗口费用和使用率估算达到 100% 使用率时的总费用'
       },
       wbCredits: {
+        remaining: '剩余积分',
+        expiresAt: '（{date} 到期）'
+      },
+      qoderCredits: {
         remaining: '剩余积分',
         expiresAt: '（{date} 到期）'
       },

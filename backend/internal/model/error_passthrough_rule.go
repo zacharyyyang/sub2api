@@ -48,17 +48,25 @@ const (
 	PlatformOpenCodeGo  = domain.PlatformOpenCodeGo
 	PlatformTypeSafe    = domain.PlatformTypeSafe
 	PlatformWB          = domain.PlatformWB
+	PlatformQoder       = domain.PlatformQoder
 )
 
 // AllPlatforms 返回所有支持的平台列表（平台清单，按展示顺序）。
 func AllPlatforms() []string {
 	platforms := domain.ConcretePlatformIDs()
-	for _, p := range platforms {
-		if p == PlatformWB {
-			return platforms
+	for _, extra := range []string{PlatformWB, PlatformQoder} {
+		found := false
+		for _, p := range platforms {
+			if p == extra {
+				found = true
+				break
+			}
+		}
+		if !found {
+			platforms = append(platforms, extra)
 		}
 	}
-	return append(platforms, PlatformWB)
+	return platforms
 }
 
 // Validate 验证规则配置的有效性

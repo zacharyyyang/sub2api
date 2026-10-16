@@ -1338,6 +1338,7 @@ function generateRoutedCodexFiles(
     command_code: 'Command Code',
     cline: 'Cline',
     wb: 'WorkBuddy',
+    qoder: 'Qoder',
     composite: 'Composite'
   }
   const label = labels[platform]

@@ -26,6 +26,11 @@ export const WB_PLATFORM_OPTION: PlatformOption<AccountPlatform> = {
   label: 'WB Enterprise'
 }
 
+export const QODER_PLATFORM_OPTION: PlatformOption<AccountPlatform> = {
+  value: 'qoder',
+  label: 'Qoder'
+}
+
 /** Platforms that can own a group. */
 export const GROUP_PLATFORM_OPTIONS: PlatformOption<GroupPlatform>[] = reactive([])
 

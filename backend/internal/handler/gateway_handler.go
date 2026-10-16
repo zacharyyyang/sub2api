@@ -1195,12 +1195,18 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		if platform == service.PlatformWB {
 			source = wbIntersectWhitelist(source)
 		}
+		if platform == service.PlatformQoder {
+			source = qoderIntersectWhitelist(source)
+		}
 		filtered := apiKey.Group.ModelAllowlist.FilterForListing(source)
 		if platform == service.PlatformWB {
 			// FilterForListing 会把命中条目的配置原文写进输出（如 gpt-5.6-sol-thinking
 			// 经 -thinking 归一命中白名单键 gpt-5.6-sol 后仍输出原文），出口再与白名单
 			// 求交一次，钉死「WB 列表只含白名单内键」（KDR-8）。
 			filtered = wbIntersectWhitelist(filtered)
+		}
+		if platform == service.PlatformQoder {
+			filtered = qoderIntersectWhitelist(filtered)
 		}
 		writeAllowlistedModelsList(c, platform, filtered)
 		return
@@ -1209,6 +1215,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if len(availableModels) > 0 {
 		if platform == service.PlatformWB {
 			availableModels = wbIntersectWhitelist(availableModels)
+		}
+		if platform == service.PlatformQoder {
+			availableModels = qoderIntersectWhitelist(availableModels)
 		}
 		writeModelsList(c, platform, availableModels)
 		return
@@ -1237,6 +1246,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeModelsList(c, service.PlatformWB, slices.Clone(domain.WbModelWhitelist))
 		return
 	}
+	if platform == service.PlatformQoder {
+		writeModelsList(c, service.PlatformQoder, slices.Clone(domain.QoderModelWhitelist))
+		return
+	}
 
 	writeModelsListResponse(c, claude.DefaultModels)
 }
@@ -1258,10 +1271,17 @@ func (h *GatewayHandler) CodexModels(c *gin.Context) {
 	modelIDs := h.codexModelIDsForGroup(c.Request.Context(), apiKey.Group, forcedPlatform)
 	modelIDs = service.FilterCodexModelIDsForGroup(modelIDs, apiKey.Group)
 	// FilterCodexModelIDsForGroup 的 allowlist 收窄按归一化命中（EqualFold /
-	// -thinking，group_model_allowlist.go:208-226）会重新写出 WB 白名单键的变体
-	// 条目原文（KDR-8 第三处再注入），出口再钉死一次：命中 WB 白名单键的条目
-	// 一律还原为白名单键原文，非 WB 键原样保留。
-	modelIDs = pinWBWhitelistOriginalKeys(modelIDs)
+	// -thinking，group_model_allowlist.go:208-226）会重新写出 WB / Qoder 白名单键的变体
+	// 条目原文（KDR-8 第三处再注入），出口再钉死一次：命中白名单键的条目
+	// 一律还原为白名单键原文，非白名单键原样保留。
+	switch {
+	case apiKey.Group.Platform == service.PlatformQoder || forcedPlatform == service.PlatformQoder:
+		modelIDs = pinQoderWhitelistOriginalKeys(modelIDs)
+	case apiKey.Group.Platform == service.PlatformComposite && forcedPlatform == "":
+		modelIDs = h.pinCompositeCodexWhitelistKeys(c.Request.Context(), &apiKey.Group.ID, modelIDs)
+	default:
+		modelIDs = pinWBWhitelistOriginalKeys(modelIDs)
+	}
 	body, err := h.gatewayService.BuildCodexModelsManifestForGroup(
 		c.Request.Context(),
 		apiKey.Group,
@@ -1324,6 +1344,18 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 			// FilterForListing 输出可写入白名单外键（配置原文 -thinking 变体经归一
 			// 命中白名单键后仍写出原文），出口再求交一次钉死白名单边界（KDR-8）。
 			return wbIntersectWhitelist(group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil)))
+		}
+		if !sourceHadModels {
+			return fallbackModels
+		}
+		return availableModels
+	}
+	if platform == service.PlatformQoder {
+		sourceHadModels := len(availableModels) > 0
+		availableModels = qoderIntersectWhitelist(availableModels)
+		fallbackModels = qoderIntersectWhitelist(fallbackModels)
+		if group.ModelAllowlistEnabled() {
+			return qoderIntersectWhitelist(group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil)))
 		}
 		if !sourceHadModels {
 			return fallbackModels
@@ -1407,6 +1439,25 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	}
 	wbKeys := make([]string, 0, len(wbValid))
 	for _, model := range wbValid {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		wbKeys = append(wbKeys, model)
+	}
+	qoderRaw := h.gatewayService.GetAvailableModels(ctx, groupID, service.PlatformQoder)
+	qoderValid := qoderIntersectWhitelist(qoderRaw)
+	if _, qoderSchedulable := schedulablePlatforms[service.PlatformQoder]; len(qoderValid) == 0 && !allowlistEnabled && qoderSchedulable {
+		qoderValid = slices.Clone(domain.QoderModelWhitelist)
+	}
+	if allowlistEnabled && allowlist.Enabled {
+		qoderValid = qoderIntersectWhitelist(allowlist.FilterForListing(qoderValid))
+	}
+	for _, model := range qoderValid {
 		model = strings.TrimSpace(model)
 		if model == "" {
 			continue
@@ -1573,6 +1624,22 @@ func wbIntersectWhitelist(models []string) []string {
 	return keep
 }
 
+// qoderIntersectWhitelist 将候选模型 ID 与 Qoder 平台 14 个唯一可读模型白名单求交
+// （单一事实源 domain.QoderModelWhitelist，constants.go）：18 个原生模型 ID 及外键
+// 一律剔除，确保 /v1/models 仅对外展示 14 个可读模型名。
+func qoderIntersectWhitelist(models []string) []string {
+	if len(models) == 0 {
+		return []string{}
+	}
+	keep := make([]string, 0, len(models))
+	for _, m := range models {
+		if slices.Contains(domain.QoderModelWhitelist, m) {
+			keep = append(keep, m)
+		}
+	}
+	return keep
+}
+
 // pinWBWhitelistOriginalKeys 将 Codex 消费端出口处被 FilterCodexModelIDsForGroup
 // 再注入的 WB 白名单键变体条目还原为白名单键原文：条目或其 -thinking 变体经
 // 大小写不敏感归一化命中 domain.WbModelWhitelist 时输出白名单键原文（去重），
@@ -1616,6 +1683,47 @@ func wbWhitelistKeyForVariant(entry string) string {
 		}
 	}
 	return ""
+}
+
+// pinQoderWhitelistOriginalKeys 将 Codex 消费端出口处被 FilterCodexModelIDsForGroup
+// 再注入的 Qoder 白名单键变体条目（含 -thinking 与大小写差异）还原为 domain.QoderModelWhitelist
+// 中的 14 个唯一可读模型名原文（去重），其余条目原样直通（同构于 pinWBWhitelistOriginalKeys）。
+func pinQoderWhitelistOriginalKeys(modelIDs []string) []string {
+	if len(modelIDs) == 0 {
+		return modelIDs
+	}
+	out := make([]string, 0, len(modelIDs))
+	seen := make(map[string]struct{}, len(modelIDs))
+	for _, id := range modelIDs {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(id), "-thinking"))
+		matched := id
+		for _, key := range domain.QoderModelWhitelist {
+			if strings.EqualFold(trimmed, key) {
+				matched = key
+				break
+			}
+		}
+		if _, dup := seen[matched]; dup {
+			continue
+		}
+		seen[matched] = struct{}{}
+		out = append(out, matched)
+	}
+	return out
+}
+
+func (h *GatewayHandler) pinCompositeCodexWhitelistKeys(ctx context.Context, groupID *int64, modelIDs []string) []string {
+	if h == nil || h.gatewayService == nil || len(modelIDs) == 0 {
+		return pinWBWhitelistOriginalKeys(modelIDs)
+	}
+	schedulable := h.gatewayService.GetSchedulablePlatforms(ctx, groupID)
+	if _, hasWB := schedulable[service.PlatformWB]; hasWB {
+		modelIDs = pinWBWhitelistOriginalKeys(modelIDs)
+	}
+	if _, hasQoder := schedulable[service.PlatformQoder]; hasQoder {
+		modelIDs = pinQoderWhitelistOriginalKeys(modelIDs)
+	}
+	return modelIDs
 }
 
 func defaultCodexModelIDsForPlatform(platform string) []string {
@@ -1675,6 +1783,8 @@ func defaultModelIDsForPlatform(platform string) []string {
 		return ids
 	case service.PlatformWB:
 		return slices.Clone(domain.WbModelWhitelist)
+	case service.PlatformQoder:
+		return slices.Clone(domain.QoderModelWhitelist)
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {

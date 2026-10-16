@@ -635,9 +635,17 @@
         💳 {{ t('admin.accounts.wbCredits.remaining') }}: {{ wbCreditsDisplay.remaining }} / {{ wbCreditsDisplay.total }}{{ wbCreditsExpiresLabel }}
       </div>
 
+      <!-- Qoder credits (/api/v2/user/plan + /api/v2/quota/usage) -->
+      <div
+        v-if="qoderCreditsDisplay"
+        class="text-[10px] text-gray-500 dark:text-gray-400"
+      >
+        💳 {{ t('admin.accounts.qoderCredits.remaining') }}: {{ qoderCreditsDisplay.remaining }} / {{ qoderCreditsDisplay.total }}{{ qoderCreditsExpiresLabel }}
+      </div>
+
       <!-- No data at all -->
       <div
-        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !wbCreditsDisplay && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
+        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !wbCreditsDisplay && !qoderCreditsDisplay && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
         class="text-xs text-gray-400"
       >-</div>
     </div>
@@ -755,6 +763,9 @@ const shouldFetchUsage = computed(() => {
   if (props.account.platform === 'wb') {
     // wb 无 OAuth；积分数据源 = 单账号 usage 端点（无批管理器时自取）。
     // 有 requestBatchedUsage 时由父侧批路径优先（isBatchManaged 分支短路）。
+    return true
+  }
+  if (props.account.platform === 'qoder') {
     return true
   }
   return false
@@ -1515,6 +1526,28 @@ const wbCreditsExpiresLabel = computed(() => {
   const expiresAt = wbCreditsDisplay.value?.expiresAt
   if (!expiresAt) return ''
   return t('admin.accounts.wbCredits.expiresAt', { date: expiresAt })
+})
+
+// Qoder 积分（usageInfo.qoder_credits：/api/v2/user/plan + /api/v2/quota/usage）。
+// 字段缺失/畸形（remaining/total 非有效数字）→ null 不渲染，不造 0 兜底。
+const qoderCreditsDisplay = computed<{ remaining: number; total: number; expiresAt: string | null } | null>(() => {
+  if (props.account.platform !== 'qoder') return null
+  const credits = usageInfo.value?.qoder_credits
+  if (!credits) return null
+  const remaining = credits.remaining
+  const total = credits.total
+  if (typeof remaining !== 'number' || typeof total !== 'number' || !Number.isFinite(remaining) || !Number.isFinite(total)) return null
+  return {
+    remaining,
+    total,
+    expiresAt: typeof credits.expires_at === 'string' && credits.expires_at ? credits.expires_at : null
+  }
+})
+
+const qoderCreditsExpiresLabel = computed(() => {
+  const expiresAt = qoderCreditsDisplay.value?.expiresAt
+  if (!expiresAt) return ''
+  return t('admin.accounts.qoderCredits.expiresAt', { date: expiresAt })
 })
 
 const handleQuotaResetAccountUpdated = (account: Account) => {

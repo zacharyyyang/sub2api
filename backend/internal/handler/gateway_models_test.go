@@ -2546,3 +2546,56 @@ func unionModelIDsForTest(lists ...[]string) []string {
 	}
 	return out
 }
+
+// TestQoderGatewayModelsAndCompositeLists14Whitelist 覆盖设计 §6 用例 15 ②：qoder 与 composite 分组 /v1/models 精确返回 14 个可读模型。
+func TestQoderGatewayModelsAndCompositeLists14Whitelist(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7901
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformQoder}}},
+	})
+	for _, plat := range []string{service.PlatformQoder, service.PlatformComposite} {
+		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: plat}, "/v1/models")
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		require.ElementsMatch(t, domain.QoderModelWhitelist, modelIDsForTest(got.Data))
+	}
+	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"sonus-fable5.1", "sonus-fable5.1-thinking"}}}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var codexGot codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &codexGot))
+	require.ElementsMatch(t, []string{"sonus-fable5.1"}, codexModelSlugsForTest(codexGot.Models))
+}
+
+// TestQoderHandlerChatCompletionsAutoAllowedAndUnknownModel400 覆盖设计 §6 用例 15 ②：auto 放行与未知模型返回 HTTP 400。
+func TestQoderHandlerChatCompletionsAutoAllowedAndUnknownModel400(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(7902)
+	apiKey := &service.APIKey{ID: 7903, GroupID: &groupID, Group: &service.Group{ID: groupID, Platform: service.PlatformQoder}, User: &service.User{ID: 1, Status: service.StatusActive}}
+	for _, m := range []string{"auto", "fast", "performance", "efficient", "smodel", "SONUS-FABLE5.1"} {
+		c1, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c1.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		require.True(t, openAICompatibleTextTargetAllowed(c1, apiKey, m))
+		require.False(t, c1.Writer.Written(), "model=%s", m)
+	}
+	for _, tc := range []struct {
+		model string
+		code  int
+		msg   string
+	}{
+		{"auto", http.StatusBadGateway, "Upstream request failed"},
+		{"gpt-99-unknown", http.StatusBadRequest, "unsupported model: gpt-99-unknown"},
+	} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"`+tc.model+`","messages":[{"role":"user","content":"hi"}]}`))
+		c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+		newServiceTierHandlerTest(t).ChatCompletions(c)
+		require.Equal(t, tc.code, rec.Code, "model=%s", tc.model)
+		require.Contains(t, rec.Body.String(), tc.msg, "model=%s", tc.model)
+	}
+}

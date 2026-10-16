@@ -537,6 +537,20 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 			return fmt.Errorf("wb token exchange smoke test failed: %w", err)
 		}
 		return nil
+	case PlatformQoder:
+		creds, err := ParseQoderCredentials(account.Credentials)
+		if err != nil {
+			return err
+		}
+		if _, err := DefaultQoderWasmSigner().RuntimeAuthFields(creds); err != nil {
+			return fmt.Errorf("qoder wasm runtime auth check failed: %w", err)
+		}
+		smokeCtx, cancel := context.WithTimeout(ctx, qoderQuotaHTTPTimeout)
+		defer cancel()
+		if _, err := FetchQoderQuota(smokeCtx, creds.AccessToken); err != nil {
+			return fmt.Errorf("qoder plan smoke test failed: %w", err)
+		}
+		return nil
 	default:
 		if IsMultiProtocolAPIKeyProvider(account.Platform) {
 			// 多协议 API Key 供应商（国产厂商与聚合平台）：凭证为 API Key，实际可用性

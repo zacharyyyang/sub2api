@@ -419,6 +419,11 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 			return nil, err
 		}
 	}
+	if input.Platform == PlatformQoder {
+		if _, err := NormalizeQoderCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -655,6 +660,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	} else if len(input.Credentials) > 0 {
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
+		existingQoderTokenExp := qoderCredInt64(account.Credentials, qoderCredTokenExpiresAt)
+		existingQoderRefreshExp := qoderCredInt64(account.Credentials, qoderCredRefreshTokenExpiresAt)
 		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
 		// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
 		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
@@ -666,6 +673,17 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		// wb 账号四件套必填：编辑合并后校验最终存储形状（含保留的敏感键）
 		if account.Platform == PlatformWB {
 			if err := ValidateWBRequiredCredentials(account.Credentials); err != nil {
+				return nil, err
+			}
+		}
+		if account.Platform == PlatformQoder {
+			if qoderCredInt64(account.Credentials, qoderCredTokenExpiresAt) <= 0 && existingQoderTokenExp > 0 {
+				account.Credentials[qoderCredTokenExpiresAt] = existingQoderTokenExp
+			}
+			if qoderCredInt64(account.Credentials, qoderCredRefreshTokenExpiresAt) <= 0 && existingQoderRefreshExp > 0 {
+				account.Credentials[qoderCredRefreshTokenExpiresAt] = existingQoderRefreshExp
+			}
+			if _, err := NormalizeQoderCredentials(account.Credentials); err != nil {
 				return nil, err
 			}
 		}
@@ -916,6 +934,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			invalidator.InvalidateWBToken(account.ID)
 		}
 	}
+	if account.Platform == PlatformQoder {
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateQoderToken(int64) }); ok {
+			invalidator.InvalidateQoderToken(account.ID)
+		}
+	}
 
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
 	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
@@ -1066,6 +1089,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					return nil, err
 				}
 			}
+			if acc != nil && acc.Platform == PlatformQoder {
+				if _, err := NormalizeQoderCredentials(mergeWBCredentials(acc.Credentials, input.Credentials)); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -1206,6 +1234,13 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				}
 			}
 		}
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateQoderToken(int64) }); ok {
+			for _, account := range cachedTargets {
+				if account != nil && account.Platform == PlatformQoder {
+					invalidator.InvalidateQoderToken(account.ID)
+				}
+			}
+		}
 	}
 
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
@@ -1335,6 +1370,9 @@ func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
 	}
 	if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateWBToken(int64) }); ok {
 		invalidator.InvalidateWBToken(id)
+	}
+	if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateQoderToken(int64) }); ok {
+		invalidator.InvalidateQoderToken(id)
 	}
 	return nil
 }

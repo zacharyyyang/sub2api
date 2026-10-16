@@ -639,6 +639,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		if a.Platform == domain.PlatformWB {
 			return wbDefaultModelMapping()
 		}
+		if a.Platform == domain.PlatformQoder {
+			return qoderDefaultModelMapping()
+		}
 		// Bedrock 默认映射由 forwardBedrock 统一处理（需配合 region prefix 调整）
 		return nil
 	}
@@ -655,6 +658,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		}
 		if a.Platform == domain.PlatformWB {
 			return wbDefaultModelMapping()
+		}
+		if a.Platform == domain.PlatformQoder {
+			return qoderDefaultModelMapping()
 		}
 		return nil
 	}
@@ -715,6 +721,19 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 func wbDefaultModelMapping() map[string]string {
 	m := make(map[string]string, len(domain.WbModelWhitelist))
 	for _, id := range domain.WbModelWhitelist {
+		m[id] = id
+	}
+	return m
+}
+
+// qoderDefaultModelMapping 从 domain.QoderModelWhitelist（14 别名）与 domain.QoderNativeModels（18 原生 ID）
+// 构建 Qoder 平台默认恒等映射（共 32 键），同时作为 PlatformQoder 的内置允许集兜底。
+func qoderDefaultModelMapping() map[string]string {
+	m := make(map[string]string, len(domain.QoderModelWhitelist)+len(domain.QoderNativeModels))
+	for _, id := range domain.QoderModelWhitelist {
+		m[id] = id
+	}
+	for _, id := range domain.QoderNativeModels {
 		m[id] = id
 	}
 	return m
@@ -837,6 +856,12 @@ func normalizeRequestedModelForLookup(platform, requestedModel string) string {
 	if trimmed == "" {
 		return ""
 	}
+	if platform == PlatformQoder {
+		if canonical, ok := domain.ResolveQoderModel(trimmed); ok {
+			return canonical
+		}
+		return trimmed
+	}
 	if platform != PlatformGemini && platform != PlatformAntigravity {
 		return trimmed
 	}
@@ -907,6 +932,11 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
 		return true
+	}
+	if a.Platform == PlatformQoder {
+		if _, ok := domain.ResolveQoderModel(requestedModel); ok && mappingSupportsRequestedModel(qoderDefaultModelMapping(), normalized) {
+			return true
+		}
 	}
 	if a.Platform == PlatformAntigravity {
 		if _, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, requestedModel); ok {
@@ -1832,7 +1862,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	// wb 企业平台定点放行：IsOpenAICompatible()(wb) 恒 false（wb 401 错误语义独立），
 	// 能力闸仅放行 chat_completions（wb 网关腿 = OpenAI 兼容 chat 接口）；空 capability
 	// 的无能力约束入口已在上方提前放行，属既有行为延续。
-	if a.Platform == PlatformWB {
+	if a.Platform == PlatformWB || a.Platform == PlatformQoder {
 		return capability == OpenAIEndpointCapabilityChatCompletions
 	}
 	if !a.IsOpenAICompatible() {

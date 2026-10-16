@@ -187,6 +187,20 @@
             <PlatformIcon platform="wb" size="sm" />
             WB Enterprise
           </button>
+          <button
+            type="button"
+            @click="selectQoderPlatform()"
+            data-testid="platform-tab-qoder"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'qoder'
+                ? 'bg-white text-violet-600 shadow-sm dark:bg-dark-600 dark:text-violet-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="qoder" size="sm" />
+            Qoder
+          </button>
         </div>
         <!-- 国产厂商：Kimi / Zhipu GLM / DeepSeek / MiniMax -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-testid="platform-row-cn">
@@ -1471,8 +1485,29 @@
         </div>
       </div>
 
-      <!-- API Key input (only for apikey type, excluding Antigravity / WB which have their own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'wb'" class="space-y-4">
+      <!-- Qoder credentials（access_token / refresh_token / uid / org_id 必填 + machine_id / umid_token / machine_type / token_expires_at / refresh_token_expires_at 选填） -->
+      <div v-if="form.type === 'apikey' && form.platform === 'qoder'" class="space-y-4">
+        <QoderCredentialFields ref="qoderCredentialFieldsRef" v-model="qoderCredentials" />
+
+        <!-- Qoder 模型限制（仅白名单模式） -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <ModelWhitelistSelector
+            v-model="allowedModels"
+            :model-mappings="modelMappings"
+            :platform="form.platform"
+            :sync-credentials="syncPreviewCredentials"
+            @upstream-synced="upstreamModelsPreviewed = true"
+          />
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+          </p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Qoder 仅支持白名单模式。</p>
+        </div>
+      </div>
+
+      <!-- API Key input (only for apikey type, excluding Antigravity / WB / Qoder which have their own fields) -->
+      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'wb' && form.platform !== 'qoder'" class="space-y-4">
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -4058,6 +4093,7 @@ import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
 import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtocolRulesEditor.vue'
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
+import QoderCredentialFields from '@/components/account/QoderCredentialFields.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
   applyAntigravityProjectID,
@@ -4289,6 +4325,10 @@ const upstreamBillingAutoProbeEnabled = ref(true)
 const wbCredentials = ref<Record<string, string>>({})
 const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
 
+// Qoder 平台凭证（四件套必填 + 可选高级项）
+const qoderCredentials = ref<Record<string, string>>({})
+const qoderCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
+
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
 // 多协议供应商（国产厂商与走通用表单的供应商）的接入模式；OpenCode 用 openCodeAccountMode。
 const accountMode = ref<string>('payg')
@@ -4439,6 +4479,19 @@ function selectWBPlatform() {
   accountCategory.value = 'apikey'
   modelRestrictionMode.value = 'whitelist'
   allowedModels.value = [...getModelsByPlatform('wb')]
+}
+
+// 切换 Qoder 平台：apikey 型，仅白名单模型限制。
+function selectQoderPlatform() {
+  const wasQoder = form.platform === 'qoder'
+  form.platform = 'qoder'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  if (!wasQoder) {
+    qoderCredentials.value = {}
+    modelRestrictionMode.value = 'whitelist'
+    allowedModels.value = [...getModelsByPlatform('qoder')]
+  }
 }
 // 账号类型 / 协议变更时同步默认 base url。
 watch(openCodeAccountMode, (mode, previousMode) => {
@@ -4914,6 +4967,10 @@ const isOAuthFlow = computed(() => {
   }
   // WB Enterprise 只有 apikey 型，不需要 OAuth 流程
   if (form.platform === 'wb') {
+    return false
+  }
+  // Qoder 只有 apikey 型，不需要 OAuth 流程
+  if (form.platform === 'qoder') {
     return false
   }
   // Bedrock 类型不需要 OAuth 流程
@@ -5505,6 +5562,7 @@ const resetForm = () => {
   upstreamRequestIdHeader.value = ''
   upstreamBillingAutoProbeEnabled.value = true
   wbCredentials.value = {}
+  qoderCredentials.value = {}
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -5970,6 +6028,35 @@ const handleSubmit = async () => {
     return
   }
 
+  // Qoder 平台：apikey 型，四件套凭证直接创建
+  if (form.platform === 'qoder') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!qoderCredentialFieldsRef.value?.isValid()) {
+      appStore.showError('请填写全部必填凭证：Access Token / Refresh Token / User ID (uid) / Organization ID (org_id)')
+      return
+    }
+    const collected = qoderCredentialFieldsRef.value.collect()
+    const credentials: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(collected)) {
+      if (value && value.trim()) {
+        if (key === 'token_expires_at' || key === 'refresh_token_expires_at') {
+          credentials[key] = Number(value.trim())
+        } else {
+          credentials[key] = value.trim()
+        }
+      }
+    }
+    const qoderModelMapping = buildModelMappingObject('whitelist', allowedModels.value, modelMappings.value)
+    if (qoderModelMapping) {
+      credentials.model_mapping = qoderModelMapping
+    }
+    await createAccountAndFinish('qoder', 'apikey', credentials)
+    return
+  }
+
   // For apikey type, create directly
   if (!apiKeyValue.value.trim()) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
@@ -6215,9 +6302,10 @@ const createAccountAndFinish = async (
     rate_multiplier: form.rate_multiplier,
     group_ids: form.group_ids,
     expires_at: form.expires_at,
-    // 上游倍率探测对全部 API-key 平台开放（antigravity upstream 走本 helper）；
-    // 非 apikey 类型（bedrock/oauth）不传，后端不动作。
-    upstream_billing_probe_enabled: type === 'apikey' ? upstreamBillingAutoProbeEnabled.value : undefined,
+    // 上游倍率探测对通用 API-key 平台开放（antigravity upstream 走本 helper）；
+    // 非 apikey 类型（bedrock/oauth）或 Qoder 原生加密通道不传，后端不动作。
+    upstream_billing_probe_enabled:
+      type === 'apikey' && platform !== 'qoder' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

@@ -330,10 +330,21 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 }
 
 func openAICompatibleTextTargetAllowed(c *gin.Context, apiKey *service.APIKey, model string) bool {
+	if effectiveAPIKeyPlatform(c, apiKey) == service.PlatformQoder {
+		if _, err := domain.NormalizeQoderModel(model); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": err.Error(),
+				},
+			})
+			return false
+		}
+	}
 	allowed := domain.PlatformIDsWhere(func(spec domain.PlatformSpec) bool {
 		return spec.Gateway == domain.PlatformGatewayOpenAI
 	})
-	allowed = append(allowed, service.PlatformWB)
+	allowed = append(allowed, service.PlatformWB, service.PlatformQoder)
 	return compositeTargetPlatformAllowed(c, apiKey, model, allowed...)
 }
 
@@ -1583,6 +1594,9 @@ func resolveOpenAIMessagesMetadataSession(c *gin.Context, sessionHash, promptCac
 
 // anthropicErrorResponse writes an error in Anthropic Messages API format.
 func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int, errType, message string) {
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return
+	}
 	c.JSON(status, gin.H{
 		"type": "error",
 		"error": gin.H{
@@ -3890,6 +3904,9 @@ func openAIFirstOutputFailoverExhausted(failoverErr *service.UpstreamFailoverErr
 
 // errorResponse returns OpenAI API format error response
 func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
+	if c != nil && c.Writer != nil && c.Writer.Written() {
+		return
+	}
 	// body-signal compact 心跳可能已把响应头提交为 200：JSON 错误体会与已
 	// 提交的 SSE 流交错，必须降级为 response.failed 终止事件（#3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {

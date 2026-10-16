@@ -233,6 +233,9 @@ type UsageInfo struct {
 	// WB 企业积分额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode；无数据显示 = 字段 nil）
 	WbEnterpriseCredits *WbEnterpriseCredits `json:"wb_enterprise_credits,omitempty"`
 
+	// Qoder 积分额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode；无数据显示 = 字段 nil）
+	QoderCredits *QoderCredits `json:"qoder_credits,omitempty"`
+
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
 
@@ -412,6 +415,9 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	// （fetcher 失败返回 empty,nil）误清账号认证错误、误置 active。
 	if account.Platform == PlatformWB {
 		return s.getWBUsage(ctx, account)
+	}
+	if account.Platform == PlatformQoder {
+		return s.getQoderUsage(ctx, account)
 	}
 
 	if account.Platform == PlatformGrok {

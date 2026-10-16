@@ -20,7 +20,10 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => key
+      t: (key: string, params?: Record<string, unknown>) =>
+        key === 'admin.accounts.qoderCredits.expiresAt' && params?.date
+          ? `admin.accounts.qoderCredits.expiresAt(${String(params.date)})`
+          : key
     })
   }
 })
@@ -1869,6 +1872,92 @@ describe('AccountUsageCell', () => {
     })
     await flushPromises()
     expect(malformed.text()).not.toContain('admin.accounts.wbCredits.remaining')
+    expect(malformed.text()).not.toMatch(/0/)
+  })
+
+  it('qoder 账号无批管理器时自拉 getUsage 并渲染积分行', async () => {
+    getUsage.mockResolvedValue({
+      qoder_credits: { remaining: 3100, total: 3100, plan: 'pro', expires_at: '2026-11-15' }
+    })
+    const account = makeAccount({ id: 6001, platform: 'qoder', type: 'apikey' })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledWith(6001)
+    expect(wrapper.text()).toContain('admin.accounts.qoderCredits.remaining')
+    expect(wrapper.text()).toContain('3100 / 3100')
+    expect(wrapper.text()).toContain('admin.accounts.qoderCredits.expiresAt(2026-11-15)')
+    expect(wrapper.findAll('div.text-gray-400').some(node => node.text().trim() === '-')).toBe(false)
+  })
+
+  it('qoder 账号积分齐全时渲染剩余积分行（expires_at 缺失则省略到期段）', async () => {
+    const account = makeAccount({ id: 6002, platform: 'qoder', type: 'apikey' })
+
+    const withExpiry = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          qoder_credits: { remaining: 2500, total: 3100, plan: 'pro', expires_at: '2026-11-15' }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(withExpiry.text()).toContain('admin.accounts.qoderCredits.remaining')
+    expect(withExpiry.text()).toContain('2500 / 3100')
+    expect(withExpiry.text()).toContain('admin.accounts.qoderCredits.expiresAt(2026-11-15)')
+
+    const withoutExpiry = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          qoder_credits: { remaining: 2500, total: 3100 }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(withoutExpiry.text()).toContain('admin.accounts.qoderCredits.remaining')
+    expect(withoutExpiry.text()).toContain('2500 / 3100')
+    expect(withoutExpiry.text()).not.toContain('admin.accounts.qoderCredits.expiresAt')
+  })
+
+  it('qoder 积分缺失或畸形时不渲染积分行、不显示 0 兜底', async () => {
+    const account = makeAccount({ id: 6003, platform: 'qoder', type: 'apikey' })
+
+    const nilUsage = mount(AccountUsageCell, {
+      props: { account, batchedUsage: null, requestBatchedUsage: vi.fn() },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(nilUsage.text()).not.toContain('admin.accounts.qoderCredits.remaining')
+
+    const malformed = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          qoder_credits: { remaining: 'bad' as unknown as number, total: 'bad' as unknown as number }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(malformed.text()).not.toContain('admin.accounts.qoderCredits.remaining')
     expect(malformed.text()).not.toMatch(/0/)
   })
 })

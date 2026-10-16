@@ -14,6 +14,8 @@ var SensitiveCredentialKeys = []string{
 	"service_account_json", "service_account", "private_key",
 	// wb 企业账号（client_credentials 流）：secret 与 pt_key 绝不出现在响应、编辑合并时保留
 	"client_secret", "pt_key",
+	// Qoder 桌面端账号：设备标识 umid_token 脱敏与编辑保留
+	"umid_token",
 }
 
 var sensitiveCredentialKeySet = func() map[string]struct{} {
@@ -51,4 +53,38 @@ func MergePreservingSensitiveCreds(existing, incoming map[string]any) map[string
 		}
 	}
 	return out
+}
+
+// RedactCredentials 复制一份 in，剥离 SensitiveCredentialKeys 列出的敏感子键并产出 has_<key> 状态表。
+func RedactCredentials(in map[string]any) (out map[string]any, status map[string]bool) {
+	if in == nil {
+		return nil, nil
+	}
+	out = make(map[string]any, len(in))
+	for k, v := range in {
+		if IsSensitiveCredentialKey(k) {
+			if isPresentCredValue(v) {
+				if status == nil {
+					status = make(map[string]bool, 4)
+				}
+				status["has_"+k] = true
+			}
+			continue
+		}
+		out[k] = v
+	}
+	return out, status
+}
+
+func isPresentCredValue(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case string:
+		return x != ""
+	case bool:
+		return x
+	default:
+		return true
+	}
 }

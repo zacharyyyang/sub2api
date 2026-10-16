@@ -462,6 +462,10 @@ type OpenAIGatewayService struct {
 	openAITokenProvider   *OpenAITokenProvider
 	grokTokenProvider     *GrokTokenProvider
 	wbTokenProvider       wbTokenSource
+	qoderWasmSigner       *QoderWasmSigner
+	qoderTokenProvider    *QoderTokenProvider
+	qoderSleep            func(ctx context.Context, d time.Duration) error
+	qoderAsyncRefreshHook func()
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
 	resolver              *ModelPricingResolver
@@ -567,6 +571,8 @@ func NewOpenAIGatewayService(
 		openAITokenProvider:   openAITokenProvider,
 		grokTokenProvider:     grokTokenProvider,
 		wbTokenProvider:       NewWbTokenProvider(accountRepo, nil, ""),
+		qoderWasmSigner:       DefaultQoderWasmSigner(),
+		qoderTokenProvider:    newQoderTokenProviderFromAccountRepo(accountRepo),
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
 		resolver:              resolver,
@@ -588,6 +594,44 @@ func NewOpenAIGatewayService(
 	}
 	svc.logOpenAIWSModeBootstrap()
 	return svc
+}
+
+type qoderAccountRepoAdapter struct{ AccountRepository }
+
+func (a *qoderAccountRepoAdapter) UpdateCredentials(ctx context.Context, id int64, credentials map[string]any) error {
+	if u, ok := a.AccountRepository.(interface {
+		UpdateCredentials(context.Context, int64, map[string]any) error
+	}); ok {
+		return u.UpdateCredentials(ctx, id, credentials)
+	}
+	_, err := a.AccountRepository.BulkUpdate(ctx, []int64{id}, AccountBulkUpdate{Credentials: credentials})
+	return err
+}
+
+var sharedQoderTokenProviders sync.Map // AccountRepository -> *QoderTokenProvider
+
+func newQoderTokenProviderFromAccountRepo(repo AccountRepository) *QoderTokenProvider {
+	if repo == nil {
+		return NewQoderTokenProvider(nil, nil, "")
+	}
+	if existing, ok := sharedQoderTokenProviders.Load(repo); ok {
+		return existing.(*QoderTokenProvider)
+	}
+	var p *QoderTokenProvider
+	if qr, ok := repo.(qoderAccountRepo); ok {
+		p = NewQoderTokenProvider(qr, nil, "")
+	} else {
+		p = NewQoderTokenProvider(&qoderAccountRepoAdapter{AccountRepository: repo}, nil, "")
+	}
+	actual, _ := sharedQoderTokenProviders.LoadOrStore(repo, p)
+	return actual.(*QoderTokenProvider)
+}
+
+func (s *OpenAIGatewayService) InvalidateQoderToken(id int64) {
+	qoderUsageCache.Delete(id)
+	if s != nil && s.qoderTokenProvider != nil {
+		s.qoderTokenProvider.InvalidateQoderToken(id)
+	}
 }
 
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）

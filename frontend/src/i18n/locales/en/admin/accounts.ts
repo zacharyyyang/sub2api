@@ -119,6 +119,7 @@ export default {
         opencode_go: 'OpenCode',
         typesafe: 'TypeSafe / Jev',
         wb: 'WB Enterprise',
+        qoder: 'Qoder',
       },
       cnProviders: {
         accountMode: {
@@ -1666,6 +1667,10 @@ export default {
         estimatedTotalCostTooltip: 'Estimated total cost at 100% utilization, based on current window cost and utilization'
       },
       wbCredits: {
+        remaining: 'Credits remaining',
+        expiresAt: ' (expires {date})'
+      },
+      qoderCredits: {
         remaining: 'Credits remaining',
         expiresAt: ' (expires {date})'
       },

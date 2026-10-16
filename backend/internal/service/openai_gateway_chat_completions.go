@@ -113,6 +113,10 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		return s.forwardWBChatCompletions(ctx, c, account, body)
 	}
 
+	if account.Platform == PlatformQoder {
+		return s.forwardQoderChatCompletions(ctx, c, account, body)
+	}
+
 	// Cursor compatibility: some clients send a Responses-shaped body to the
 	// /v1/chat/completions URL. Detect it before protocol routing so adaptive
 	// accounts never forward the body unchanged to a Chat Completions endpoint.

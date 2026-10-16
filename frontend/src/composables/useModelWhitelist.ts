@@ -295,6 +295,27 @@ const wbOnlyModels = [
   'kimi-k3', 'kimi-k2.6', 'kimi-k2.8-preview'
 ]
 
+// Qoder 平台模型白名单（与后端 domain.QoderModelWhitelist 14 个唯一可读模型逐字一致）
+export const qoderModels = [
+  'sonus-fable5.1',
+  'cantus-opus5.5',
+  'ultimate-gpt6.1sol',
+  'Qwen3.8-Max',
+  'Qwen3.8-Flash',
+  'Qwen3.7-Max',
+  'Qwen3.7-Plus',
+  'Kimi-K3',
+  'Kimi-K2.8-Preview',
+  'GLM-5.3',
+  'GLM-5.3-Flash',
+  'DeepSeek-V4-Pro',
+  'DeepSeek-Flash',
+  'MiniMax-M3'
+]
+
+// Qoder 独有可读模型（过滤已存在于 minimaxModels 的项）：用于补全 allModelsList，避免重复选项
+const qoderOnlyModels = qoderModels.filter(m => !minimaxModels.includes(m))
+
 // 所有模型（去重）
 const allModelsList: string[] = [
   ...openaiModels,
@@ -315,7 +336,8 @@ const allModelsList: string[] = [
   ...sparkModels,
   ...hunyuanModels,
   ...perplexityModels,
-  ...wbOnlyModels
+  ...wbOnlyModels,
+  ...qoderOnlyModels
 ]
 
 // 转换为下拉选项格式
@@ -521,6 +543,7 @@ export function getModelsByPlatform(platform: string): string[] {
     ]
     case 'typesafe': return ['jev-latest']
     case 'wb': return wbModels
+    case 'qoder': return qoderModels
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels
