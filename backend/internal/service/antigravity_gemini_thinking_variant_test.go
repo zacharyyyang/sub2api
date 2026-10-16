@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
@@ -37,6 +38,8 @@ func TestGeminiThinkingLevelFromBody(t *testing.T) {
 		{"budget 24576", `{"generationConfig":{"thinkingConfig":{"thinkingBudget":24576}}}`, "high"},
 		{"thinkingLevel wins over budget", `{"generationConfig":{"thinkingConfig":{"thinkingBudget":24576,"thinkingLevel":"low"}}}`, "low"},
 		{"thinkingLevel medium", `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"MEDIUM"}}}`, "medium"},
+		{"thinkingLevel none", `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"none"}}}`, "low"},
+		{"thinkingLevel minimal", `{"generationConfig":{"thinkingConfig":{"thinkingLevel":"minimal"}}}`, "low"},
 		{"invalid json", `{"generationConfig":`, "high"},
 	}
 	for _, tt := range tests {
@@ -90,10 +93,27 @@ func TestResolveGeminiThinkingVariant(t *testing.T) {
 		{"variant value is itself a mapping target", map[string]string{
 			"gemini-3.8-flash-high": "gemini-3.8-flash-tiered",
 		}, "gemini-3.8-flash", budget("-1"), "gemini-3.8-flash-tiered", true},
-		{"user-written bare identity passthrough: respected", map[string]string{
+		{"user-written bare identity passthrough on tiered family: still resolves thinking variant", map[string]string{
 			"gemini-3.8-flash":      "gemini-3.8-flash",
+			"gemini-3.8-flash-low":  "gemini-3.8-flash-low",
 			"gemini-3.8-flash-high": "gemini-3.8-flash-high",
-		}, "gemini-3.8-flash", budget("1000"), "", false},
+		}, "gemini-3.8-flash", budget("1000"), "gemini-3.8-flash-low", true},
+		{"bare-only mapping without suffixed keys: resolves built-in thinking variant", map[string]string{
+			"gemini-4-argon": "gemini-4-argon-high",
+			"gemini-3.1-pro": "gemini-pro-agent",
+		}, "gemini-4-argon", budget("1000"), "gemini-4-argon-low", true},
+		{"bare-only gemini-3.1-pro with low budget -> gemini-3.1-pro-low", map[string]string{
+			"gemini-3.1-pro": "gemini-pro-agent",
+		}, "gemini-3.1-pro", budget("1000"), "gemini-3.1-pro-low", true},
+		{"bare-only gemini-3.1-pro with high budget -> gemini-pro-agent", map[string]string{
+			"gemini-3.1-pro": "gemini-pro-agent",
+		}, "gemini-3.1-pro", budget("24576"), "gemini-pro-agent", true},
+		{"bare-only claude-opus-5-5 with low budget -> claude-opus-5-5-low", map[string]string{
+			"claude-opus-5-5": "claude-opus-5-5-high",
+		}, "claude-opus-5-5", budget("1000"), "claude-opus-5-5-low", true},
+		{"bare-only claude-opus-5-5 mapped to another model (claude-opus-4-6-thinking): untouched", map[string]string{
+			"claude-opus-5-5": "claude-opus-4-6-thinking",
+		}, "claude-opus-5-5", budget("1000"), "", false},
 		{"runtime-injected bare passthrough (not in credentials): still resolved", map[string]string{
 			// resolveModelMapping 会补 gemini-3.7-flash → gemini-3.7-flash 的默认透传，
 			// 但 credentials 里没有这条，应当继续推导变体。
@@ -134,6 +154,27 @@ func TestGeminiThinkingLevelFromClaudeThinking(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, geminiThinkingLevelFromClaudeThinking(tt.thinking))
+		})
+	}
+}
+
+func TestGeminiThinkingLevelFromClaudeRequest_OutputConfigEffort(t *testing.T) {
+	tests := []struct {
+		name         string
+		thinking     *antigravity.ThinkingConfig
+		outputConfig *antigravity.OutputConfig
+		want         string
+	}{
+		{"output_config low overrides nil thinking", nil, &antigravity.OutputConfig{Effort: "low"}, "low"},
+		{"output_config medium overrides adaptive thinking", &antigravity.ThinkingConfig{Type: "adaptive"}, &antigravity.OutputConfig{Effort: "medium"}, "medium"},
+		{"output_config high", &antigravity.ThinkingConfig{Type: "adaptive"}, &antigravity.OutputConfig{Effort: "high"}, "high"},
+		{"output_config max -> high", nil, &antigravity.OutputConfig{Effort: "max"}, "high"},
+		{"thinking disabled wins over output_config", &antigravity.ThinkingConfig{Type: "disabled"}, &antigravity.OutputConfig{Effort: "high"}, "low"},
+		{"empty output_config falls back to budget", &antigravity.ThinkingConfig{Type: "enabled", BudgetTokens: 1024}, &antigravity.OutputConfig{}, "low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, geminiThinkingLevelFromClaudeRequest(tt.thinking, tt.outputConfig))
 		})
 	}
 }
@@ -209,4 +250,130 @@ func TestGetMappedModelResolvesBareGeminiModelForAllEntrypoints(t *testing.T) {
 	t.Run("unsupported model still reports unsupported", func(t *testing.T) {
 		require.Empty(t, svc.getMappedModel(account, "gemini-9.9-flash"))
 	})
+}
+
+func TestGetAvailableModels_AntigravityUsesExplicitRawMappingWithoutAutoInjectedSuffixes(t *testing.T) {
+	groupID := int64(16)
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {
+				*newAntigravityAccountWithMapping(map[string]string{
+					"claude-opus-5-5":  "claude-opus-4-6-thinking",
+					"gemini-3.1-pro":   "gemini-pro-agent",
+					"gemini-3.8-flash": "gemini-3.8-flash-high",
+					"gemini-4-argon":   "gemini-4-argon-high",
+				}),
+			},
+		},
+	}
+	svc := &GatewayService{accountRepo: repo}
+	models := svc.GetAvailableModels(context.Background(), &groupID, PlatformAntigravity)
+	require.Equal(t, []string{
+		"claude-opus-5-5",
+		"gemini-3.1-pro",
+		"gemini-3.8-flash",
+		"gemini-4-argon",
+	}, models)
+}
+
+func TestAntigravityConvergedBareMapping_SupportsBothBareAndSuffixedRequestsAcrossCompositeAndAllowlist(t *testing.T) {
+	groupID := int64(6)
+	convergedAccount := newAntigravityAccountWithMapping(map[string]string{
+		"claude-opus-5-5":   "claude-opus-5-5-high",
+		"claude-sonnet-5-5": "claude-sonnet-5-5-high",
+		"claude-opus-4-6":   "claude-opus-4-6-thinking",
+		"claude-sonnet-4-6": "claude-sonnet-4-6",
+		"gemini-3.1-pro":    "gemini-pro-agent",
+		"gemini-3.8-flash":  "gemini-3.8-flash-high",
+		"gemini-4-argon":    "gemini-4-argon-high",
+	})
+	repo := &modelsListAccountRepoStub{
+		byGroup: map[int64][]Account{
+			groupID: {*convergedAccount},
+		},
+	}
+	gatewaySvc := &GatewayService{accountRepo: repo}
+	agSvc := &AntigravityGatewayService{}
+
+	// 1. /v1/models 只返回收敛后的裸名
+	models := gatewaySvc.GetAvailableModels(context.Background(), &groupID, PlatformAntigravity)
+	require.Equal(t, []string{
+		"claude-opus-4-6",
+		"claude-opus-5-5",
+		"claude-sonnet-4-6",
+		"claude-sonnet-5-5",
+		"gemini-3.1-pro",
+		"gemini-3.8-flash",
+		"gemini-4-argon",
+	}, models)
+
+	// 2. 复合分组 (composite) 模型归属判定：无论请求裸名还是后缀名，均认领为 antigravity（不会跌落到 gemini/anthropic 导致 503）
+	resolver := NewCompositeRouteResolver(nil)
+	resolver.SetModelOwnershipResolver(gatewaySvc.resolveCompositeModelOwnership)
+	for _, reqModel := range []string{
+		"gemini-4-argon",
+		"gemini-4-argon-high",
+		"gemini-4-argon-medium",
+		"gemini-4-argon-low",
+		"claude-opus-5-5",
+		"claude-opus-5-5-high",
+		"claude-opus-5-5-max",
+		"claude-opus-5-5-medium",
+		"claude-opus-5-5-low",
+		"claude-sonnet-5-5-low",
+		"gemini-3.8-flash-low",
+		"gemini-3.1-pro-low",
+		"gemini-3.1-pro-high",
+		"claude-opus-4-6-high",
+		"claude-sonnet-4-6-low",
+	} {
+		decision, err := resolver.Resolve(context.Background(), groupID, reqModel, CompositeRouteEndpointMessages)
+		require.NoError(t, err, "model: %s", reqModel)
+		require.True(t, decision.Matched, "model: %s", reqModel)
+		require.Equal(t, PlatformAntigravity, decision.TargetPlatform, "model %s must resolve to antigravity, not %s", reqModel, decision.TargetPlatform)
+		require.Equal(t, CompositeRouteSourceAccount, decision.Source, "model: %s", reqModel)
+
+		ctx := WithCompositeRouteDecision(context.Background(), decision)
+		require.True(t, gatewaySvc.isModelSupportedByAccountWithContext(ctx, convergedAccount, reqModel),
+			"account must be schedulable for %s under composite route context", reqModel)
+	}
+
+	// 3. 转发层映射：带后缀请求映射到对应档位，裸名请求按 thinkingLevel 动态映射到对应档位
+	require.Equal(t, "gemini-4-argon-high", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-4-argon-high", "low"))
+	require.Equal(t, "gemini-4-argon-low", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-4-argon-low", "high"))
+	require.Equal(t, "gemini-4-argon-low", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-4-argon", "low"))
+	require.Equal(t, "gemini-4-argon-medium", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-4-argon", "medium"))
+	require.Equal(t, "gemini-4-argon-high", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-4-argon", "high"))
+
+	require.Equal(t, "claude-opus-5-5-high", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-5-5-max", "low"))
+	require.Equal(t, "claude-opus-5-5-low", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-5-5-low", "high"))
+	require.Equal(t, "claude-opus-5-5-low", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-5-5", "low"))
+	require.Equal(t, "claude-opus-5-5-medium", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-5-5", "medium"))
+	require.Equal(t, "claude-opus-5-5-high", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-5-5", "high"))
+
+	require.Equal(t, "gemini-pro-agent", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-3.1-pro-high", "low"))
+	require.Equal(t, "gemini-3.1-pro-low", agSvc.getMappedModelForThinkingLevel(convergedAccount, "gemini-3.1-pro-low", "high"))
+	require.Equal(t, "claude-opus-4-6-thinking", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-opus-4-6-high", "low"))
+	require.Equal(t, "claude-sonnet-4-6", agSvc.getMappedModelForThinkingLevel(convergedAccount, "claude-sonnet-4-6-low", "high"))
+
+	// 4. 分组白名单 (GroupModelAllowlist)：仅配置裸名时，列表只出裸名，准入同时放行裸名与后缀名
+	allowlist := GroupModelAllowlist{
+		Enabled: true,
+		Models:  models,
+	}
+	require.Equal(t, models, allowlist.FilterForListing(models))
+	for _, reqModel := range []string{
+		"gemini-4-argon",
+		"gemini-4-argon-high",
+		"gemini-4-argon-low",
+		"claude-opus-5-5",
+		"claude-opus-5-5-high",
+		"claude-opus-5-5-max",
+		"claude-opus-5-5-low",
+		"claude-opus-4-6-high",
+		"gemini-3.8-flash-tiered",
+	} {
+		require.True(t, allowlist.Allows(reqModel), "allowlist with bare model must allow %s", reqModel)
+	}
+	require.False(t, allowlist.Allows("gemini-2.5-pro-high"))
 }

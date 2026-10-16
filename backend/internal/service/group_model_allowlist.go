@@ -137,6 +137,9 @@ func groupModelAllowlistCandidates(model string) []string {
 	add(strings.TrimPrefix(model, "models/"))
 	add(claude.NormalizeModelID(strings.TrimSuffix(model, "-thinking")))
 	add(NormalizeOpenAICompatRequestedModel(model))
+	if baseModel, _, ok := splitAntigravityThinkingVariantRequest(model); ok {
+		add(baseModel)
+	}
 	return candidates
 }
 

@@ -1856,6 +1856,14 @@ func TestOpus55ResponsesAdaptiveThinkingAndToolChoice(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "max", old.OutputConfig.Effort)
 	require.Equal(t, "enabled", old.Thinking.Type)
+
+	lowGem, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: "gemini-4-argon", Input: json.RawMessage(`"hello"`), Reasoning: &ResponsesReasoning{Effort: "low"}})
+	require.NoError(t, err)
+	require.NotNil(t, lowGem.OutputConfig)
+	require.Equal(t, "low", lowGem.OutputConfig.Effort)
+	require.NotNil(t, lowGem.Thinking)
+	require.Equal(t, "enabled", lowGem.Thinking.Type)
+	require.Equal(t, 1024, lowGem.Thinking.BudgetTokens)
 }
 
 func TestOpus55SignedThinkingResponsesRoundTrip(t *testing.T) {

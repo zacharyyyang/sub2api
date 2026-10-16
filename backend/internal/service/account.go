@@ -686,6 +686,10 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 				"gemini-3.8-flash-low",
 				"gemini-3.8-flash-medium",
 				"gemini-3.8-flash-tiered",
+				"gemini-4-argon",
+				"gemini-4-argon-high",
+				"gemini-4-argon-low",
+				"gemini-4-argon-medium",
 			})
 			applyAntigravityGemini31ProAliases(result)
 		}
@@ -770,6 +774,11 @@ func ensureAntigravityDefaultPassthroughs(mapping map[string]string, models []st
 
 func applyAntigravityGemini31ProAliases(mapping map[string]string) {
 	target := strings.TrimSpace(mapping[domain.AntigravityGemini31ProAgentModel])
+	if target == "" {
+		if t := strings.TrimSpace(mapping["gemini-3.1-pro"]); t == domain.AntigravityGemini31ProAgentModel {
+			target = t
+		}
+	}
 	if target == "" {
 		return
 	}
@@ -896,7 +905,18 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		return true
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
+		return true
+	}
+	if a.Platform == PlatformAntigravity {
+		if _, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, requestedModel); ok {
+			return true
+		}
+		if _, ok := resolveGeminiThinkingVariantForLevel(a, requestedModel, "high"); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）
@@ -919,6 +939,14 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
 	if normalized != requestedModel {
 		if mappedModel, matched := resolveRequestedModelInMapping(mapping, normalized); matched {
+			return mappedModel, true
+		}
+	}
+	if a.Platform == PlatformAntigravity {
+		if mappedModel, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, requestedModel); ok {
+			return mappedModel, true
+		}
+		if mappedModel, ok := resolveGeminiThinkingVariantForLevel(a, requestedModel, "high"); ok {
 			return mappedModel, true
 		}
 	}

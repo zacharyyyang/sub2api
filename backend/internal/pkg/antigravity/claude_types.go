@@ -19,7 +19,13 @@ type ClaudeRequest struct {
 	TopK        *int            `json:"top_k,omitempty"`
 	Tools       []ClaudeTool    `json:"tools,omitempty"`
 	Thinking    *ThinkingConfig `json:"thinking,omitempty"`
+	Output      *OutputConfig   `json:"output_config,omitempty"`
 	Metadata    *ClaudeMetadata `json:"metadata,omitempty"`
+}
+
+// OutputConfig Claude 输出参数配置（含思考努力程度 effort）
+type OutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // ClaudeMessage Claude 消息
@@ -208,6 +214,10 @@ var geminiModels = []modelDef{
 	{ID: "gemini-3.8-flash-low", DisplayName: "Gemini 3.8 Flash Low", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3.8-flash-medium", DisplayName: "Gemini 3.8 Flash Medium", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3.8-flash-tiered", DisplayName: "Gemini 3.8 Flash", CreatedAt: "2026-09-02T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon", DisplayName: "Gemini 4 Argon", CreatedAt: "2026-10-14T00:00:00Z"},
+	{ID: "gemini-4-argon-high", DisplayName: "Gemini 4 Argon (High)", CreatedAt: "2026-10-14T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon-low", DisplayName: "Gemini 4 Argon (Low)", CreatedAt: "2026-10-14T00:00:00Z", IsReasoning: true},
+	{ID: "gemini-4-argon-medium", DisplayName: "Gemini 4 Argon (Medium)", CreatedAt: "2026-10-14T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-preview", DisplayName: "Gemini 3 Pro Preview", CreatedAt: "2025-06-01T00:00:00Z", IsReasoning: true},
 	{ID: "gemini-3-pro-image", DisplayName: "Gemini 3 Pro Image", CreatedAt: "2025-06-01T00:00:00Z"},
 }

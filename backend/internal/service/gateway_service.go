@@ -1443,6 +1443,11 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 		}
 
 		mapping := acc.GetModelMapping()
+		if acc.Platform == PlatformAntigravity {
+			if raw := stringMappingFromRaw(acc.Credentials["model_mapping"]); len(raw) > 0 {
+				mapping = raw
+			}
+		}
 		for model := range mapping {
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
@@ -1527,7 +1532,11 @@ func explicitModelMappingClaims(account Account, model string) bool {
 	if account.Credentials == nil || model == "" {
 		return false
 	}
-	mapped, ok := stringMappingFromRaw(account.Credentials["model_mapping"])[model]
+	raw := stringMappingFromRaw(account.Credentials["model_mapping"])
+	if account.Platform == PlatformAntigravity {
+		return antigravityRawMappingClaimsModel(raw, model)
+	}
+	mapped, ok := raw[model]
 	return ok && strings.TrimSpace(mapped) != ""
 }
 
