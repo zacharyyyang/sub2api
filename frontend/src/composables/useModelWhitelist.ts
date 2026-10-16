@@ -89,6 +89,27 @@ const antigravityModels = [
   'gemini-3.1-pro-high',
   'gemini-3.1-pro-low',
   'gemini-3-pro-image',
+  // Gemini 3.6 / 3.7 / 3.8 Flash 系列
+  'gemini-3.6-flash',
+  'gemini-3.6-flash-high',
+  'gemini-3.6-flash-medium',
+  'gemini-3.6-flash-low',
+  'gemini-3.6-flash-tiered',
+  'gemini-3.7-flash',
+  'gemini-3.7-flash-high',
+  'gemini-3.7-flash-medium',
+  'gemini-3.7-flash-low',
+  'gemini-3.7-flash-tiered',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-high',
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+  'gemini-3.8-flash-tiered',
+  // Gemini 4 Argon 系列
+  'gemini-4-argon',
+  'gemini-4-argon-high',
+  'gemini-4-argon-medium',
+  'gemini-4-argon-low',
   // 其他
   'gpt-oss-120b-medium',
   'tab_flash_lite_preview'

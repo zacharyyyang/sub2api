@@ -509,6 +509,15 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown: false,
 	}
 
+	// Gemini 4 Argon (Antigravity -high/-low/-medium thinking tiers).
+	s.fallbackPrices["gemini-4-argon"] = &ModelPricing{
+		InputPricePerToken:         2e-6,   // $2 per MTok
+		OutputPricePerToken:        12e-6,  // $12 per MTok
+		CacheCreationPricePerToken: 2e-6,   // $2 per MTok
+		CacheReadPricePerToken:     0.2e-6, // $0.20 per MTok
+		SupportsCacheBreakdown:     false,
+	}
+
 	// OpenAI GPT-5.4（业务指定价格）
 	s.fallbackPrices["gpt-5.4"] = &ModelPricing{
 		InputPricePerToken:             2.5e-6,  // $2.5 per MTok
@@ -1063,6 +1072,9 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-3.8-flash") || strings.Contains(modelLower, "gemini-3-8-flash") {
 		return s.fallbackPrices["gemini-3.8-flash"]
+	}
+	if strings.Contains(modelLower, "gemini-4-argon") || strings.Contains(modelLower, "gemini-4.0-argon") {
+		return s.fallbackPrices["gemini-4-argon"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；

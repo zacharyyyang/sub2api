@@ -105,6 +105,14 @@ func TestDefaultAntigravityModelMapping_Gemini38FlashModels(t *testing.T) {
 	}
 }
 
+func TestDefaultAntigravityModelMapping_Gemini4ArgonModels(t *testing.T) {
+	for _, model := range []string{"gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-low", "gemini-4-argon-medium"} {
+		if got := DefaultAntigravityModelMapping[model]; got != model {
+			t.Fatalf("expected %s to map to itself, got %q", model, got)
+		}
+	}
+}
+
 func TestDefaultBedrockModelMapping_ContainsNewClaudeModels(t *testing.T) {
 	t.Parallel()
 
