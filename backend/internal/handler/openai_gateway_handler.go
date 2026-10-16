@@ -2555,6 +2555,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			closeOpenAIClientWS(wsConn, coderws.StatusInternalError, "Failed to resolve composite model route")
 			return
 		}
+		if decision.OAuthAmbiguous() {
+			service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, decision.AmbiguousMessage())
+			return
+		}
 		if decision.Matched {
 			c.Request = c.Request.WithContext(service.WithCompositeRouteDecision(c.Request.Context(), decision))
 			wsRouteModel = decision.UpstreamModel
@@ -3904,9 +3909,6 @@ func openAIFirstOutputFailoverExhausted(failoverErr *service.UpstreamFailoverErr
 
 // errorResponse returns OpenAI API format error response
 func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType, message string) {
-	if c != nil && c.Writer != nil && c.Writer.Written() {
-		return
-	}
 	// body-signal compact 心跳可能已把响应头提交为 200：JSON 错误体会与已
 	// 提交的 SSE 流交错，必须降级为 response.failed 终止事件（#3887）。
 	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
@@ -3914,6 +3916,11 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 		if writeResponsesFailedSSE(c, errType, "", message) {
 			return
 		}
+	}
+	imageKeepalivePaddingOnly := service.OpenAIImagesJSONKeepalivePresent(c) &&
+		service.OpenAIImagesJSONKeepaliveAdjustedWrittenSize(c) < 0
+	if c != nil && c.Writer != nil && c.Writer.Written() && !imageKeepalivePaddingOnly {
+		return
 	}
 	c.JSON(status, gin.H{
 		"error": gin.H{

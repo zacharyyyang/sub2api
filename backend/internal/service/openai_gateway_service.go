@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -609,13 +610,15 @@ func (a *qoderAccountRepoAdapter) UpdateCredentials(ctx context.Context, id int6
 }
 
 var sharedQoderTokenProviders sync.Map // AccountRepository -> *QoderTokenProvider
-
 func newQoderTokenProviderFromAccountRepo(repo AccountRepository) *QoderTokenProvider {
 	if repo == nil {
 		return NewQoderTokenProvider(nil, nil, "")
 	}
-	if existing, ok := sharedQoderTokenProviders.Load(repo); ok {
-		return existing.(*QoderTokenProvider)
+	comparable := reflect.TypeOf(repo).Comparable()
+	if comparable {
+		if existing, ok := sharedQoderTokenProviders.Load(repo); ok {
+			return existing.(*QoderTokenProvider)
+		}
 	}
 	var p *QoderTokenProvider
 	if qr, ok := repo.(qoderAccountRepo); ok {
@@ -623,8 +626,11 @@ func newQoderTokenProviderFromAccountRepo(repo AccountRepository) *QoderTokenPro
 	} else {
 		p = NewQoderTokenProvider(&qoderAccountRepoAdapter{AccountRepository: repo}, nil, "")
 	}
-	actual, _ := sharedQoderTokenProviders.LoadOrStore(repo, p)
-	return actual.(*QoderTokenProvider)
+	if comparable {
+		actual, _ := sharedQoderTokenProviders.LoadOrStore(repo, p)
+		return actual.(*QoderTokenProvider)
+	}
+	return p
 }
 
 func (s *OpenAIGatewayService) InvalidateQoderToken(id int64) {
@@ -659,7 +665,14 @@ func (s *OpenAIGatewayService) ResolveChannelMappingAndRestrict(ctx context.Cont
 	return s.channelService.ResolveChannelMappingAndRestrict(ctx, groupID, model)
 }
 
+// isCodexImageGenerationBridgeEnabled 决定是否为 Codex 客户端自动注入 hosted
+// image_generation 工具。该工具是 OpenAI Responses 专属能力，Kimi / DeepSeek /
+// MiniMax 等经 OpenAI 网关转发的原生 Responses 上游不识别，注入后会被 400 拒绝，
+// 因此非 OpenAI 平台账号一律不桥接，后续再按账号 → 渠道 → 全局的优先级取开关。
 func (s *OpenAIGatewayService) isCodexImageGenerationBridgeEnabled(ctx context.Context, account *Account, apiKey *APIKey) bool {
+	if account == nil || account.Platform != PlatformOpenAI {
+		return false
+	}
 	if override := account.CodexImageGenerationBridgeOverride(); override != nil {
 		return *override
 	}

@@ -287,7 +287,6 @@ func antigravityRawMappingClaimsModel(rawMapping map[string]string, requestedMod
 	return false
 }
 
-// resolveGeminiThinkingVariant 为裸 Gemini 模型名挑选账号映射表里存在的思考深度变体。
 // 返回 (映射后的上游模型名, 是否命中)。未命中时调用方应回退到常规 getMappedModel 流程。
 func resolveGeminiThinkingVariant(account *Account, requestedModel string, body []byte) (string, bool) {
 	return resolveGeminiThinkingVariantForLevel(account, requestedModel, geminiThinkingLevelFromBody(body))
@@ -318,7 +317,8 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 	// 若裸名映射到了非同族自定义目标（如 gemini-3.8-flash -> gemini-3.8-flash-tiered 或跨模型重定向），
 	// 尊重用户显式配置，不做思考档位覆盖。
 	// 若裸名仅自映射（k==v）或指向同族默认单档（如 gemini-4-argon-high / gemini-pro-agent），
-	// 则继续按 preferred 档位动态解析。
+	// 则继续按 preferred 档位动态解析；而对已在映射表中的真实裸模型（如 gemini-2.5-flash），
+	// 仅查找精确变体键以避免被通配符误匹配。
 	bareMapped, bareMatched := resolveRequestedModelInMapping(mapping, model)
 	if bareMatched {
 		bareMapped = strings.TrimSpace(bareMapped)
@@ -336,27 +336,33 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 			order = append(order, level)
 		}
 	}
-	for _, level := range order {
-		candidate := model + "-" + level
-		if mapped, matched := resolveRequestedModelInMapping(mapping, candidate); matched && strings.TrimSpace(mapped) != "" {
-			mapped = strings.TrimSpace(mapped)
-			// ensureAntigravityDefaultPassthroughs 会自动注入 "gemini-3.1-pro-high" -> "gemini-3.1-pro-high" 的自映射；
-			// 当账号未配置 gemini-pro-agent 键但把 gemini-3.1-pro 映射到 gemini-pro-agent 时，
-			// high/medium 档应优先走 gemini-pro-agent。
-			if candidate == "gemini-3.1-pro-high" && mapped == "gemini-3.1-pro-high" && !accountRawModelMappingHasKey(account, candidate) {
-				if bareMatched && bareMapped == domain.AntigravityGemini31ProAgentModel {
-					return domain.AntigravityGemini31ProAgentModel, true
-				}
-			}
-			return mapped, true
-		}
-	}
-	if bareMatched {
 		for _, level := range order {
-			if builtIn, ok := resolveBuiltInGeminiThinkingVariant(model, level); ok {
-				return builtIn, true
+			candidate := model + "-" + level
+			var (
+				variantMapped  string
+				variantMatched bool
+			)
+			if bareMatched && bareMapped == model {
+				variantMapped, variantMatched = mapping[candidate]
+			} else {
+				variantMapped, variantMatched = resolveRequestedModelInMapping(mapping, candidate)
+			}
+			if variantMatched && strings.TrimSpace(variantMapped) != "" {
+				mapped := strings.TrimSpace(variantMapped)
+				if !accountRawModelMappingHasKey(account, candidate) && bareMatched {
+					if level != preferred {
+						continue
+					}
+					if builtIn, ok := resolveBuiltInGeminiThinkingVariant(model, level); ok {
+						return builtIn, true
+					}
+					continue
+				}
+				return mapped, true
 			}
 		}
+		if bareMatched {
+			return resolveBuiltInGeminiThinkingVariant(model, preferred)
+		}
+		return "", false
 	}
-	return "", false
-}

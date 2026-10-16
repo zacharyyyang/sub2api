@@ -77,6 +77,24 @@ func resolveAntigravityForwardBaseURLs(account *Account) []string {
 	return []string{baseURLs[0]}
 }
 
+func resolveAntigravityForwardBaseURL(account *Account) string {
+	baseURLs := antigravity.BaseURLs
+	if len(baseURLs) == 0 {
+		return antigravity.BaseURL
+	}
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv(antigravityForwardBaseURLEnv)))
+	if (mode == "daily" || mode == "sandbox") && len(baseURLs) > 1 {
+		return baseURLs[1]
+	}
+	if mode != "" {
+		return baseURLs[0]
+	}
+	if accountHasAntigravityPaidTier(account) && len(baseURLs) > 1 {
+		return baseURLs[1]
+	}
+	return baseURLs[0]
+}
+
 func accountHasAntigravityPaidTier(account *Account) bool {
 	if account == nil || account.Credentials == nil {
 		return false
@@ -85,12 +103,7 @@ func accountHasAntigravityPaidTier(account *Account) bool {
 	if !ok {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(planType)) {
-	case "pro", "ultra":
-		return true
-	default:
-		return false
-	}
+	return antigravity.IsPaidPlanType(planType)
 }
 
 // smartRetryAction 智能重试的处理结果
