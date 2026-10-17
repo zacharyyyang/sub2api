@@ -137,7 +137,7 @@ func TestCalculateCostUnified_DeepseekVersionedNamePeakMultiplier(t *testing.T) 
 	offPeakTotal := 1000*1.5e-7 + 500*6e-7 + 1000*3e-9
 
 	offPeak, err := bs.CalculateCostUnified(CostInput{
-		Ctx: context.Background(), Model: "deepseek-v4-flash-0731", Tokens: tokens,
+		Ctx: context.Background(), Model: "deepseek-v4-flash-0801", Tokens: tokens,
 		RateMultiplier: 1.0, Resolver: resolver,
 		PricingAt: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC), // 周一低谷
 	})
@@ -145,7 +145,7 @@ func TestCalculateCostUnified_DeepseekVersionedNamePeakMultiplier(t *testing.T) 
 	require.InDelta(t, offPeakTotal, offPeak.TotalCost, 1e-10)
 
 	peak, err := bs.CalculateCostUnified(CostInput{
-		Ctx: context.Background(), Model: "deepseek-v4-flash-0731", Tokens: tokens,
+		Ctx: context.Background(), Model: "deepseek-v4-flash-0801", Tokens: tokens,
 		RateMultiplier: 1.0, Resolver: resolver,
 		PricingAt: time.Date(2026, 8, 24, 2, 0, 0, 0, time.UTC), // 周一高峰
 	})
@@ -302,13 +302,14 @@ func TestGetModelPricing_DeepseekForcesOfficialRatesOverJSON(t *testing.T) {
 	require.InDelta(t, 6e-7, proAtCutoff.OutputPricePerToken, 1e-15)
 	require.InDelta(t, 3e-9, proAtCutoff.CacheReadPricePerToken, 1e-15)
 
-	// 版本化名称（不在 JSON / fallbackPrices 精确表中）：按子串归档计价。
-	// flash-0731 归 flash 档，三档价与切换无关，GetModelPricing 断言稳定。
+	// 版本化名称：deepseek-v4-flash-0731 为百炼内置闲时基价（0.221105e-6/0.663316e-6/0.022111e-6），
+	// 未在精确表中的版本化名称（如 deepseek-v4-flash-0801）按子串归档计价。
 	versioned := []struct {
 		model                    string
 		input, output, cacheRead float64
 	}{
-		{"deepseek-v4-flash-0731", 1.5e-7, 6e-7, 3e-9},
+		{"deepseek-v4-flash-0731", 0.221105e-6, 0.663316e-6, 0.022111e-6},
+		{"deepseek-v4-flash-0801", 1.5e-7, 6e-7, 3e-9},
 	}
 	for _, tt := range versioned {
 		t.Run(tt.model, func(t *testing.T) {
@@ -442,4 +443,172 @@ func TestCalculateCostUnified_DeepseekProRoutesToFlashAtCutoff(t *testing.T) {
 	require.NoError(t, err)
 	require.InDelta(t, flashTotal, versioned.TotalCost, 1e-10,
 		"versioned pro names must also route to Flash rates after the cutoff")
+}
+
+func TestDeepSeekPeakByGroupAndExclusions(t *testing.T) {
+	bs := newTestBillingService()
+	resolver := NewModelPricingResolver(nil, bs)
+
+	t.Run("deepseek-ocr excluded from isDeepSeekModel and peak multiplier", func(t *testing.T) {
+		require.False(t, isDeepSeekModel("deepseek-ocr"))
+		require.True(t, isDeepSeekModel("deepseek-v4-flash-0731"))
+
+		dashGroup := &Group{Name: "阿里云百炼", Platform: "dashscope"}
+		sunday10BJT := time.Date(2026, 10, 18, 2, 0, 0, 0, time.UTC)
+
+		ocrCost, err := bs.CalculateCostUnified(CostInput{
+			Ctx:            context.Background(),
+			Model:          "deepseek-ocr",
+			Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+			RateMultiplier: 1.0,
+			Group:          dashGroup,
+			Resolver:       resolver,
+			PricingAt:      sunday10BJT,
+		})
+		require.NoError(t, err)
+		require.InDelta(t, 1000*0.044221e-6, ocrCost.InputCost, 1e-12)
+		require.InDelta(t, 1000*0.176884e-6, ocrCost.OutputCost, 1e-12)
+	})
+
+	t.Run("deepseek-v4-flash-0731 keeps Bailian off-peak base and doubles in peak", func(t *testing.T) {
+		dashGroup := &Group{Name: "阿里云百炼", Platform: "dashscope"}
+		sunday10BJT := time.Date(2026, 10, 18, 2, 0, 0, 0, time.UTC)
+		sunday23BJT := time.Date(2026, 10, 18, 15, 0, 0, 0, time.UTC)
+
+		offPeakCost, err := bs.CalculateCostUnified(CostInput{
+			Ctx:            context.Background(),
+			Model:          "deepseek-v4-flash-0731",
+			Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000, CacheReadTokens: 1000},
+			RateMultiplier: 1.0,
+			Group:          dashGroup,
+			Resolver:       resolver,
+			PricingAt:      sunday23BJT,
+		})
+		require.NoError(t, err)
+		require.InDelta(t, 1000*0.221105e-6, offPeakCost.InputCost, 1e-12)
+		require.InDelta(t, 1000*0.663316e-6, offPeakCost.OutputCost, 1e-12)
+		require.InDelta(t, 1000*0.022111e-6, offPeakCost.CacheReadCost, 1e-12)
+
+		peakCost, err := bs.CalculateCostUnified(CostInput{
+			Ctx:            context.Background(),
+			Model:          "deepseek-v4-flash-0731",
+			Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000, CacheReadTokens: 1000},
+			RateMultiplier: 1.0,
+			Group:          dashGroup,
+			Resolver:       resolver,
+			PricingAt:      sunday10BJT,
+		})
+		require.NoError(t, err)
+		require.InDelta(t, 1000*0.221105e-6*2.0, peakCost.InputCost, 1e-12)
+		require.InDelta(t, 1000*0.663316e-6*2.0, peakCost.OutputCost, 1e-12)
+		require.InDelta(t, 1000*0.022111e-6*2.0, peakCost.CacheReadCost, 1e-12)
+	})
+	t.Run("DashScope/Qianfan vs Official DeepSeek weekday and weekend boundaries", func(t *testing.T) {
+		for _, g := range []*Group{
+			{Platform: "dashscope", Name: "default"},
+			{Platform: "qianfan", Name: "default"},
+			{Platform: "openai", Name: "阿里云百炼"},
+			{Platform: "openai", Name: "百度千帆"},
+			{Platform: "openai", Name: "千帆专属"},
+		} {
+			require.True(t, isDashScopeOrQianfanGroup(g), "expected true for %+v", g)
+		}
+		officialGroup := &Group{Platform: "deepseek", Name: "DeepSeek Official"}
+		dashGroup := &Group{Platform: "dashscope", Name: "阿里云百炼"}
+		require.False(t, isDashScopeOrQianfanGroup(officialGroup))
+
+		// Weekday boundaries in BJT (Wednesday 2026-10-14):
+		// 07:59 BJT = Tue 23:59 UTC -> DashScope 1.0x
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(dashGroup, time.Date(2026, 10, 13, 23, 59, 0, 0, time.UTC)))
+		// 08:00 BJT = 00:00 UTC -> DashScope 2.0x, Official 1.0x
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(dashGroup, time.Date(2026, 10, 14, 0, 0, 0, 0, time.UTC)))
+		// 08:59 BJT = 00:59 UTC -> DashScope 2.0x, Official 1.0x
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(officialGroup, time.Date(2026, 10, 14, 0, 59, 0, 0, time.UTC)))
+		// 09:00 BJT = 01:00 UTC -> Official 2.0x
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(officialGroup, time.Date(2026, 10, 14, 1, 0, 0, 0, time.UTC)))
+		// 12:00 BJT = 04:00 UTC -> Official 1.0x, DashScope 2.0x
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(officialGroup, time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)))
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(dashGroup, time.Date(2026, 10, 14, 4, 0, 0, 0, time.UTC)))
+		// 14:00 BJT = 06:00 UTC -> Official 2.0x
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(officialGroup, time.Date(2026, 10, 14, 6, 0, 0, 0, time.UTC)))
+		// 18:00 BJT = 10:00 UTC -> Official 1.0x, DashScope 2.0x
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(officialGroup, time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)))
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(dashGroup, time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)))
+		// 22:00 BJT = 14:00 UTC -> DashScope 1.0x (22:00-08:00 off-peak)
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(dashGroup, time.Date(2026, 10, 14, 14, 0, 0, 0, time.UTC)))
+		// Sunday 10:00 BJT = 02:00 UTC -> Official 1.0x, DashScope 2.0x
+		sunday10BJT := time.Date(2026, 10, 18, 2, 0, 0, 0, time.UTC)
+		require.Equal(t, 1.0, deepseekPeakMultiplierForGroupAt(officialGroup, sunday10BJT))
+		require.Equal(t, 2.0, deepseekPeakMultiplierForGroupAt(dashGroup, sunday10BJT))
+
+		// CASE-12: deepseek-v3.2 in Bailian group at Sunday 10:00 BJT gets 2.0x
+		v32Cost, err := bs.CalculateCostUnified(CostInput{
+			Ctx:            context.Background(),
+			Model:          "deepseek-v3.2",
+			Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+			RateMultiplier: 1.0,
+			Group:          dashGroup,
+			Resolver:       resolver,
+			PricingAt:      sunday10BJT,
+		})
+		require.NoError(t, err)
+		require.InDelta(t, 1000*deepseekFlashOffPeakInputPrice*2.0, v32Cost.InputCost, 1e-12)
+		require.InDelta(t, 1000*deepseekFlashOffPeakOutputPrice*2.0, v32Cost.OutputCost, 1e-12)
+	})
+
+	t.Run("custom group pricing does not apply 2.0x peak multiplier (CASE-14)", func(t *testing.T) {
+		inPrice := 0.50
+		outPrice := 1.50
+		customGroup := &Group{
+			ID:       7,
+			Platform: "dashscope",
+			Name:     "阿里云百炼",
+			Status:   StatusActive,
+			ModelPricing: []ChannelModelPricing{{
+				Models:      []string{"deepseek-v3.2"},
+				BillingMode: BillingModeToken,
+				InputPrice:  &inPrice,
+				OutputPrice: &outPrice,
+			}},
+		}
+		wed10BJT := time.Date(2026, 10, 14, 2, 0, 0, 0, time.UTC)
+		customCost, err := bs.CalculateCostUnified(CostInput{
+			Ctx:            context.Background(),
+			Model:          "deepseek-v3.2",
+			Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+			RateMultiplier: 1.0,
+			Group:          customGroup,
+			Resolver:       resolver,
+			PricingAt:      wed10BJT,
+		})
+		require.NoError(t, err)
+		require.InDelta(t, 1000*0.50, customCost.InputCost, 1e-9)
+		require.InDelta(t, 1000*1.50, customCost.OutputCost, 1e-9)
+	})
+
+	t.Run("non-DeepSeek fallback models are unaffected in peak hours", func(t *testing.T) {
+		dashGroup := &Group{Name: "阿里云百炼", Platform: "dashscope"}
+		sunday10BJT := time.Date(2026, 10, 18, 2, 0, 0, 0, time.UTC)
+
+		for _, tc := range []struct {
+			model      string
+			in, out    float64
+		}{
+			{"qwen3.8-max", 1.768842e-6, 5.306526e-6},
+			{"glm-5.3-flashx", 0.295e-6, 1.032e-6},
+		} {
+			c, err := bs.CalculateCostUnified(CostInput{
+				Ctx:            context.Background(),
+				Model:          tc.model,
+				Tokens:         UsageTokens{InputTokens: 1000, OutputTokens: 1000},
+				RateMultiplier: 1.0,
+				Group:          dashGroup,
+				Resolver:       resolver,
+				PricingAt:      sunday10BJT,
+			})
+			require.NoError(t, err)
+			require.InDelta(t, 1000*tc.in, c.InputCost, 1e-12, tc.model)
+			require.InDelta(t, 1000*tc.out, c.OutputCost, 1e-12, tc.model)
+		}
+	})
 }

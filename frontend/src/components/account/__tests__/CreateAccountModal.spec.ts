@@ -14,6 +14,8 @@ const {
   showWarningMock,
   importCodexSessionMock,
   createOpenAICodexPATMock,
+  geminiGenerateAuthUrlMock,
+  geminiExchangeCodeMock,
   authIsSimpleMode,
 } = vi.hoisted(() => ({
   createAccountMock: vi.fn(),
@@ -22,6 +24,8 @@ const {
   showWarningMock: vi.fn(),
   importCodexSessionMock: vi.fn(),
   createOpenAICodexPATMock: vi.fn(),
+  geminiGenerateAuthUrlMock: vi.fn(),
+  geminiExchangeCodeMock: vi.fn(),
   authIsSimpleMode: { value: true },
 }))
 
@@ -58,6 +62,11 @@ vi.mock('@/api/admin', () => ({
     tlsFingerprintProfiles: {
       list: vi.fn().mockResolvedValue([]),
     },
+    gemini: {
+      generateAuthUrl: geminiGenerateAuthUrlMock,
+      exchangeCode: geminiExchangeCodeMock,
+      getCapabilities: vi.fn().mockResolvedValue(null),
+    },
   },
 }))
 
@@ -90,12 +99,13 @@ const OAuthAuthorizationFlowStub = defineComponent({
     showCodexPatOption: Boolean,
     initialInputMethod: String,
   },
-  data: () => ({ inputMethod: 'manual' }),
-  emits: ['import-codex-session', 'import-codex-pat'],
+  data: () => ({ inputMethod: 'manual', authCode: 'gemini-auth-code', oauthState: 'gemini-state', projectId: '' }),
+  emits: ['import-codex-session', 'import-codex-pat', 'generate-url'],
   template: `
     <div>
       <button data-testid="import-codex-session" @click="$emit('import-codex-session', 'session-json')">session</button>
       <button data-testid="import-codex-pat" @click="$emit('import-codex-pat', 'pat-token')">pat</button>
+      <button data-testid="generate-oauth-url" @click="$emit('generate-url')">generate-url</button>
     </div>
   `,
 })
@@ -1039,5 +1049,52 @@ describe('CreateAccountModal Vertex API key auth', () => {
     await selectButtonByText(wrapper, 'admin.accounts.vertexLabel')
     expect(wrapper.find('[data-testid="vertex-auth-mode-apikey"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="vertex-api-key-input"]').exists()).toBe(false)
+  })
+})
+
+describe('CreateAccountModal Gemini OAuth model restriction', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 45, platform: 'gemini', type: 'oauth' })
+    geminiGenerateAuthUrlMock.mockReset().mockResolvedValue({
+      auth_url: 'https://accounts.google.com/o/oauth2/v2/auth',
+      session_id: 'gemini-session-1',
+      state: 'gemini-state',
+    })
+    geminiExchangeCodeMock.mockReset().mockResolvedValue({
+      access_token: 'ya29.created',
+      refresh_token: '1//created',
+      oauth_type: 'google_one',
+      tier_id: 'google_one_free',
+    })
+  })
+
+  it('renders model restriction on Gemini OAuth form and persists credentials.model_mapping on exchange', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.oauthTitle')
+
+    const selector = wrapper.findComponent(ModelWhitelistSelectorStub)
+    expect(selector.exists()).toBe(true)
+    await selector.vm.$emit('update:modelValue', ['gemini-2.5-pro', 'gemini-3.1-pro-preview'])
+
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Gemini OAuth Restricted')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="generate-oauth-url"]').trigger('click')
+    await flushPromises()
+
+    await selectButtonByText(wrapper, 'admin.accounts.oauth.completeAuth')
+    await flushPromises()
+
+    expect(createAccountMock).toHaveBeenCalledTimes(1)
+    expect(createAccountMock.mock.calls[0]?.[0]?.platform).toBe('gemini')
+    expect(createAccountMock.mock.calls[0]?.[0]?.type).toBe('oauth')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials?.model_mapping).toEqual({
+      'gemini-2.5-pro': 'gemini-2.5-pro',
+      'gemini-3.1-pro-preview': 'gemini-3.1-pro-preview',
+    })
+    wrapper.unmount()
   })
 })

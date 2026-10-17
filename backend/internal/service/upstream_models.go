@@ -745,6 +745,10 @@ func (s *AccountTestService) fetchUpstreamModelList(ctx context.Context, account
 		return s.fetchAntigravityOAuthUpstreamModels(ctx, account)
 	}
 
+	if account.IsGemini() && account.Type == AccountTypeOAuth && strings.TrimSpace(account.GetCredential("project_id")) != "" {
+		return s.fetchGeminiOAuthCodeAssistUpstreamModels(ctx, account)
+	}
+
 	if s.httpUpstream == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Upstream HTTP client is not configured", nil)
 	}
@@ -1242,9 +1246,6 @@ func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Contex
 		}
 		req.Header.Set("x-goog-api-key", apiKey)
 	case AccountTypeOAuth:
-		if strings.TrimSpace(account.GetCredential("project_id")) != "" {
-			return nil, newUpstreamModelSyncUnsupportedError("Gemini Code Assist model listing is not supported by this sync button", nil)
-		}
 		if s.geminiTokenProvider == nil {
 			return nil, newUpstreamModelSyncConfigError("Gemini token provider is not configured", nil)
 		}
@@ -1266,6 +1267,57 @@ func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Contex
 	return req, nil
 }
 
+func (s *AccountTestService) fetchGeminiOAuthCodeAssistUpstreamModels(ctx context.Context, account *Account) ([]string, []byte, error) {
+	if s.geminiTokenProvider == nil {
+		return nil, nil, newUpstreamModelSyncConfigError("Gemini token provider is not configured", nil)
+	}
+
+	accessToken, err := s.geminiTokenProvider.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to get Gemini OAuth access token", err)
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	if accessToken == "" {
+		return nil, nil, newUpstreamModelSyncConfigError("No Gemini access token is available", nil)
+	}
+
+	client, err := antigravity.NewClient(upstreamModelsProxyURL(account))
+	if err != nil {
+		return nil, nil, newUpstreamModelSyncConfigError("Failed to configure Gemini Code Assist client", err)
+	}
+	modelsResp, raw, err := client.FetchAvailableModelsFromURL(
+		ctx,
+		geminiCodeAssistUpstreamModelsBaseURL(),
+		accessToken,
+		strings.TrimSpace(account.GetCredential("project_id")),
+		resolveModelsListReadLimit(s.cfg),
+	)
+	if err != nil {
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to fetch Gemini Code Assist available models", err)
+	}
+	if modelsResp == nil || len(modelsResp.Models) == 0 {
+		return nil, nil, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
+	}
+
+	models := make([]string, 0, len(modelsResp.Models))
+	for modelID := range modelsResp.Models {
+		models = append(models, strings.TrimSpace(modelID))
+	}
+	body, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to read Gemini Code Assist model metadata", err)
+	}
+	return dedupeAndSortModelIDs(models), body, nil
+}
+
+var geminiCodeAssistUpstreamModelsBaseURLOverride string
+
+func geminiCodeAssistUpstreamModelsBaseURL() string {
+	if strings.TrimSpace(geminiCodeAssistUpstreamModelsBaseURLOverride) != "" {
+		return strings.TrimSpace(geminiCodeAssistUpstreamModelsBaseURLOverride)
+	}
+	return geminicli.GeminiCliBaseURL
+}
 func (s *AccountTestService) fetchAntigravityOAuthUpstreamModels(ctx context.Context, account *Account) ([]string, []byte, error) {
 	if s.antigravityGatewayService == nil || s.antigravityGatewayService.GetTokenProvider() == nil {
 		return nil, nil, newUpstreamModelSyncConfigError("Antigravity token provider is not configured", nil)

@@ -291,7 +291,11 @@ const (
 // 避免计费中断；新名字由 fallback warn 日志（每模型每进程一条）暴露，
 // 运营者据此更新价卡。
 func isDeepSeekModel(model string) bool {
-	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(model)), "deepseek-")
+	n := strings.ToLower(strings.TrimSpace(model))
+	if n == "deepseek-ocr" || strings.HasSuffix(n, "/deepseek-ocr") {
+		return false
+	}
+	return strings.HasPrefix(n, "deepseek-")
 }
 
 // deepseekPeakMultiplierAt 返回指定时刻的 DeepSeek 官方峰谷定价因子。
@@ -1031,10 +1035,15 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:    2,
 		LongContextOutputMultiplier:   2,
 	}
+
+	s.initCNAndExtendedFallbackPrices()
 }
 
 // getFallbackPricing 根据模型系列获取回退价格
 func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
+	if p := s.getCNAndExtendedFallbackPricing(model); p != nil {
+		return p
+	}
 	modelLower := normalizeAntigravityClaudeTierAlias(strings.ToLower(model))
 	if modelLower == "jev-latest" {
 		return s.fallbackPrices["jev-latest"]
@@ -1619,16 +1628,16 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 		pricingAt = timezone.Now()
 	}
 
-	// 默认价卡（Source=LiteLLM）应用 DeepSeek 官方价强制覆盖（幂等，GetModelPricing
+	// 默认价卡（Source=LiteLLM || Source=Fallback）应用 DeepSeek 官方价强制覆盖（幂等，GetModelPricing
 	// 内部已强制过）；分组/渠道自定义定价保留运营者配置，不强制覆盖官方价。
-	pricing = s.applyModelSpecificPricingPolicyEx(input.Model, pricing, resolved.Source == PricingSourceLiteLLM, pricingAt)
+	isDefaultPriceCard := resolved.Source == PricingSourceLiteLLM || resolved.Source == PricingSourceFallback
+	pricing = s.applyModelSpecificPricingPolicyEx(input.Model, pricing, isDefaultPriceCard, pricingAt)
 
-	// DeepSeek 模型默认价卡按官方峰谷口径调整：高峰时段（01:00–04:00 与
-	// 06:00–10:00 UTC，仅工作日；北京时间周末全天低谷）按 2× 低谷价计费。
-	// 仅作用于默认价卡（Source=LiteLLM，无分组/渠道自定义定价）——分组/渠道
+	// DeepSeek 模型默认价卡按官方或百炼/千帆峰谷口径调整。
+	// 仅作用于默认价卡（无分组/渠道自定义定价）——分组/渠道
 	// 自定义定价保持运营者语义，不叠加。先克隆再乘，避免污染共享 fallbackPrices 指针。
-	if resolved.Source == PricingSourceLiteLLM && isDeepSeekModel(input.Model) {
-		if mult := deepseekPeakMultiplierAt(pricingAt); mult > 1 {
+	if isDefaultPriceCard && isDeepSeekModel(input.Model) {
+		if mult := deepseekPeakMultiplierForGroupAt(input.Group, pricingAt); mult > 1 {
 			cloned := *pricing
 			cloned.InputPricePerToken *= mult
 			cloned.OutputPricePerToken *= mult
@@ -1916,7 +1925,7 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	// Flash 三档价计费；历史时点（早于切换时刻）仍按 Pro 价。
 	// 高峰时段倍率不在本函数处理，由 calculateTokenCost 按 deepseekPeakMultiplierAt
 	// 对默认价卡另行叠加（分组/渠道自定义定价不叠加）。
-	if forceDeepSeekRates && isDeepSeekModel(model) {
+	if forceDeepSeekRates && isDeepSeekModel(model) && strings.ToLower(strings.TrimSpace(model)) != "deepseek-v4-flash-0731" {
 		cloned := *pricing
 		if isDeepSeekProModel(model) && !deepseekProBilledAsFlash(pricingAt) {
 			cloned.InputPricePerToken = deepseekProOffPeakInputPrice

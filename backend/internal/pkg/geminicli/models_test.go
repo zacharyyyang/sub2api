@@ -26,12 +26,23 @@ func TestGoogleOneModels_ExcludeUnsupportedNewAndImageModels(t *testing.T) {
 	t.Parallel()
 
 	mapping := GoogleOneModelMapping()
-	for _, id := range []string{"gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"} {
+	for _, id := range []string{
+		"gemini-2.0-flash",
+		"gemini-2.0-flash-lite",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.5-pro",
+		"gemini-3-flash-preview",
+		"gemini-3-pro-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3.1-pro-preview-customtools",
+		"gemini-3.5-flash",
+	} {
 		if mapping[id] != id {
 			t.Fatalf("expected Google One model %q to map to itself", id)
 		}
 	}
-	for _, id := range []string{"gemini-2.5-flash-image", "gemini-3.1-flash-image", "gemini-3.5-flash"} {
+	for _, id := range []string{"gemini-2.5-flash-image", "gemini-3.1-flash-image"} {
 		if _, ok := mapping[id]; ok {
 			t.Fatalf("did not expect unsupported Google One model %q", id)
 		}

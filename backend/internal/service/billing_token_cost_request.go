@@ -31,7 +31,10 @@ func (s *BillingService) CalculateTokenCostForRequest(req TokenCostRequest) (*Co
 	if resolved != nil && (resolved.Source == PricingSourceGroup || resolved.Source == PricingSourceChannel) {
 		return s.CalculateCostUnified(s.tokenCostInput(req, resolved))
 	}
-	if req.Resolver != nil && req.Group != nil {
+	if req.Group != nil {
+		if req.Resolver == nil {
+			req.Resolver = NewModelPricingResolver(nil, s)
+		}
 		return s.CalculateCostUnified(s.tokenCostInput(req, resolved))
 	}
 	if req.ReasoningEffort != "" {

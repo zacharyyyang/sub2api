@@ -1338,3 +1338,169 @@ func TestBillingService_AntigravityClaude55TierFallbacksUseBaseRates(t *testing.
 		}
 	}
 }
+
+func TestPricingService_ThinkingSuffixAndQoderWBAliases(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "resources", "model-pricing", "model_prices_and_context_window.json"))
+	require.NoError(t, err)
+	litellmPricingSvc := newStubPricingServiceFromJSON(t, string(body))
+
+	sources := []struct {
+		name string
+		bs   *BillingService
+	}{
+		{"Fallback", NewBillingService(&config.Config{}, nil)},
+		{"LiteLLM", NewBillingService(&config.Config{}, litellmPricingSvc)},
+	}
+
+	for _, src := range sources {
+		t.Run(src.name, func(t *testing.T) {
+			bs := src.bs
+
+			t.Run("AC-48-03 thinking suffix stripping and Qoder/WB aliases", func(t *testing.T) {
+				for _, tc := range []struct {
+					alias string
+					base  string
+				}{
+					{"kimi-k3-thinking", "kimi-k3"},
+					{"provider/kimi-k3-thinking", "kimi-k3"},
+					{"glm-5.3-thinking", "glm-5.3"},
+					{"qwen3.8-max-thinking", "qwen3.8-max"},
+					{"mimo-v2.6-pro-thinking", "mimo-v2.6-pro"},
+					{"gemini-3.5-flash-high", "gemini-3.5-flash"},
+					{"gemini-3.5-flash-low", "gemini-3.5-flash"},
+					{"gemini-3.5-flash-medium", "gemini-3.5-flash"},
+					{"gemini-3.5-flash-tiered", "gemini-3.5-flash"},
+					{"sonus-fable5.1", "claude-fable-5-1"},
+					{"sonus", "claude-fable-5-1"},
+					{"smodel", "claude-fable-5-1"},
+					{"smodel-thinking", "claude-fable-5-1"},
+					{"cantus-opus5.5", "claude-opus-5-5"},
+					{"cantus", "claude-opus-5-5"},
+					{"cmodel", "claude-opus-5-5"},
+					{"lupus-sonnet5.5", "claude-sonnet-5-5"},
+					{"lupus", "claude-sonnet-5-5"},
+					{"lmodel", "claude-sonnet-5-5"},
+					{"volans-haiku5.5", "claude-haiku-5-5"},
+					{"volans", "claude-haiku-5-5"},
+					{"vmodel", "claude-haiku-5-5"},
+					{"ultimate-gpt6.1sol", "gpt-6.1-sol"},
+					{"ultimate", "gpt-6.1-sol"},
+					{"proxima-gpt6sol", "gpt-6-sol"},
+					{"proxima", "gpt-6-sol"},
+					{"auri-gpt6astra", "gpt-6-astra"},
+					{"auri", "gpt-6-astra"},
+					{"amodel", "gpt-6-astra"},
+					{"orion-gemini3.1", "gemini-3.1-pro"},
+					{"orion", "gemini-3.1-pro"},
+					{"vela-gemini3.8", "gemini-3.8-flash"},
+					{"vela", "gemini-3.8-flash"},
+					{"pavo-glm5.3", "glm-5.3"},
+					{"pavo", "glm-5.3"},
+					{"gmodel", "glm-5.3"},
+					{"phoenix-kimi3", "kimi-k3"},
+					{"phoenix", "kimi-k3"},
+					{"kmodel", "kimi-k3"},
+					{"qmodel", "qwen3.8-max"},
+					{"mmodel", "minimax-m3"},
+					{"lite", "deepseek-v4-flash"},
+				} {
+					got, err := bs.GetModelPricing(tc.alias)
+					require.NoError(t, err, tc.alias)
+					want, err := bs.GetModelPricing(tc.base)
+					require.NoError(t, err, tc.base)
+					require.InDelta(t, want.InputPricePerToken, got.InputPricePerToken, 1e-12, tc.alias)
+					require.InDelta(t, want.OutputPricePerToken, got.OutputPricePerToken, 1e-12, tc.alias)
+				}
+			})
+
+			t.Run("AC-48-04 all §2.4 models unit prices, cache rates and long context tiers", func(t *testing.T) {
+				for _, tc := range []struct {
+					model                   string
+					in, out, cacheW, cacheR float64
+					threshold               int
+					inMult, outMult         float64
+				}{
+					{"qwen3.8-max", 1.768842e-6, 5.306526e-6, 2.211052e-6, 0.221105e-6, 0, 0, 0},
+					{"qwen3.8-flash", 0.117923e-6, 0.397989e-6, 0.147403e-6, 0.014740e-6, 0, 0, 0},
+					{"qwen3.7-max", 1.768842e-6, 5.306526e-6, 2.211052e-6, 0.353768e-6, 0, 0, 0},
+					{"qwen3.7-plus", 0.294807e-6, 1.179228e-6, 0, 0.058961e-6, 256000, 3.0, 3.0},
+					{"qwen3.6-plus", 0.294807e-6, 1.768842e-6, 0, 0.058961e-6, 256000, 4.0, 2.0},
+					{"qwen3.6-plus-2026-04-02", 0.294807e-6, 1.768842e-6, 0, 0.058961e-6, 256000, 4.0, 2.0},
+					{"qwen3.5-plus", 0.117923e-6, 0.707537e-6, 0, 0.011792e-6, 0, 0, 0},
+					{"qwen3.5-plus-2026-02-15", 0.117923e-6, 0.707537e-6, 0, 0.011792e-6, 0, 0, 0},
+					{"qwen3.5-flash", 0.029481e-6, 0.294807e-6, 0, 0.002948e-6, 0, 0, 0},
+					{"qwen3.5-flash-2026-02-23", 0.029481e-6, 0.294807e-6, 0, 0.002948e-6, 0, 0, 0},
+					{"qwen-max", 0.368509e-6, 1.474035e-6, 0, 0.073702e-6, 0, 0, 0},
+					{"qwen3-max", 0.368509e-6, 1.474035e-6, 0, 0.073702e-6, 0, 0, 0},
+					{"qwen3-max-2026-01-23", 0.368509e-6, 1.474035e-6, 0, 0.073702e-6, 0, 0, 0},
+					{"qwen3-max-preview", 0.368509e-6, 1.474035e-6, 0, 0.073702e-6, 0, 0, 0},
+					{"qwen-plus", 0.117923e-6, 0.294807e-6, 0, 0, 0, 0, 0},
+					{"qwen-flash", 0.044221e-6, 0.088442e-6, 0, 0, 0, 0, 0},
+					{"qwen-turbo", 0.044221e-6, 0.088442e-6, 0, 0, 0, 0, 0},
+					{"qwen-long", 0.073702e-6, 0.294807e-6, 0, 0, 0, 0, 0},
+					{"qwen3-coder-plus", 0.589614e-6, 2.358456e-6, 0, 0.058961e-6, 0, 0, 0},
+					{"qwen3-coder-plus-2025-09-23", 0.589614e-6, 2.358456e-6, 0, 0.058961e-6, 0, 0, 0},
+					{"qwen3-coder-plus-2025-07-22", 0.589614e-6, 2.358456e-6, 0, 0.058961e-6, 0, 0, 0},
+					{"qwen3-coder-next", 0.147403e-6, 0.589614e-6, 0, 0.014740e-6, 0, 0, 0},
+					{"qwen3-coder-flash", 0.147403e-6, 0.589614e-6, 0, 0.014740e-6, 0, 0, 0},
+					{"qwen3-coder-flash-2025-07-28", 0.147403e-6, 0.589614e-6, 0, 0.014740e-6, 0, 0, 0},
+					{"qwen3-vl-plus", 0.147403e-6, 1.474035e-6, 0, 0, 0, 0, 0},
+					{"qwen3-vl-plus-2025-12-19", 0.147403e-6, 1.474035e-6, 0, 0, 0, 0, 0},
+					{"qwen3-vl-plus-2025-09-23", 0.147403e-6, 1.474035e-6, 0, 0, 0, 0, 0},
+					{"qwen3-vl-flash", 0.044221e-6, 0.442210e-6, 0, 0, 0, 0, 0},
+					{"qwen3-vl-flash-2026-01-22", 0.044221e-6, 0.442210e-6, 0, 0, 0, 0, 0},
+					{"qwen3-vl-flash-2025-10-15", 0.044221e-6, 0.442210e-6, 0, 0, 0, 0, 0},
+					{"glm-5.3-flashx", 0.295e-6, 1.032e-6, 0, 0.084e-6, 0, 0, 0},
+					{"hy4-preview", 0.834e-6, 2.501e-6, 0, 0.042e-6, 0, 0, 0},
+					{"hy3", 0.132e-6, 0.528e-6, 0, 0.033e-6, 0, 0, 0},
+					{"kimi-k2.8-preview", 0.95e-6, 4.00e-6, 0, 0.25e-6, 0, 0, 0},
+					{"kimi-k2.7-code", 0.95e-6, 4.00e-6, 0, 0.19e-6, 0, 0, 0},
+					{"kimi-k2.7-code-highspeed", 1.90e-6, 8.00e-6, 0, 0.38e-6, 0, 0, 0},
+					{"kimi-for-coding-highspeed", 1.90e-6, 8.00e-6, 0, 0.38e-6, 0, 0, 0},
+					{"deepseek-ocr", 0.044221e-6, 0.176884e-6, 0, 0, 0, 0, 0},
+					{"deepseek-v4-flash-0731", 0.221105e-6, 0.663316e-6, 0, 0.022111e-6, 0, 0, 0},
+					{"ernie-5.1", 0.589614e-6, 2.653263e-6, 0, 0, 32000, 1.5, 1.333333},
+					{"ernie-5.0", 0.884421e-6, 3.537684e-6, 0, 0, 32000, 1.666667, 1.666667},
+					{"ernie-5.0-thinking-preview", 0.884421e-6, 3.537684e-6, 0, 0, 32000, 1.666667, 1.666667},
+					{"ernie-4.5-turbo", 0.117923e-6, 0.471691e-6, 0, 0.029481e-6, 0, 0, 0},
+					{"ernie-4.5-turbo-128k", 0.117923e-6, 0.471691e-6, 0, 0.029481e-6, 0, 0, 0},
+					{"ernie-4.5-turbo-32k", 0.117923e-6, 0.471691e-6, 0, 0.029481e-6, 0, 0, 0},
+					{"ernie-4.5-turbo-latest", 0.117923e-6, 0.471691e-6, 0, 0.029481e-6, 0, 0, 0},
+					{"ernie-4.5-turbo-vl", 0.117923e-6, 0.471691e-6, 0, 0.029481e-6, 0, 0, 0},
+					{"mimo-v2.6-pro", 0.435e-6, 0.87e-6, 0, 0.0036e-6, 256000, 2.0, 2.0},
+					{"mimo-v2.5-pro", 0.435e-6, 0.87e-6, 0, 0.0036e-6, 256000, 2.0, 2.0},
+					{"mimo-v2.6-flash", 0.14e-6, 0.28e-6, 0, 0.0028e-6, 0, 0, 0},
+					{"mimo-v2.5", 0.14e-6, 0.28e-6, 0, 0.0028e-6, 0, 0, 0},
+					{"mimo-v2.6-pro-ultraspeed", 4.35e-6, 8.70e-6, 0, 0.036e-6, 0, 0, 0},
+					{"mimo-v2.6-ultraspeed", 4.35e-6, 8.70e-6, 0, 0.036e-6, 0, 0, 0},
+					{"ultraspeed", 4.35e-6, 8.70e-6, 0, 0.036e-6, 0, 0, 0},
+					{"minimax-m3", 0.60e-6, 2.40e-6, 0, 0.12e-6, 512000, 2.0, 2.0},
+					{"gemini-3.5-flash", 0.10e-6, 0.40e-6, 0, 0.025e-6, 0, 0, 0},
+				} {
+					p, err := bs.GetModelPricing(tc.model)
+					require.NoError(t, err, tc.model)
+					require.InDelta(t, tc.in, p.InputPricePerToken, 1e-12, tc.model)
+					require.InDelta(t, tc.out, p.OutputPricePerToken, 1e-12, tc.model)
+					if tc.cacheW > 0 {
+						require.InDelta(t, tc.cacheW, p.CacheCreation5mPrice, 1e-12, tc.model)
+					}
+					if tc.cacheR > 0 {
+						require.InDelta(t, tc.cacheR, p.CacheReadPricePerToken, 1e-12, tc.model)
+					}
+					if tc.threshold > 0 {
+						cost, err := bs.CalculateCost(tc.model, UsageTokens{InputTokens: tc.threshold + 1000, OutputTokens: 1000}, 1)
+						require.NoError(t, err, tc.model)
+						require.True(t, cost.LongContextBillingApplied, tc.model)
+						require.InDelta(t, float64(tc.threshold+1000)*tc.in*tc.inMult, cost.InputCost, 1e-8, tc.model)
+						require.InDelta(t, 1000.0*tc.out*tc.outMult, cost.OutputCost, 1e-8, tc.model)
+					}
+				}
+
+				k3, err := bs.GetModelPricing("kimi-k3")
+				require.NoError(t, err)
+				require.InDelta(t, 3e-6, k3.CacheCreation5mPrice, 1e-12)
+				require.InDelta(t, 6e-6, k3.CacheCreation1hPrice, 1e-12)
+			})
+		})
+	}
+}

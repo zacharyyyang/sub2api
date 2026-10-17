@@ -6,10 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -1184,4 +1184,124 @@ func TestMatchModelsDevProviderOfficialHostsWithoutAPI(t *testing.T) {
 		Reasoning: new(bool), InputModalities: []string{"text"}, ContextWindow: 1050000,
 	}}
 	require.False(t, upstreamCatalogNeedsRegistry(capabilitySyncModelIDs([]string{"gpt-6-astra", "gpt-image-2"}), metadata))
+}
+
+func TestFetchUpstreamModels_GeminiOAuthCodeAssist(t *testing.T) {
+	t.Run("Gemini OAuth with project_id requires geminiTokenProvider", func(t *testing.T) {
+		svc := &AccountTestService{cfg: upstreamModelSyncTestConfig()}
+		_, _, err := svc.fetchUpstreamModelList(context.Background(), &Account{
+			ID:       99,
+			Platform: PlatformGemini,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token": "test-gemini-oauth-token",
+				"project_id":   "gen-lang-client-0879216078",
+			},
+		})
+		require.Error(t, err)
+		var syncErr *UpstreamModelSyncError
+		require.True(t, errors.As(err, &syncErr))
+		require.Equal(t, UpstreamModelSyncErrorConfiguration, syncErr.Kind)
+		require.Contains(t, syncErr.SafeMessage(), "Gemini token provider is not configured")
+	})
+
+	t.Run("Gemini OAuth with project_id calls v1internal:fetchAvailableModels and sorts IDs", func(t *testing.T) {
+		var gotPath, gotMethod, gotAuth, gotBody string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotMethod = r.Method
+			gotAuth = r.Header.Get("Authorization")
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"models":{"gemini-3.5-flash":{},"gemini-2.5-pro":{},"gemini-2.5-flash":{}}}`))
+		}))
+		defer ts.Close()
+
+		geminiCodeAssistUpstreamModelsBaseURLOverride = ts.URL
+		defer func() { geminiCodeAssistUpstreamModelsBaseURLOverride = "" }()
+
+		svc := &AccountTestService{
+			cfg:                 upstreamModelSyncTestConfig(),
+			geminiTokenProvider: NewGeminiTokenProvider(nil, &vertexModelsTokenCacheStub{token: "ya29.code-assist-token"}, nil),
+		}
+		models, rawBody, err := svc.fetchUpstreamModelList(context.Background(), &Account{
+			ID:       99,
+			Platform: PlatformGemini,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token": "test-gemini-oauth-token",
+				"project_id":   "gen-lang-client-0879216078",
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, http.MethodPost, gotMethod)
+		require.Equal(t, "/v1internal:fetchAvailableModels", gotPath)
+		require.Equal(t, "Bearer ya29.code-assist-token", gotAuth)
+		require.Contains(t, gotBody, `"project":"gen-lang-client-0879216078"`)
+		require.Equal(t, []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.5-flash"}, models)
+		require.NotEmpty(t, rawBody)
+	})
+
+	t.Run("Gemini OAuth with project_id returns upstream error on 403 or empty models", func(t *testing.T) {
+		status := http.StatusForbidden
+		respBody := `{"error":{"message":"forbidden"}}`
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(respBody))
+		}))
+		defer ts.Close()
+
+		geminiCodeAssistUpstreamModelsBaseURLOverride = ts.URL
+		defer func() { geminiCodeAssistUpstreamModelsBaseURLOverride = "" }()
+
+		svc := &AccountTestService{
+			cfg:                 upstreamModelSyncTestConfig(),
+			geminiTokenProvider: NewGeminiTokenProvider(nil, &vertexModelsTokenCacheStub{token: "ya29.code-assist-token"}, nil),
+		}
+		acc := &Account{
+			ID:       99,
+			Platform: PlatformGemini,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"project_id": "gen-lang-client-0879216078",
+			},
+		}
+		_, _, err := svc.fetchUpstreamModelList(context.Background(), acc)
+		require.Error(t, err)
+		var syncErr *UpstreamModelSyncError
+		require.True(t, errors.As(err, &syncErr))
+		require.Equal(t, UpstreamModelSyncErrorUpstream, syncErr.Kind)
+
+		status = http.StatusOK
+		respBody = `{"models":{}}`
+		_, _, err = svc.fetchUpstreamModelList(context.Background(), acc)
+		require.Error(t, err)
+		require.True(t, errors.As(err, &syncErr))
+		require.Equal(t, UpstreamModelSyncErrorUpstream, syncErr.Kind)
+	})
+
+	t.Run("Gemini OAuth without project_id uses AI Studio v1beta/models GET request", func(t *testing.T) {
+		svc := &AccountTestService{
+			cfg:                 upstreamModelSyncTestConfig(),
+			geminiTokenProvider: NewGeminiTokenProvider(nil, &vertexModelsTokenCacheStub{token: "ya29.aistudio-token"}, nil),
+		}
+		req, err := svc.buildGeminiUpstreamModelsRequest(context.Background(), &Account{
+			ID:       100,
+			Platform: PlatformGemini,
+			Type:     AccountTypeOAuth,
+			Status:   StatusActive,
+			Credentials: map[string]any{
+				"access_token": "test-gemini-oauth-token",
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, http.MethodGet, req.Method)
+		require.Equal(t, "https://generativelanguage.googleapis.com/v1beta/models", req.URL.String())
+		require.Equal(t, "Bearer ya29.aistudio-token", req.Header.Get("Authorization"))
+	})
 }

@@ -2114,3 +2114,62 @@ describe('EditAccountModal temp-unschedulable rule scope', () => {
     wrapper.unmount()
   })
 })
+
+describe('EditAccountModal Gemini OAuth model restriction', () => {
+  function buildGeminiOAuthAccount(modelMapping?: Record<string, string>) {
+    return {
+      id: 31,
+      name: 'Gemini OAuth Account',
+      notes: '',
+      platform: 'gemini',
+      type: 'oauth',
+      credentials: {
+        access_token: 'ya29.test',
+        refresh_token: '1//test',
+        oauth_type: 'google_one',
+        ...(modelMapping ? { model_mapping: modelMapping } : {})
+      },
+      extra: {},
+      proxy_id: null,
+      concurrency: 1,
+      priority: 1,
+      rate_multiplier: 1,
+      status: 'active',
+      group_ids: [],
+      expires_at: null,
+      auto_pause_on_expired: false
+    } as any
+  }
+
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    updateAccountMock.mockReset()
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+  })
+
+  it('renders model restriction for Gemini OAuth, hydrates model_mapping, and saves updated whitelist', async () => {
+    const account = buildGeminiOAuthAccount({
+      'gemini-2.0-flash': 'gemini-2.0-flash'
+    })
+    updateAccountMock.mockResolvedValue(account)
+    const wrapper = mountModal(account)
+
+    expect(wrapper.findComponent(ModelWhitelistSelectorStub).exists()).toBe(true)
+    expect(wrapper.get('[data-testid="model-whitelist-value"]').text()).toBe(
+      'gemini-2.0-flash'
+    )
+
+    await wrapper.getComponent(ModelWhitelistSelectorStub).vm.$emit('update:modelValue', [
+      'gemini-2.5-pro',
+      'gemini-3.1-pro-preview'
+    ])
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1)
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual({
+      'gemini-2.5-pro': 'gemini-2.5-pro',
+      'gemini-3.1-pro-preview': 'gemini-3.1-pro-preview'
+    })
+    wrapper.unmount()
+  })
+})

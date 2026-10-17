@@ -2852,15 +2852,64 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
-		// Consumer Google One OAuth still uses the legacy Gemini CLI / Code
-		// Assist channel. Do not advertise newer 3.x or image models that the
-		// channel cannot serve.
 		if account.IsOAuth() {
-			if account.IsGeminiGoogleOne() {
-				response.Success(c, geminicli.GoogleOneModels)
+			if !hasExplicitModelMapping(account.Credentials["model_mapping"]) {
+				if account.IsGeminiGoogleOne() {
+					response.Success(c, geminicli.GoogleOneModels)
+					return
+				}
+				response.Success(c, geminicli.DefaultModels)
 				return
 			}
-			response.Success(c, geminicli.DefaultModels)
+
+			mapping := account.GetModelMapping()
+			if len(mapping) == 0 {
+				if account.IsGeminiGoogleOne() {
+					response.Success(c, geminicli.GoogleOneModels)
+					return
+				}
+				response.Success(c, geminicli.DefaultModels)
+				return
+			}
+
+			presetByID := make(map[string]geminicli.Model, len(geminicli.GoogleOneModels)+len(geminicli.DefaultModels))
+			for _, dm := range geminicli.DefaultModels {
+				presetByID[dm.ID] = dm
+			}
+			for _, gm := range geminicli.GoogleOneModels {
+				presetByID[gm.ID] = gm
+			}
+
+			requestedModels := make([]string, 0, len(mapping))
+			for requestedModel := range mapping {
+				if strings.TrimSpace(requestedModel) != "" && !strings.Contains(requestedModel, "*") {
+					requestedModels = append(requestedModels, requestedModel)
+				}
+			}
+			if len(requestedModels) == 0 {
+				if account.IsGeminiGoogleOne() {
+					response.Success(c, geminicli.GoogleOneModels)
+					return
+				}
+				response.Success(c, geminicli.DefaultModels)
+				return
+			}
+			sort.Strings(requestedModels)
+
+			models := make([]geminicli.Model, 0, len(requestedModels))
+			for _, requestedModel := range requestedModels {
+				if preset, ok := presetByID[requestedModel]; ok {
+					models = append(models, preset)
+					continue
+				}
+				models = append(models, geminicli.Model{
+					ID:          requestedModel,
+					Type:        "model",
+					DisplayName: requestedModel,
+					CreatedAt:   "",
+				})
+			}
+			response.Success(c, models)
 			return
 		}
 
@@ -2871,8 +2920,14 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 			return
 		}
 
-		var models []geminicli.Model
+		requestedModels := make([]string, 0, len(mapping))
 		for requestedModel := range mapping {
+			requestedModels = append(requestedModels, requestedModel)
+		}
+		sort.Strings(requestedModels)
+
+		var models []geminicli.Model
+		for _, requestedModel := range requestedModels {
 			var found bool
 			for _, dm := range geminicli.DefaultModels {
 				if dm.ID == requestedModel {
@@ -2904,18 +2959,10 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	if account.Platform == service.PlatformGrok {
 		defaultModels := xai.DefaultModels()
 
-		hasExplicitMapping := false
-		switch rawMapping := account.Credentials["model_mapping"].(type) {
-		case map[string]any:
-			hasExplicitMapping = len(rawMapping) > 0
-		case map[string]string:
-			hasExplicitMapping = len(rawMapping) > 0
-		}
-		if !hasExplicitMapping {
+		if !hasExplicitModelMapping(account.Credentials["model_mapping"]) {
 			response.Success(c, defaultModels)
 			return
 		}
-
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
 			response.Success(c, defaultModels)
@@ -2995,6 +3042,18 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 	}
 
 	response.Success(c, models)
+}
+
+// hasExplicitModelMapping reports whether rawMapping is a non-empty map configured in credentials.
+func hasExplicitModelMapping(rawMapping any) bool {
+	switch m := rawMapping.(type) {
+	case map[string]any:
+		return len(m) > 0
+	case map[string]string:
+		return len(m) > 0
+	default:
+		return false
+	}
 }
 
 // antigravityAccountTestModels uses the stored mapping rather than GetModelMapping,

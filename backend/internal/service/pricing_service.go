@@ -1316,6 +1316,20 @@ func (s *PricingService) buildModelLookupCandidates(modelLower string) []string 
 		candidates = append([]string{normalized}, candidates...)
 	}
 
+	for _, cand := range []string{normalized, lastSegment(normalized), lastSegment(modelLower)} {
+		if strings.HasSuffix(cand, "-thinking") {
+			baseWithoutThinking := strings.TrimSuffix(cand, "-thinking")
+			if baseWithoutThinking != "" && baseWithoutThinking != cand {
+				candidates = append(candidates, baseWithoutThinking)
+				if seg := lastSegment(baseWithoutThinking); seg != "" && seg != baseWithoutThinking {
+					candidates = append(candidates, seg)
+				}
+				if normalizedAfterStrip := normalizeModelNameForPricing(baseWithoutThinking); normalizedAfterStrip != "" && normalizedAfterStrip != baseWithoutThinking {
+					candidates = append(candidates, normalizedAfterStrip)
+				}
+			}
+		}
+	}
 	seen := make(map[string]struct{}, len(candidates))
 	out := make([]string, 0, len(candidates))
 	for _, c := range candidates {
@@ -1353,6 +1367,9 @@ func normalizeModelNameForPricing(model string) string {
 	}
 
 	model = strings.TrimLeft(model, "/")
+	if mapped, ok := qoderAndWBAliasToCanonicalModel[strings.ToLower(model)]; ok {
+		return mapped
+	}
 	if canonical := canonicalizeOpenAIModelAliasSpelling(model); canonical != "" {
 		if canonical == "gpt-6" {
 			return "gpt-6-astra"
@@ -1395,7 +1412,7 @@ func isAntigravityThinkingTierAlias(model string) bool {
 // the published token rate, so this keeps -high/-low/-medium and -tiered
 // requests on the corresponding base model's price card.
 func normalizeGeminiThinkingTierAlias(model string) string {
-	for _, baseModel := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"} {
+	for _, baseModel := range []string{"gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-4-argon"} {
 		for _, tier := range []string{"-high", "-low", "-medium", "-tiered"} {
 			if model == baseModel+tier {
 				return baseModel
@@ -1412,8 +1429,9 @@ func lastSegment(model string) string {
 	return model
 }
 
-// extractBaseName 提取基础模型名称（去掉日期版本号）
+// extractBaseName 提取基础模型名称（去掉日期版本号与 -thinking 后缀）
 func (s *PricingService) extractBaseName(model string) string {
+	model = strings.TrimSuffix(model, "-thinking")
 	// 移除日期后缀 (如 -20251101, -20241022)
 	parts := strings.Split(model, "-")
 	result := make([]string, 0, len(parts))

@@ -326,8 +326,18 @@ func TestAccountHandlerGetAvailableModels_GeminiGoogleOneUsesConservativeCatalog
 	for _, model := range resp.Data {
 		ids = append(ids, model.ID)
 	}
-	require.ElementsMatch(t, []string{"gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"}, ids)
-	require.NotContains(t, ids, "gemini-3.5-flash")
+	require.Equal(t, []string{
+		"gemini-2.0-flash",
+		"gemini-2.0-flash-lite",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.5-pro",
+		"gemini-3-flash-preview",
+		"gemini-3-pro-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3.1-pro-preview-customtools",
+		"gemini-3.5-flash",
+	}, ids)
 	require.NotContains(t, ids, "gemini-2.5-flash-image")
 }
 
@@ -603,4 +613,121 @@ func TestAccountHandlerGetAvailableModels_TypeSafeOnlyReturnsJev(t *testing.T) {
 		require.Len(t, resp.Data, 1)
 		require.Equal(t, "jev-latest", resp.Data[0].ID)
 	}
+}
+
+func TestAccountHandlerGetAvailableModels_ExplicitModelMappingvsDefaultFallback(t *testing.T) {
+	t.Run("explicit model_mapping returns sorted keys", func(t *testing.T) {
+		svc := &availableModelsAdminService{
+			stubAdminService: newStubAdminService(),
+			account: service.Account{
+				ID:       47,
+				Name:     "gemini-mapped",
+				Platform: service.PlatformGemini,
+				Type:     service.AccountTypeOAuth,
+				Status:   service.StatusActive,
+				Credentials: map[string]any{
+					"access_token": "token",
+					"model_mapping": map[string]any{
+						"gemini-4-argon":   "gemini-4-argon",
+						"gemini-2.5-flash": "gemini-2.5-flash",
+						"gemini-3.8-flash": "gemini-3.8-flash",
+					},
+				},
+			},
+		}
+		router := setupAvailableModelsRouter(svc)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/47/models", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		var ids []string
+		for _, m := range resp.Data {
+			ids = append(ids, m.ID)
+		}
+		require.Equal(t, []string{"gemini-2.5-flash", "gemini-3.8-flash", "gemini-4-argon"}, ids)
+	})
+
+	t.Run("gemini oauth google_one without model_mapping returns expanded GoogleOneModels", func(t *testing.T) {
+		svc := &availableModelsAdminService{
+			stubAdminService: newStubAdminService(),
+			account: service.Account{
+				ID:       48,
+				Name:     "gemini-google-one",
+				Platform: service.PlatformGemini,
+				Type:     service.AccountTypeOAuth,
+				Status:   service.StatusActive,
+				Credentials: map[string]any{
+					"access_token": "token",
+					"oauth_type":   "google_one",
+				},
+			},
+		}
+		router := setupAvailableModelsRouter(svc)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/48/models", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		var ids []string
+		for _, m := range resp.Data {
+			ids = append(ids, m.ID)
+		}
+		require.Equal(t, []string{
+			"gemini-2.0-flash",
+			"gemini-2.0-flash-lite",
+			"gemini-2.5-flash",
+			"gemini-2.5-flash-lite",
+			"gemini-2.5-pro",
+			"gemini-3-flash-preview",
+			"gemini-3-pro-preview",
+			"gemini-3.1-pro-preview",
+			"gemini-3.1-pro-preview-customtools",
+			"gemini-3.5-flash",
+		}, ids)
+	})
+
+	t.Run("gemini oauth non-google_one without model_mapping returns DefaultModels", func(t *testing.T) {
+		svc := &availableModelsAdminService{
+			stubAdminService: newStubAdminService(),
+			account: service.Account{
+				ID:       49,
+				Name:     "gemini-default",
+				Platform: service.PlatformGemini,
+				Type:     service.AccountTypeOAuth,
+				Status:   service.StatusActive,
+				Credentials: map[string]any{
+					"access_token": "token",
+				},
+			},
+		}
+		router := setupAvailableModelsRouter(svc)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/49/models", nil))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		var ids []string
+		for _, m := range resp.Data {
+			ids = append(ids, m.ID)
+		}
+		require.Contains(t, ids, "gemini-2.5-flash")
+		require.Contains(t, ids, "gemini-2.5-pro")
+		require.Contains(t, ids, "gemini-3.5-flash")
+	})
 }

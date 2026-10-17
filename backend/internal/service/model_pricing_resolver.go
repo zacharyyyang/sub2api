@@ -167,12 +167,20 @@ func matchGroupModelPricing(group *Group, model string) *ChannelModelPricing {
 	return wildcard
 }
 
-// resolveBasePricing 从 LiteLLM 或 Fallback 获取基础定价
+// resolveBasePricing 从 LiteLLM 或 Fallback 获取基础定价。
+// GetModelPricing 内部已包含 getFallbackPricing 回退；此处额外保留 getFallbackPricing
+// 调用属于按设计文档 §2.4-2 要求的防御性兜底（确保直接命中 fallback 时显式标记 PricingSourceFallback）。
 func (r *ModelPricingResolver) resolveBasePricing(model string) (*ModelPricing, string) {
+	if r.billingService == nil {
+		return nil, PricingSourceFallback
+	}
 	pricing, err := r.billingService.GetModelPricing(model)
 	if err != nil {
 		slog.Debug("failed to get model pricing from LiteLLM, using fallback",
 			"model", model, "error", err)
+		if fallback := r.billingService.getFallbackPricing(model); fallback != nil {
+			return fallback, PricingSourceFallback
+		}
 		return nil, PricingSourceFallback
 	}
 	return pricing, PricingSourceLiteLLM
