@@ -1402,3 +1402,80 @@ func TestAntigravityRetryLoop_SmartRetryFailed_StickySession_SwitchErrorPropagat
 	require.Equal(t, int64(55), cache.deleteCalls[0].groupID)
 	require.Equal(t, "sticky-loop-test", cache.deleteCalls[0].sessionHash)
 }
+
+func TestAntigravityRetryLoop_TransientInvalidArgument400_RetriesAndSucceeds(t *testing.T) {
+	transient400Body := `{"error":{"code":400,"message":"Invalid argument:request is invalid.","status":"INVALID_ARGUMENT"}}`
+	resp1 := &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(transient400Body)),
+	}
+	resp2 := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+	}
+
+	upstream := &mockSmartRetryUpstream{
+		responses: []*http.Response{resp1, resp2},
+		errors:    []error{nil, nil},
+	}
+	account := &Account{
+		ID:          18,
+		Name:        "acc-18",
+		Type:        AccountTypeOAuth,
+		Platform:    PlatformAntigravity,
+		Schedulable: true,
+		Status:      StatusActive,
+		Concurrency: 1,
+	}
+
+	svc := &AntigravityGatewayService{}
+	result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+		ctx:          context.Background(),
+		prefix:       "[test-400-retry]",
+		account:      account,
+		accessToken:  "token",
+		action:       "streamGenerateContent",
+		body:         []byte(`{"input":"test"}`),
+		httpUpstream: upstream,
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+			return nil
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.resp)
+	require.Equal(t, http.StatusOK, result.resp.StatusCode)
+	require.Equal(t, 2, upstream.callIdx, "transient 400 INVALID_ARGUMENT should retry and succeed on 2nd attempt")
+
+	// 对照：真实字段级 400 INVALID_ARGUMENT 不应触发重试
+	schema400Body := `{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"foo\": Cannot find field.","status":"INVALID_ARGUMENT"}}`
+	upstreamNoRetry := &mockSmartRetryUpstream{
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(schema400Body)),
+			},
+		},
+		errors: []error{nil},
+	}
+	resultNoRetry, errNoRetry := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+		ctx:          context.Background(),
+		prefix:       "[test-400-no-retry]",
+		account:      account,
+		accessToken:  "token",
+		action:       "streamGenerateContent",
+		body:         []byte(`{"input":"test"}`),
+		httpUpstream: upstreamNoRetry,
+		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+			return nil
+		},
+	})
+	require.NoError(t, errNoRetry)
+	require.NotNil(t, resultNoRetry)
+	require.Equal(t, http.StatusBadRequest, resultNoRetry.resp.StatusCode)
+	require.Equal(t, 1, upstreamNoRetry.callIdx, "non-transient 400 must not retry")
+}
