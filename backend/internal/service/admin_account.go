@@ -424,6 +424,11 @@ func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]an
 			return nil, err
 		}
 	}
+	if input.Platform == PlatformMimo {
+		if _, err := NormalizeMimoCredentials(input.Credentials); err != nil {
+			return nil, err
+		}
+	}
 	// Probe/session state is system-managed. New accounts always start with automatic refresh disabled.
 	delete(accountExtra, UpstreamBillingProbeEnabledExtraKey)
 	delete(accountExtra, UpstreamBillingRateSyncEnabledExtraKey)
@@ -687,6 +692,11 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 				return nil, err
 			}
 		}
+		if account.Platform == PlatformMimo {
+			if _, err := NormalizeMimoCredentials(account.Credentials); err != nil {
+				return nil, err
+			}
+		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
 		account.Credentials = SanitizeStoredCredentials(account.Platform, account.Credentials)
 	}
@@ -939,6 +949,12 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			invalidator.InvalidateQoderToken(account.ID)
 		}
 	}
+	if account.Platform == PlatformMimo {
+		InvalidateMimoTokenCache(account.ID)
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateMimoToken(int64) }); ok {
+			invalidator.InvalidateMimoToken(account.ID)
+		}
+	}
 
 	// 将 proxy 变更传播到 spark 影子账号（同步；Update 内部已触发调度快照）。
 	// 影子自身 proxy 不可独立编辑(见上),故对影子的更新不触发传播。
@@ -1094,6 +1110,11 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 					return nil, err
 				}
 			}
+			if acc != nil && acc.Platform == PlatformMimo {
+				if _, err := NormalizeMimoCredentials(mergeWBCredentials(acc.Credentials, input.Credentials)); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 
@@ -1241,6 +1262,14 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 				}
 			}
 		}
+		for _, account := range cachedTargets {
+			if account != nil && account.Platform == PlatformMimo {
+				InvalidateMimoTokenCache(account.ID)
+				if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateMimoToken(int64) }); ok {
+					invalidator.InvalidateMimoToken(account.ID)
+				}
+			}
+		}
 	}
 
 	// 将 proxy 变更传播到每个目标账号的 spark 影子账号
@@ -1374,6 +1403,10 @@ func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
 	if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateQoderToken(int64) }); ok {
 		invalidator.InvalidateQoderToken(id)
 	}
+	InvalidateMimoTokenCache(id)
+	if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateMimoToken(int64) }); ok {
+		invalidator.InvalidateMimoToken(id)
+	}
 	return nil
 }
 
@@ -1381,6 +1414,12 @@ func (s *adminServiceImpl) RefreshAccountCredentials(ctx context.Context, id int
 	account, err := s.accountRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if account.Platform == PlatformMimo {
+		InvalidateMimoTokenCache(id)
+		if invalidator, ok := s.runtimeBlocker.(interface{ InvalidateMimoToken(int64) }); ok {
+			invalidator.InvalidateMimoToken(id)
+		}
 	}
 	// TODO: Implement refresh logic
 	return account, nil

@@ -1520,7 +1520,7 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 
 	// 归属取决于配置而非运行时健康：限流/临时不可调度不应让同一模型在
 	// 「唯一归属」与「歧义」之间来回翻转，否则配置错误只会间歇暴露。
-	accounts, err := s.accountRepo.ListModelAvailabilityCandidates(ctx, &groupID, append(domain.ConcretePlatformIDs(), PlatformWB, PlatformQoder), false)
+	accounts, err := s.accountRepo.ListModelAvailabilityCandidates(ctx, &groupID, append(domain.ConcretePlatformIDs(), PlatformWB, PlatformQoder, PlatformMimo), false)
 	if err != nil {
 		return CompositeModelOwnership{}, err
 	}

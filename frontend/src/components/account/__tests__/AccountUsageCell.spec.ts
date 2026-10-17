@@ -20,10 +20,15 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string, params?: Record<string, unknown>) =>
-        key === 'admin.accounts.qoderCredits.expiresAt' && params?.date
-          ? `admin.accounts.qoderCredits.expiresAt(${String(params.date)})`
-          : key
+      t: (key: string, params?: Record<string, unknown>) => {
+        if (key === 'admin.accounts.qoderCredits.expiresAt' && params?.date) {
+          return `admin.accounts.qoderCredits.expiresAt(${String(params.date)})`
+        }
+        if (key === 'admin.accounts.mimoQuota.resetAt' && params?.date) {
+          return `admin.accounts.mimoQuota.resetAt(${String(params.date)})`
+        }
+        return key
+      }
     })
   }
 })
@@ -2054,5 +2059,84 @@ describe('AccountUsageCell', () => {
     await flushPromises()
     expect(malformed.text()).not.toContain('admin.accounts.qoderCredits.remaining')
     expect(malformed.text()).not.toMatch(/0/)
+  })
+
+  it('mimo 账号无批管理器时自拉 getUsage 并渲染会员套餐与剩余百分比及进度条', async () => {
+    getUsage.mockResolvedValue({
+      mimo_quota: {
+        plan_title: 'MiMo 会员',
+        remaining_percent: 82.5,
+        used_percent: 17.5,
+        reset_at: '2026-10-17T22:00:00Z'
+      }
+    })
+    const account = makeAccount({ id: 7001, platform: 'mimo', type: 'apikey' })
+    const wrapper = mount(AccountUsageCell, {
+      props: { account },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(getUsage).toHaveBeenCalledWith(7001)
+    expect(wrapper.text()).toContain('5h|17.5|2026-10-17T22:00:00Z')
+    expect(wrapper.text()).toContain('MiMo 会员: 82.5%')
+    expect(wrapper.text()).toContain('admin.accounts.mimoQuota.resetAt(2026-10-17T22:00:00Z)')
+    expect(wrapper.findAll('div.text-gray-400').some(node => node.text().trim() === '-')).toBe(false)
+  })
+
+  it('mimo 账号配额缺失或畸形时不渲染配额行、不显示 0 兜底', async () => {
+    const account = makeAccount({ id: 7002, platform: 'mimo', type: 'apikey' })
+
+    const nilUsage = mount(AccountUsageCell, {
+      props: { account, batchedUsage: null, requestBatchedUsage: vi.fn() },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(nilUsage.text()).not.toContain('MiMo 会员')
+    expect(nilUsage.text()).not.toContain('admin.accounts.mimoQuota.defaultPlan')
+
+    const malformed = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          mimo_quota: {
+            remaining_percent: 'bad' as unknown as number,
+            used_percent: 'bad' as unknown as number
+          }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(malformed.text()).not.toContain('MiMo 会员')
+    expect(malformed.text()).not.toContain('admin.accounts.mimoQuota.defaultPlan')
+    expect(malformed.text()).not.toMatch(/0/)
+
+    const derived = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          mimo_quota: { used_percent: 25 }
+        }
+      },
+      global: {
+        stubs: { UsageProgressBar: true, AccountQuotaInfo: true }
+      }
+    })
+    await flushPromises()
+    expect(derived.text()).toContain('admin.accounts.mimoQuota.defaultPlan: 75%')
   })
 })

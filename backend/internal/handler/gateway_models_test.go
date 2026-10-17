@@ -93,6 +93,10 @@ func (s *gatewayModelsAccountRepoStub) ListModelAvailabilityCandidates(ctx conte
 	return s.ListSchedulableByGroupID(ctx, *groupID)
 }
 
+func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, _ string) ([]service.Account, error) {
+	return s.ListSchedulableByGroupID(ctx, groupID)
+}
+
 func newGatewayModelsHandlerForTest(repo service.AccountRepository, routeRepo ...service.CompositeModelRouteRepository) *GatewayHandler {
 	var resolver *service.CompositeRouteResolver
 	if len(routeRepo) > 0 {
@@ -2657,5 +2661,84 @@ func TestQoderHandlerChatCompletionsAutoAllowedAndUnknownModel400(t *testing.T) 
 		newServiceTierHandlerTest(t).ChatCompletions(c)
 		require.Equal(t, tc.code, rec.Code, "model=%s", tc.model)
 		require.Contains(t, rec.Body.String(), tc.msg, "model=%s", tc.model)
+	}
+}
+
+// TestMimoGatewayModelsAndMessagesRoute 覆盖设计 §6 用例 10（不 import routes）：
+// ① mimo 与 composite 分组 /v1/models 精确返回 6 个白名单模型，CodexModels 钉死白名单原键；
+// ② WithCompositeRouteDecision 注入 PlatformMimo 验证 /v1/messages 与 /v1/chat/completions 准入、豁免与未知模型 400。
+func TestMimoGatewayModelsAndMessagesRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	groupID := int64(7951)
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformMimo}}},
+	})
+	for _, plat := range []string{service.PlatformMimo, service.PlatformComposite} {
+		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: plat}, "/v1/models")
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		require.ElementsMatch(t, domain.MimoModelWhitelist, modelIDsForTest(got.Data))
+	}
+	c, rec := newCompositeModelsRequestForTest(&service.Group{
+		ID:             groupID,
+		Platform:       service.PlatformComposite,
+		ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"mimo-v2.6-pro", "mimo-v2.6-pro-thinking"}},
+	}, "/models?client_version=0.147.0")
+	h.CodexModels(c)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var codexGot codexModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &codexGot))
+	require.ElementsMatch(t, []string{"mimo-v2.6-pro"}, codexModelSlugsForTest(codexGot.Models))
+
+	// ② WithCompositeRouteDecision 注入 PlatformMimo + 直连 PlatformMimo 双入口准入与转发
+	compGroup := &service.Group{ID: groupID, Platform: service.PlatformComposite, AllowMessagesDispatch: false}
+	compKey := &service.APIKey{ID: 7952, GroupID: &groupID, Group: compGroup, User: &service.User{ID: 1, Status: service.StatusActive}}
+	cComp, _ := gin.CreateTestContext(httptest.NewRecorder())
+	reqComp := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	cComp.Request = reqComp.WithContext(service.WithCompositeRouteDecision(reqComp.Context(), service.CompositeRouteDecision{
+		Matched:        true,
+		TargetPlatform: service.PlatformMimo,
+		PublicModel:    "mimo-v2.6-pro",
+		UpstreamModel:  "mimo-v2.6-pro",
+	}))
+	require.True(t, allowOpenAICompatibleMessagesDispatch(cComp, compKey))
+	require.Empty(t, resolveOpenAIMessagesDispatchMappedModel(cComp, compKey, "claude-sonnet-4-5-20250929"))
+	require.True(t, openAICompatibleTextTargetAllowed(cComp, compKey, "mimo-v2.6-pro-thinking"))
+
+	mimoKey := &service.APIKey{ID: 7953, GroupID: &groupID, Group: &service.Group{ID: groupID, Platform: service.PlatformMimo}, User: &service.User{ID: 1, Status: service.StatusActive}}
+	require.True(t, allowOpenAICompatibleMessagesDispatch(nil, mimoKey))
+	require.Empty(t, resolveOpenAIMessagesDispatchMappedModel(nil, mimoKey, "claude-sonnet-4-5-20250929"))
+	require.True(t, openAICompatibleTextTargetAllowed(cComp, mimoKey, "claude-sonnet-4-6"))
+	require.True(t, openAICompatibleTextTargetAllowed(cComp, mimoKey, "my-custom-alias"))
+	for _, tc := range []struct {
+		path  string
+		model string
+		code  int
+		msg   string
+	}{
+		{"/v1/chat/completions", "mimo-v2.6-pro-thinking", http.StatusServiceUnavailable, "Service temporarily unavailable"},
+		{"/v1/chat/completions", "mimo-v2.5", http.StatusBadRequest, "unsupported mimo model: mimo-v2.5"},
+		{"/v1/messages", "mimo-v2.6-pro", http.StatusServiceUnavailable, "Service temporarily unavailable"},
+		{"/v1/messages", "gpt-99-unknown", http.StatusBadRequest, "unsupported mimo model: gpt-99-unknown"},
+	} {
+		w := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(w)
+		ctx.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"model":"`+tc.model+`","messages":[{"role":"user","content":"hi"}]}`))
+		ctx.Set(string(middleware2.ContextKeyAPIKey), mimoKey)
+		ctx.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 1, Concurrency: 1})
+		th := newServiceTierHandlerTest(t)
+		th.gatewayService = service.NewOpenAIGatewayService(
+			&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{}},
+			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, th.billingCacheService, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		)
+		if tc.path == "/v1/messages" {
+			th.Messages(ctx)
+		} else {
+			th.ChatCompletions(ctx)
+		}
+		require.Equal(t, tc.code, w.Code, "path=%s model=%s", tc.path, tc.model)
+		require.Contains(t, w.Body.String(), tc.msg, "path=%s model=%s", tc.path, tc.model)
 	}
 }

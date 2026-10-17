@@ -467,6 +467,7 @@ type OpenAIGatewayService struct {
 	qoderTokenProvider    *QoderTokenProvider
 	qoderSleep            func(ctx context.Context, d time.Duration) error
 	qoderAsyncRefreshHook func()
+	mimoTokenProvider     *MimoTokenProvider
 	toolCorrector         *CodexToolCorrector
 	openaiWSResolver      OpenAIWSProtocolResolver
 	resolver              *ModelPricingResolver
@@ -574,6 +575,7 @@ func NewOpenAIGatewayService(
 		wbTokenProvider:       NewWbTokenProvider(accountRepo, nil, ""),
 		qoderWasmSigner:       DefaultQoderWasmSigner(),
 		qoderTokenProvider:    newQoderTokenProviderFromAccountRepo(accountRepo),
+		mimoTokenProvider:     newMimoTokenProviderFromAccountRepo(accountRepo),
 		toolCorrector:         NewCodexToolCorrector(),
 		openaiWSResolver:      NewOpenAIWSProtocolResolver(cfg),
 		resolver:              resolver,
@@ -637,6 +639,13 @@ func (s *OpenAIGatewayService) InvalidateQoderToken(id int64) {
 	qoderUsageCache.Delete(id)
 	if s != nil && s.qoderTokenProvider != nil {
 		s.qoderTokenProvider.InvalidateQoderToken(id)
+	}
+}
+
+func (s *OpenAIGatewayService) InvalidateMimoToken(id int64) {
+	InvalidateMimoTokenCache(id)
+	if s != nil && s.mimoTokenProvider != nil {
+		s.mimoTokenProvider.InvalidateMimoToken(id)
 	}
 }
 

@@ -49,12 +49,13 @@ const (
 	PlatformTypeSafe    = domain.PlatformTypeSafe
 	PlatformWB          = domain.PlatformWB
 	PlatformQoder       = domain.PlatformQoder
+	PlatformMimo        = domain.PlatformMimo
 )
 
 // AllPlatforms 返回所有支持的平台列表（平台清单，按展示顺序）。
 func AllPlatforms() []string {
 	platforms := domain.ConcretePlatformIDs()
-	for _, extra := range []string{PlatformWB, PlatformQoder} {
+	for _, extra := range []string{PlatformWB, PlatformQoder, PlatformMimo} {
 		found := false
 		for _, p := range platforms {
 			if p == extra {

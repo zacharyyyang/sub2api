@@ -243,6 +243,8 @@ func (s *BillingService) initCNAndExtendedFallbackPrices() {
 	}
 	s.fallbackPrices["mimo-v2.6-pro"] = mimoPro
 	s.fallbackPrices["mimo-v2.5-pro"] = mimoPro
+	s.fallbackPrices["mimo-v2-pro"] = mimoPro
+	s.fallbackPrices["mimo-v2-omni"] = mimoPro
 	mimoFlash := &ModelPricing{
 		InputPricePerToken:     0.14e-6,
 		OutputPricePerToken:    0.28e-6,
@@ -250,6 +252,7 @@ func (s *BillingService) initCNAndExtendedFallbackPrices() {
 	}
 	s.fallbackPrices["mimo-v2.6-flash"] = mimoFlash
 	s.fallbackPrices["mimo-v2.5"] = mimoFlash
+	s.fallbackPrices["mimo-v2-flash"] = mimoFlash
 	mimoUltraspeed := &ModelPricing{
 		InputPricePerToken:     4.35e-6,
 		OutputPricePerToken:    8.70e-6,
@@ -376,17 +379,40 @@ func (s *BillingService) getCNAndExtendedFallbackPricing(model string) *ModelPri
 		return s.fallbackPrices["ernie-5.1"]
 	case hasFamilyPrefix(check, "ernie-4.5-turbo"):
 		return s.fallbackPrices["ernie-4.5-turbo"]
-	case hasFamilyPrefix(check, "mimo-v2.6-pro-ultraspeed"), hasFamilyPrefix(check, "mimo-v2.6-ultraspeed"), check == "ultraspeed":
-		return s.fallbackPrices["mimo-v2.6-pro-ultraspeed"]
-	case hasFamilyPrefix(check, "mimo-v2.6-pro"), hasFamilyPrefix(check, "mimo-v2.5-pro"):
-		return s.fallbackPrices["mimo-v2.6-pro"]
-	case hasFamilyPrefix(check, "mimo-v2.6-flash"), hasFamilyPrefix(check, "mimo-v2.5"):
-		return s.fallbackPrices["mimo-v2.6-flash"]
 	case (hasFamilyPrefix(check, "gemini-3.5-flash") || hasFamilyPrefix(check, "gemini-3-5-flash")) &&
 		!strings.Contains(check, "image") && !strings.Contains(check, "lite"):
 		return s.fallbackPrices["gemini-3.5-flash"]
 	}
+	if price := resolveMimoPricing(check, s.fallbackPrices); price != nil {
+		return price
+	}
 	return nil
+}
+
+func resolveMimoPricing(check string, fallbackPrices map[string]*ModelPricing) *ModelPricing {
+	if len(fallbackPrices) == 0 {
+		return nil
+	}
+	c := strings.ToLower(strings.TrimSpace(check))
+	if idx := strings.LastIndex(c, "/"); idx >= 0 {
+		c = strings.TrimSpace(c[idx+1:])
+	}
+	if idx := strings.LastIndex(c, ":"); idx > 0 {
+		c = strings.TrimSpace(c[:idx])
+	}
+	if price, ok := fallbackPrices[c]; ok && strings.HasPrefix(c, "mimo-") {
+		return price
+	}
+	switch {
+	case hasFamilyPrefix(c, "mimo-v2.6-pro-ultraspeed"), hasFamilyPrefix(c, "mimo-v2.6-ultraspeed"), hasFamilyPrefix(c, "mimo-v2-pro-ultraspeed"), c == "ultraspeed":
+		return fallbackPrices["mimo-v2.6-pro-ultraspeed"]
+	case hasFamilyPrefix(c, "mimo-v2.6-pro"), hasFamilyPrefix(c, "mimo-v2.5-pro"), hasFamilyPrefix(c, "mimo-v2-pro"), hasFamilyPrefix(c, "mimo-v2-omni"), hasFamilyPrefix(c, "mimo-v2.6-omni"):
+		return fallbackPrices["mimo-v2.6-pro"]
+	case hasFamilyPrefix(c, "mimo-v2.6-flash"), hasFamilyPrefix(c, "mimo-v2.5"), hasFamilyPrefix(c, "mimo-v2-flash"):
+		return fallbackPrices["mimo-v2.6-flash"]
+	default:
+		return nil
+	}
 }
 
 // isDashScopeOrQianfanGroup reports whether the group represents an Alibaba DashScope (Bailian)

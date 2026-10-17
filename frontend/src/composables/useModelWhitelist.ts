@@ -327,6 +327,19 @@ export const qoderModels = [
 // Qoder 独有可读模型（过滤已存在于 minimaxModels 的项）：用于补全 allModelsList，避免重复选项
 const qoderOnlyModels = qoderModels.filter(m => !minimaxModels.includes(m))
 
+// MiMo 平台模型白名单（与后端 domain.MimoModelWhitelist 6 个官方可读模型逐字一致）
+export const mimoModels = [
+  'mimo-v2.6-pro',
+  'mimo-v2.6-pro-ultraspeed',
+  'mimo-v2.6-flash',
+  'mimo-v2-pro',
+  'mimo-v2-omni',
+  'mimo-v2-flash'
+]
+
+// MiMo 独有可读模型：用于补全 allModelsList，避免重复选项
+const mimoOnlyModels = mimoModels
+
 // 所有模型（去重）
 const allModelsList: string[] = [
   ...openaiModels,
@@ -348,7 +361,8 @@ const allModelsList: string[] = [
   ...hunyuanModels,
   ...perplexityModels,
   ...wbOnlyModels,
-  ...qoderOnlyModels
+  ...qoderOnlyModels,
+  ...mimoOnlyModels
 ]
 
 // 转换为下拉选项格式
@@ -573,6 +587,7 @@ export function getModelsByPlatform(platform: string): string[] {
     case 'typesafe': return ['jev-latest']
     case 'wb': return wbModels
     case 'qoder': return qoderModels
+    case 'mimo': return mimoModels
     case 'doubao': return doubaoModels
     case 'minimax': return minimaxModels
     case 'baidu': return baiduModels

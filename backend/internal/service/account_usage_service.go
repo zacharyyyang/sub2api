@@ -236,6 +236,9 @@ type UsageInfo struct {
 	// Qoder 积分额度（旁路探测，失败仅 Warn、不写 Error/ErrorCode；无数据显示 = 字段 nil）
 	QoderCredits *QoderCredits `json:"qoder_credits,omitempty"`
 
+	// MiMo 会员配额（旁路探测，失败仅 Warn、不写 Error/ErrorCode；无数据显示 = 字段 nil）
+	MimoQuota *MimoQuotaInfo `json:"mimo_quota,omitempty"`
+
 	// Antigravity 废弃模型转发规则 (old_model_id -> new_model_id)
 	ModelForwardingRules map[string]string `json:"model_forwarding_rules,omitempty"`
 
@@ -418,6 +421,9 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 	}
 	if account.Platform == PlatformQoder {
 		return s.getQoderUsage(ctx, account)
+	}
+	if account.Platform == PlatformMimo {
+		return s.getMimoUsage(ctx, account)
 	}
 
 	if account.Platform == PlatformGrok {

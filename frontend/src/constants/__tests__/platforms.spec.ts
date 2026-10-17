@@ -38,6 +38,7 @@ describe('platform option catalogs', () => {
   it('adds composite for group-backed filters', () => {
     expect(GROUP_PLATFORM_OPTIONS.map((option) => option.value)).toEqual([
       ...concretePlatforms,
+      'mimo',
       'composite'
     ])
   })
@@ -81,6 +82,7 @@ describe('platform catalog with a newly registered platform', () => {
     expect(GROUP_PLATFORM_OPTIONS.map((option) => option.value)).toEqual([
       ...concretePlatforms,
       'acme_router',
+      'mimo',
       'composite'
     ])
     expect(platformLabel('acme_router')).toBe('Acme Router')

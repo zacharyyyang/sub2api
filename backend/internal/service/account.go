@@ -672,6 +672,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		if a.Platform == domain.PlatformQoder {
 			return qoderDefaultModelMapping()
 		}
+		if a.Platform == domain.PlatformMimo {
+			return mimoDefaultModelMapping()
+		}
 		// Bedrock 默认映射由 forwardBedrock 统一处理（需配合 region prefix 调整）
 		return nil
 	}
@@ -691,6 +694,9 @@ func (a *Account) resolveModelMapping(rawMapping map[string]any) map[string]stri
 		}
 		if a.Platform == domain.PlatformQoder {
 			return qoderDefaultModelMapping()
+		}
+		if a.Platform == domain.PlatformMimo {
+			return mimoDefaultModelMapping()
 		}
 		return nil
 	}
@@ -741,6 +747,14 @@ func qoderDefaultModelMapping() map[string]string {
 		m[id] = id
 	}
 	for _, id := range domain.QoderNativeModels {
+		m[id] = id
+	}
+	return m
+}
+
+func mimoDefaultModelMapping() map[string]string {
+	m := make(map[string]string, len(domain.MimoModelWhitelist))
+	for _, id := range domain.MimoModelWhitelist {
 		m[id] = id
 	}
 	return m
@@ -918,6 +932,12 @@ func normalizeRequestedModelForLookup(platform, requestedModel string) string {
 		}
 		return trimmed
 	}
+	if platform == PlatformMimo {
+		if canonical, ok := domain.ResolveMimoModel(trimmed); ok {
+			return canonical
+		}
+		return trimmed
+	}
 	if platform != PlatformGemini && platform != PlatformAntigravity {
 		return trimmed
 	}
@@ -995,6 +1015,11 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 	}
 	if a.Platform == PlatformQoder {
 		if _, ok := domain.ResolveQoderModel(requestedModel); ok && mappingSupportsRequestedModel(qoderDefaultModelMapping(), normalized) {
+			return true
+		}
+	}
+	if a.Platform == PlatformMimo {
+		if _, ok := domain.ResolveMimoModel(requestedModel); ok && mappingSupportsRequestedModel(mimoDefaultModelMapping(), normalized) {
 			return true
 		}
 	}
@@ -1940,7 +1965,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	// wb 企业平台定点放行：IsOpenAICompatible()(wb) 恒 false（wb 401 错误语义独立），
 	// 能力闸仅放行 chat_completions（wb 网关腿 = OpenAI 兼容 chat 接口）；空 capability
 	// 的无能力约束入口已在上方提前放行，属既有行为延续。
-	if a.Platform == PlatformWB || a.Platform == PlatformQoder {
+	if a.Platform == PlatformWB || a.Platform == PlatformQoder || a.Platform == PlatformMimo {
 		return capability == OpenAIEndpointCapabilityChatCompletions
 	}
 	if !a.IsOpenAICompatible() {

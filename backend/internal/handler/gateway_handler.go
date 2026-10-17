@@ -1200,6 +1200,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		if platform == service.PlatformQoder {
 			source = qoderIntersectWhitelist(source)
 		}
+		if platform == service.PlatformMimo {
+			source = mimoIntersectWhitelist(source)
+		}
 		filtered := apiKey.Group.ModelAllowlist.FilterForListing(source)
 		if platform == service.PlatformWB {
 			// FilterForListing 会把命中条目的配置原文写进输出（如 gpt-5.6-sol-thinking
@@ -1209,6 +1212,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		}
 		if platform == service.PlatformQoder {
 			filtered = qoderIntersectWhitelist(filtered)
+		}
+		if platform == service.PlatformMimo {
+			filtered = mimoIntersectWhitelist(filtered)
 		}
 		writeAllowlistedModelsList(c, platform, filtered)
 		return
@@ -1220,6 +1226,9 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		}
 		if platform == service.PlatformQoder {
 			availableModels = qoderIntersectWhitelist(availableModels)
+		}
+		if platform == service.PlatformMimo {
+			availableModels = mimoIntersectWhitelist(availableModels)
 		}
 		writeModelsList(c, platform, availableModels)
 		return
@@ -1252,6 +1261,10 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		writeModelsList(c, service.PlatformQoder, slices.Clone(domain.QoderModelWhitelist))
 		return
 	}
+	if platform == service.PlatformMimo {
+		writeModelsList(c, service.PlatformMimo, slices.Clone(domain.MimoModelWhitelist))
+		return
+	}
 
 	writeModelsListResponse(c, claude.DefaultModels)
 }
@@ -1279,6 +1292,8 @@ func (h *GatewayHandler) CodexModels(c *gin.Context) {
 	switch {
 	case apiKey.Group.Platform == service.PlatformQoder || forcedPlatform == service.PlatformQoder:
 		modelIDs = pinQoderWhitelistOriginalKeys(modelIDs)
+	case apiKey.Group.Platform == service.PlatformMimo || forcedPlatform == service.PlatformMimo:
+		modelIDs = pinMimoWhitelistOriginalKeys(modelIDs)
 	case apiKey.Group.Platform == service.PlatformComposite && forcedPlatform == "":
 		modelIDs = h.pinCompositeCodexWhitelistKeys(c.Request.Context(), &apiKey.Group.ID, modelIDs)
 	default:
@@ -1358,6 +1373,18 @@ func (h *GatewayHandler) codexModelIDsForGroup(ctx context.Context, group *servi
 		fallbackModels = qoderIntersectWhitelist(fallbackModels)
 		if group.ModelAllowlistEnabled() {
 			return qoderIntersectWhitelist(group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil)))
+		}
+		if !sourceHadModels {
+			return fallbackModels
+		}
+		return availableModels
+	}
+	if platform == service.PlatformMimo {
+		sourceHadModels := len(availableModels) > 0
+		availableModels = mimoIntersectWhitelist(availableModels)
+		fallbackModels = mimoIntersectWhitelist(fallbackModels)
+		if group.ModelAllowlistEnabled() {
+			return mimoIntersectWhitelist(group.ModelAllowlist.FilterForListing(modelListingSource(platform, availableModels, nil)))
 		}
 		if !sourceHadModels {
 			return fallbackModels
@@ -1460,6 +1487,25 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 		qoderValid = qoderIntersectWhitelist(allowlist.FilterForListing(qoderValid))
 	}
 	for _, model := range qoderValid {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		wbKeys = append(wbKeys, model)
+	}
+	mimoRaw := h.gatewayService.GetAvailableModels(ctx, groupID, service.PlatformMimo)
+	mimoValid := mimoIntersectWhitelist(mimoRaw)
+	if _, mimoSchedulable := schedulablePlatforms[service.PlatformMimo]; len(mimoValid) == 0 && !allowlistEnabled && mimoSchedulable {
+		mimoValid = slices.Clone(domain.MimoModelWhitelist)
+	}
+	if allowlistEnabled && allowlist.Enabled {
+		mimoValid = mimoIntersectWhitelist(allowlist.FilterForListing(mimoValid))
+	}
+	for _, model := range mimoValid {
 		model = strings.TrimSpace(model)
 		if model == "" {
 			continue
@@ -1645,6 +1691,21 @@ func qoderIntersectWhitelist(models []string) []string {
 	return keep
 }
 
+// mimoIntersectWhitelist 将候选模型 ID 与 MiMo 平台 6 个官方可读模型白名单求交
+// （单一事实源 domain.MimoModelWhitelist，constants.go）。
+func mimoIntersectWhitelist(models []string) []string {
+	if len(models) == 0 {
+		return []string{}
+	}
+	keep := make([]string, 0, len(models))
+	for _, m := range models {
+		if slices.Contains(domain.MimoModelWhitelist, m) {
+			keep = append(keep, m)
+		}
+	}
+	return keep
+}
+
 // pinWBWhitelistOriginalKeys 将 Codex 消费端出口处被 FilterCodexModelIDsForGroup
 // 再注入的 WB 白名单键变体条目还原为白名单键原文：条目或其 -thinking 变体经
 // 大小写不敏感归一化命中 domain.WbModelWhitelist 时输出白名单键原文（去重），
@@ -1717,6 +1778,32 @@ func pinQoderWhitelistOriginalKeys(modelIDs []string) []string {
 	return out
 }
 
+// pinMimoWhitelistOriginalKeys 将 Codex 消费端出口处被 FilterCodexModelIDsForGroup
+// 再注入的 MiMo 白名单键变体条目还原为 domain.MimoModelWhitelist 中的 6 个可读模型名原文。
+func pinMimoWhitelistOriginalKeys(modelIDs []string) []string {
+	if len(modelIDs) == 0 {
+		return modelIDs
+	}
+	out := make([]string, 0, len(modelIDs))
+	seen := make(map[string]struct{}, len(modelIDs))
+	for _, id := range modelIDs {
+		trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(id), "-thinking"))
+		matched := id
+		for _, key := range domain.MimoModelWhitelist {
+			if strings.EqualFold(trimmed, key) {
+				matched = key
+				break
+			}
+		}
+		if _, dup := seen[matched]; dup {
+			continue
+		}
+		seen[matched] = struct{}{}
+		out = append(out, matched)
+	}
+	return out
+}
+
 func (h *GatewayHandler) pinCompositeCodexWhitelistKeys(ctx context.Context, groupID *int64, modelIDs []string) []string {
 	if h == nil || h.gatewayService == nil || len(modelIDs) == 0 {
 		return pinWBWhitelistOriginalKeys(modelIDs)
@@ -1727,6 +1814,9 @@ func (h *GatewayHandler) pinCompositeCodexWhitelistKeys(ctx context.Context, gro
 	}
 	if _, hasQoder := schedulable[service.PlatformQoder]; hasQoder {
 		modelIDs = pinQoderWhitelistOriginalKeys(modelIDs)
+	}
+	if _, hasMimo := schedulable[service.PlatformMimo]; hasMimo {
+		modelIDs = pinMimoWhitelistOriginalKeys(modelIDs)
 	}
 	return modelIDs
 }
@@ -1790,6 +1880,8 @@ func defaultModelIDsForPlatform(platform string) []string {
 		return slices.Clone(domain.WbModelWhitelist)
 	case service.PlatformQoder:
 		return slices.Clone(domain.QoderModelWhitelist)
+	case service.PlatformMimo:
+		return slices.Clone(domain.MimoModelWhitelist)
 	default:
 		ids := make([]string, 0, len(claude.DefaultModels))
 		for _, model := range claude.DefaultModels {

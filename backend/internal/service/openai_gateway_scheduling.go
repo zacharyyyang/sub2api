@@ -292,7 +292,7 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 // （upstream 曾将本函数改为未导出 normalizeOpenAICompatiblePlatform，本分支的
 // handler 调度入口仍需导出，保持导出名。）
 func NormalizeOpenAICompatiblePlatform(platform string) string {
-	if domain.UsesOpenAIGateway(platform) || platform == PlatformWB || platform == PlatformQoder {
+	if domain.UsesOpenAIGateway(platform) || platform == PlatformWB || platform == PlatformQoder || platform == PlatformMimo {
 		return platform
 	}
 	return PlatformOpenAI
@@ -406,7 +406,7 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 	}
 	// wb 企业平台经调度池定点放行，但 IsOpenAICompatible() 恒 false（wb 401
 	// 错误语义独立，不能并入通用 openai 兼容谓词），平台匹配即不再检查该谓词。
-	if account.Platform != PlatformWB && account.Platform != PlatformQoder && !account.IsOpenAICompatible() {
+	if account.Platform != PlatformWB && account.Platform != PlatformQoder && account.Platform != PlatformMimo && !account.IsOpenAICompatible() {
 		return "platform_mismatch"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {

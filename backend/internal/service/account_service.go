@@ -551,6 +551,8 @@ func (s *AccountService) TestCredentials(ctx context.Context, id int64) error {
 			return fmt.Errorf("qoder plan smoke test failed: %w", err)
 		}
 		return nil
+	case PlatformMimo:
+		return s.testMimoAccountConnection(ctx, account)
 	default:
 		if IsMultiProtocolAPIKeyProvider(account.Platform) {
 			// 多协议 API Key 供应商（国产厂商与聚合平台）：凭证为 API Key，实际可用性

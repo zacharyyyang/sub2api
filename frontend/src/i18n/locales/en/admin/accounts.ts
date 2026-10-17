@@ -118,6 +118,7 @@ export default {
         typesafe: 'TypeSafe / Jev',
         wb: 'WB Enterprise',
         qoder: 'Qoder',
+        mimo: 'MiMo',
       },
       cnProviders: {
         accountMode: {
@@ -1691,6 +1692,10 @@ export default {
       qoderCredits: {
         remaining: 'Credits remaining',
         expiresAt: ' (expires {date})'
+      },
+      mimoQuota: {
+        defaultPlan: 'MiMo Plan',
+        resetAt: ' (resets {date})'
       },
       googleQuota: {
         groupGemini: 'Gemini',

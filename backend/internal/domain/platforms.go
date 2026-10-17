@@ -82,7 +82,7 @@ func IsConcretePlatform(id string) bool {
 
 // IsGroupPlatform 报告 id 是否可作为分组平台（具体平台或 composite）。
 func IsGroupPlatform(id string) bool {
-	return id == PlatformComposite || IsConcretePlatform(id)
+	return id == PlatformComposite || id == PlatformQoder || id == PlatformMimo || IsConcretePlatform(id)
 }
 
 // ConcretePlatformIDs 返回全部具体平台标识，按展示顺序。

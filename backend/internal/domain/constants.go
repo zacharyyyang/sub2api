@@ -49,6 +49,8 @@ const (
 	PlatformWB = "wb"
 	// PlatformQoder 是 Qoder 桌面端原生平台（通道 B 加密 SSE 推理协议 + WASM 签名）。
 	PlatformQoder = "qoder"
+	// PlatformMimo 是小米 MiMo 原生平台（两阶段小米通行证 SSO 换取 serviceToken，支持 /v1/chat/completions 与 /v1/messages 双入口）。
+	PlatformMimo = "mimo"
 )
 
 // Account mode constants 区分国产供应商的「按量付费（余额）」与「Coding Plan」两种接入方式。
@@ -362,4 +364,80 @@ func ResolveQoderModel(model string) (string, bool) {
 	}
 	key, ok := qoderResolveLowerToKey[strings.ToLower(m)]
 	return key, ok
+}
+
+// MimoModelWhitelist 是小米 MiMo 平台对外暴露的 6 个官方可读模型白名单。
+var MimoModelWhitelist = []string{
+	"mimo-v2.6-pro",
+	"mimo-v2.6-pro-ultraspeed",
+	"mimo-v2.6-flash",
+	"mimo-v2-pro",
+	"mimo-v2-omni",
+	"mimo-v2-flash",
+}
+
+var mimoWhitelistLowerMap = func() map[string]string {
+	m := make(map[string]string, len(MimoModelWhitelist))
+	for _, id := range MimoModelWhitelist {
+		m[strings.ToLower(id)] = id
+	}
+	return m
+}()
+
+var mimoThinkingSuffixToEffort = map[string]string{
+	"thinking": "high",
+	"high":     "high",
+	"xhigh":    "high",
+	"max":      "high",
+	"medium":   "medium",
+	"low":      "low",
+}
+
+// NormalizeMimoModel 归一化 MiMo 模型名并解析思考档位后缀（:<effort> 或 -<effort>）。
+func NormalizeMimoModel(model string) (upstreamModel string, reasoningEffort string, err error) {
+	raw := strings.TrimSpace(model)
+	m := strings.ToLower(raw)
+	m = strings.TrimPrefix(m, "mimo/")
+	m = strings.TrimSuffix(m, "[1m]")
+	m = strings.TrimSpace(m)
+	if canonical, ok := mimoWhitelistLowerMap[m]; ok {
+		return canonical, "", nil
+	}
+	if idx := strings.LastIndex(m, ":"); idx > 0 {
+		base, suffix := strings.TrimSpace(m[:idx]), strings.TrimSpace(m[idx+1:])
+		if effort, ok := mimoThinkingSuffixToEffort[suffix]; ok {
+			if canonical, ok := mimoWhitelistLowerMap[base]; ok {
+				return canonical, effort, nil
+			}
+		}
+	} else {
+		for _, suf := range []string{"thinking", "xhigh", "medium", "high", "low", "max"} {
+			dashSuf := "-" + suf
+			if strings.HasSuffix(m, dashSuf) {
+				base := strings.TrimSuffix(m, dashSuf)
+				if canonical, ok := mimoWhitelistLowerMap[base]; ok {
+					return canonical, mimoThinkingSuffixToEffort[suf], nil
+				}
+			}
+		}
+	}
+	return "", "", fmt.Errorf("unsupported mimo model: %s", model)
+}
+
+// ResolveMimoModel 将合法 MiMo 模型名（含思考后缀变体）解析为标准白名单键。
+func ResolveMimoModel(model string) (string, bool) {
+	upstreamModel, _, err := NormalizeMimoModel(model)
+	if err != nil {
+		return "", false
+	}
+	return upstreamModel, true
+}
+
+// IsMimoVisionModel 报告模型是否具备视觉理解能力（如 mimo-v2-omni）。
+func IsMimoVisionModel(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	if upstream, _, err := NormalizeMimoModel(model); err == nil {
+		lower = strings.ToLower(upstream)
+	}
+	return strings.Contains(lower, "omni") || strings.Contains(lower, "vision") || strings.Contains(lower, "vl")
 }

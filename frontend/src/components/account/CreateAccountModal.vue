@@ -201,6 +201,20 @@
             <PlatformIcon platform="qoder" size="sm" />
             Qoder
           </button>
+          <button
+            type="button"
+            @click="selectMimoPlatform()"
+            data-testid="platform-tab-mimo"
+            :class="[
+              'flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5 text-sm font-medium transition-all',
+              form.platform === 'mimo'
+                ? 'bg-white text-amber-600 shadow-sm dark:bg-dark-600 dark:text-amber-400'
+                : 'text-gray-600 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-200'
+            ]"
+          >
+            <PlatformIcon platform="mimo" size="sm" />
+            MiMo
+          </button>
         </div>
         <!-- 国产厂商：Kimi / Zhipu GLM / DeepSeek / MiniMax -->
         <div class="mt-2 flex flex-wrap rounded-lg bg-gray-100 p-1 dark:bg-dark-700" data-testid="platform-row-cn">
@@ -1584,8 +1598,29 @@
         </div>
       </div>
 
-      <!-- API Key input (only for apikey type, excluding Antigravity / WB / Qoder which have their own fields) -->
-      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'wb' && form.platform !== 'qoder'" class="space-y-4">
+      <!-- MiMo credentials（user_id 必填 + pass_token / service_token 二选一 + c_user_id / mimo_ph / base_url 选填） -->
+      <div v-if="form.type === 'apikey' && form.platform === 'mimo'" class="space-y-4">
+        <MimoCredentialFields ref="mimoCredentialFieldsRef" v-model="mimoCredentials" />
+
+        <!-- MiMo 模型限制（仅白名单模式） -->
+        <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
+          <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
+          <ModelWhitelistSelector
+            v-model="allowedModels"
+            :model-mappings="modelMappings"
+            :platform="form.platform"
+            :sync-credentials="syncPreviewCredentials"
+            @upstream-synced="upstreamModelsPreviewed = true"
+          />
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            {{ t('admin.accounts.selectedModels', { count: allowedModels.length }) }}
+          </p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">MiMo 仅支持白名单模式。</p>
+        </div>
+      </div>
+
+      <!-- API Key input (only for apikey type, excluding Antigravity / WB / Qoder / MiMo which have their own fields) -->
+      <div v-if="form.type === 'apikey' && form.platform !== 'antigravity' && form.platform !== 'wb' && form.platform !== 'qoder' && form.platform !== 'mimo'" class="space-y-4">
         <div v-if="!isMultiProtocolPlatform || apiProtocol !== 'adaptive'">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
@@ -4254,6 +4289,7 @@ import OpenCodeGoProtocolRulesEditor from '@/components/account/OpenCodeGoProtoc
 import HeaderOverrideEditor from '@/components/account/HeaderOverrideEditor.vue'
 import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
 import QoderCredentialFields from '@/components/account/QoderCredentialFields.vue'
+import MimoCredentialFields from '@/components/account/MimoCredentialFields.vue'
 import { allSelectedGroupsEnableLongContextPricing } from '@/components/account/longContextBilling'
 import {
   applyAntigravityProjectID,
@@ -4491,6 +4527,10 @@ const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string
 const qoderCredentials = ref<Record<string, string>>({})
 const qoderCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
 
+// MiMo 平台凭证（user_id + pass_token/service_token 二选一 + 可选高级项）
+const mimoCredentials = ref<Record<string, string>>({})
+const mimoCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
+
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）账号类型、API 协议与端点 ──
 // 多协议供应商（国产厂商与走通用表单的供应商）的接入模式；OpenCode 用 openCodeAccountMode。
 const accountMode = ref<string>('payg')
@@ -4653,6 +4693,19 @@ function selectQoderPlatform() {
     qoderCredentials.value = {}
     modelRestrictionMode.value = 'whitelist'
     allowedModels.value = [...getModelsByPlatform('qoder')]
+  }
+}
+
+// 切换 MiMo 平台：apikey 型，仅白名单模型限制。
+function selectMimoPlatform() {
+  const wasMimo = form.platform === 'mimo'
+  form.platform = 'mimo'
+  form.type = 'apikey'
+  accountCategory.value = 'apikey'
+  if (!wasMimo) {
+    mimoCredentials.value = {}
+    modelRestrictionMode.value = 'whitelist'
+    allowedModels.value = [...getModelsByPlatform('mimo')]
   }
 }
 // 账号类型 / 协议变更时同步默认 base url。
@@ -5162,6 +5215,10 @@ const isOAuthFlow = computed(() => {
   }
   // Qoder 只有 apikey 型，不需要 OAuth 流程
   if (form.platform === 'qoder') {
+    return false
+  }
+  // MiMo 只有 apikey 型，不需要 OAuth 流程
+  if (form.platform === 'mimo') {
     return false
   }
   // Bedrock 类型不需要 OAuth 流程
@@ -5759,6 +5816,7 @@ const resetForm = () => {
   upstreamBillingAutoProbeEnabled.value = true
   wbCredentials.value = {}
   qoderCredentials.value = {}
+  mimoCredentials.value = {}
   editQuotaLimit.value = null
   editQuotaDailyLimit.value = null
   editQuotaWeeklyLimit.value = null
@@ -6279,6 +6337,31 @@ const handleSubmit = async () => {
     return
   }
 
+  // MiMo 平台：apikey 型，原生凭证直接创建
+  if (form.platform === 'mimo') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!mimoCredentialFieldsRef.value?.isValid()) {
+      appStore.showError('请填写必填凭证：Xiaomi User ID (user_id)，以及 Pass Token 或 Service Token 至少一项')
+      return
+    }
+    const collected = mimoCredentialFieldsRef.value.collect()
+    const credentials: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(collected)) {
+      if (value && value.trim()) {
+        credentials[key] = value.trim()
+      }
+    }
+    const mimoModelMapping = buildModelMappingObject('whitelist', allowedModels.value, modelMappings.value)
+    if (mimoModelMapping) {
+      credentials.model_mapping = mimoModelMapping
+    }
+    await createAccountAndFinish('mimo', 'apikey', credentials)
+    return
+  }
+
   // For apikey type, create directly
   if (!apiKeyValue.value.trim()) {
     appStore.showError(t('admin.accounts.pleaseEnterApiKey'))
@@ -6539,9 +6622,9 @@ const createAccountAndFinish = async (
     group_ids: form.group_ids,
     expires_at: form.expires_at,
     // 上游倍率探测对通用 API-key 平台开放（antigravity upstream 走本 helper）；
-    // 非 apikey 类型（bedrock/oauth）或 Qoder 原生加密通道不传，后端不动作。
+    // 非 apikey 类型（bedrock/oauth）或 Qoder / MiMo 原生通道不传，后端不动作。
     upstream_billing_probe_enabled:
-      type === 'apikey' && platform !== 'qoder' ? upstreamBillingAutoProbeEnabled.value : undefined,
+      type === 'apikey' && platform !== 'qoder' && platform !== 'mimo' ? upstreamBillingAutoProbeEnabled.value : undefined,
     auto_pause_on_expired: autoPauseOnExpired.value
   })
 }

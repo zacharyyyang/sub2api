@@ -117,6 +117,8 @@ func DetectModelPlatform(model string) (string, bool) {
 			return PlatformMiniMax, true
 		case "typesafe", "jev":
 			return PlatformTypeSafe, true
+		case "mimo":
+			return PlatformMimo, true
 		}
 		if rest != "" {
 			normalized = strings.TrimPrefix(rest, "models/")
@@ -161,6 +163,9 @@ func DetectModelPlatform(model string) (string, bool) {
 	case normalized == "jev-latest" || strings.HasPrefix(normalized, "jev-"):
 		return PlatformTypeSafe, true
 	default:
+		if _, _, err := domain.NormalizeMimoModel(normalized); err == nil {
+			return PlatformMimo, true
+		}
 		return "", false
 	}
 }
@@ -205,5 +210,5 @@ func (s *GatewayService) resolveCompositeRouteDecision(ctx context.Context, grou
 }
 
 func isConcreteRequestPlatform(platform string) bool {
-	return domain.IsConcretePlatform(platform) || platform == PlatformWB || platform == PlatformQoder
+	return domain.IsConcretePlatform(platform) || platform == PlatformWB || platform == PlatformQoder || platform == PlatformMimo
 }

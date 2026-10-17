@@ -746,6 +746,7 @@ const accountSupportsBatchUsage = (account: Account) => {
   if (account.platform === 'grok') return account.type === 'oauth'
   if (account.platform === 'wb') return true
   if (account.platform === 'qoder') return true
+  if (account.platform === 'mimo') return true
   return false
 }
 

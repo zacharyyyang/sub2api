@@ -54,7 +54,7 @@ func RegisterGatewayRoutes(
 		switch platform := getGroupPlatform(c); {
 		case platform == service.PlatformGrok:
 			h.OpenAIGateway.GrokCountTokens(c)
-		case domain.UsesOpenAIGateway(platform):
+		case domain.UsesOpenAIGateway(platform) || platform == service.PlatformMimo:
 			h.OpenAIGateway.CountTokens(c)
 		default:
 			h.Gateway.CountTokens(c)
@@ -188,9 +188,9 @@ func RegisterGatewayRoutes(
 	gateway.Use(compositeTarget)
 	gateway.Use(requireGroupAnthropic)
 	{
-		// /v1/messages: auto-route based on group platform
+		// /v1/messages: auto-route based on group platform (mimo 走 OpenAIGateway.Messages 双入口适配器，设计 §2.4.2)
 		gateway.POST("/messages", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformMimo {
 				h.OpenAIGateway.Messages(c)
 				return
 			}
@@ -230,10 +230,10 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.ResponsesWebSocket(c)
 		})
 		// OpenAI Chat Completions API: auto-route based on group platform.
-		// wb / qoder 是经 synthesis 路由或直接分组解析出的目标平台：共享谓词无 wb/qoder 分支（KDR-9 零改动），
-		// 此处定点析取放行 wb 与 qoder 分组到 OpenAI 网关腿（设计 §2.7 层0）。
+		// wb / qoder / mimo 是经 synthesis 路由或直接分组解析出的目标平台：共享谓词无 wb/qoder/mimo 分支（KDR-9 零改动），
+		// 此处定点析取放行 wb、qoder 与 mimo 分组到 OpenAI 网关腿（设计 §2.7 层0）。
 		gateway.POST("/chat/completions", func(c *gin.Context) {
-			if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB || getGroupPlatform(c) == service.PlatformQoder {
+			if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB || getGroupPlatform(c) == service.PlatformQoder || getGroupPlatform(c) == service.PlatformMimo {
 				h.OpenAIGateway.ChatCompletions(c)
 				return
 			}
@@ -400,9 +400,9 @@ func RegisterGatewayRoutes(
 		codexDirect.GET("/models", codexModelsHandler)
 	}
 	// OpenAI Chat Completions API（不带v1前缀的别名）— auto-route based on group platform.
-	// 与 /v1 分发点①同式追加 wb / qoder 析取（设计 §2.7 层0，共享谓词零改动）。
+	// 与 /v1 分发点①同式追加 wb / qoder / mimo 析取（设计 §2.7 层0，共享谓词零改动）。
 	rootRoute(http.MethodPost, "/chat/completions", bodyLimit, func(c *gin.Context) {
-		if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB || getGroupPlatform(c) == service.PlatformQoder {
+		if isOpenAIResponsesCompatibleGatewayPlatform(c) || getGroupPlatform(c) == service.PlatformWB || getGroupPlatform(c) == service.PlatformQoder || getGroupPlatform(c) == service.PlatformMimo {
 			h.OpenAIGateway.ChatCompletions(c)
 			return
 		}

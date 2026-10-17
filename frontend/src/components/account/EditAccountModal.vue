@@ -48,7 +48,17 @@
             :is-edit="true"
           />
         </div>
-        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
+        <!-- MiMo：原生凭证掩码编辑（通用 apikey 的 base_url/API Key 语义不适用） -->
+        <div v-if="account.platform === 'mimo'" class="space-y-4">
+          <MimoCredentialFields
+            :key="account.id"
+            ref="mimoCredentialFieldsRef"
+            v-model="mimoCredentials"
+            :credentials-status="account.credentials_status"
+            :is-edit="true"
+          />
+        </div>
+        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder' && account.platform !== 'mimo' && (!isCNApiKeyAccount || editApiProtocol !== 'adaptive')">
           <label class="input-label">{{ t('admin.accounts.baseUrl') }}</label>
           <input
             v-model="editBaseUrl"
@@ -245,7 +255,7 @@
           </div>
           <p class="input-hint mt-2">{{ t('admin.accounts.cnProviders.zhipuTeam.hint') }}</p>
         </div>
-        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder'">
+        <div v-if="account.platform !== 'wb' && account.platform !== 'qoder' && account.platform !== 'mimo'">
           <label class="input-label">{{ t('admin.accounts.apiKey') }}</label>
           <input
             v-model="editApiKey"
@@ -3282,6 +3292,7 @@ import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import WbCredentialFields from '@/components/account/WbCredentialFields.vue'
 import QoderCredentialFields from '@/components/account/QoderCredentialFields.vue'
+import MimoCredentialFields from '@/components/account/MimoCredentialFields.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import GrokBaseUrlPresets from '@/components/account/GrokBaseUrlPresets.vue'
 import CnBaseUrlPresets from '@/components/account/CnBaseUrlPresets.vue'
@@ -3520,6 +3531,10 @@ const wbCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string
 // Qoder：四件套凭证 + 可选高级项（掩码编辑；未修改键保持原值）
 const qoderCredentials = ref<Record<string, string>>({})
 const qoderCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
+
+// MiMo：原生凭证 + 可选高级项（掩码编辑；未修改键保持原值）
+const mimoCredentials = ref<Record<string, string>>({})
+const mimoCredentialFieldsRef = ref<{ isValid(): boolean; collect(): Record<string, string> } | null>(null)
 
 // ── 国产供应商（Kimi / Zhipu / DeepSeek）account_mode / api_protocol 编辑 ──
 // account_mode 决定额度/余额监控路径，api_protocol 决定转发端点与格式；
@@ -4603,6 +4618,19 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     qoderCredentials.value = nextCreds
   }
 
+  // MiMo：预填原凭证——MimoCredentialFields 对敏感键留空保持原值，非敏感键直接回显
+  if (newAccount.platform === 'mimo' && newAccount.credentials) {
+    const rawCreds = newAccount.credentials as Record<string, unknown>
+    const mimoKeys = ['user_id', 'pass_token', 'service_token', 'c_user_id', 'mimo_ph', 'base_url']
+    const nextCreds: Record<string, string> = {}
+    for (const k of mimoKeys) {
+      if (rawCreds[k] != null && rawCreds[k] !== '') {
+        nextCreds[k] = String(rawCreds[k])
+      }
+    }
+    mimoCredentials.value = nextCreds
+  }
+
   // Initialize API Key fields for apikey type
   if (newAccount.type === 'apikey' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
@@ -5412,7 +5440,7 @@ const handleSubmit = async () => {
       updatePayload.load_factor = 0
     }
     updatePayload.auto_pause_on_expired = autoPauseOnExpired.value
-    if (props.account.type === 'apikey' && props.account.platform !== 'qoder') {
+    if (props.account.type === 'apikey' && props.account.platform !== 'qoder' && props.account.platform !== 'mimo') {
       updatePayload.upstream_billing_probe_enabled = upstreamBillingAutoProbeEnabled.value
       updatePayload.upstream_billing_rate_sync_enabled = upstreamBillingRateSyncEnabled.value
       if (upstreamBillingRateSyncEnabled.value) {
@@ -5488,6 +5516,37 @@ const handleSubmit = async () => {
       }
 
       updatePayload.credentials = nextQoderCredentials
+    } else if (props.account.type === 'apikey' && props.account.platform === 'mimo') {
+      if (!mimoCredentialFieldsRef.value?.isValid()) {
+        appStore.showError('请填写必填凭证：Xiaomi User ID (user_id)，以及 Pass Token 或 Service Token 至少一项')
+        return
+      }
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const nextMimoCredentials = { ...currentCredentials } as Record<string, unknown>
+      const collected = mimoCredentialFieldsRef.value.collect()
+      for (const [key, value] of Object.entries(collected)) {
+        if (value && value.trim()) {
+          nextMimoCredentials[key] = value.trim()
+        } else {
+          delete nextMimoCredentials[key]
+        }
+      }
+
+      // Model mapping 共享尾部（与通用 apikey 分支一致）
+      const mimoModelMapping = buildModelRestrictionMapping()
+      if (mimoModelMapping) {
+        nextMimoCredentials.model_mapping = mimoModelMapping
+      } else {
+        delete nextMimoCredentials.model_mapping
+      }
+
+      applyInterceptWarmup(nextMimoCredentials, interceptWarmupRequests.value, 'edit')
+      applyAccountSchedulingThresholdOverridePatch(nextMimoCredentials, currentCredentials)
+      if (!applyTempUnschedConfig(nextMimoCredentials)) {
+        return
+      }
+
+      updatePayload.credentials = nextMimoCredentials
     } else if (props.account.type === 'apikey') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newBaseUrl = editBaseUrl.value.trim() || defaultBaseUrl.value

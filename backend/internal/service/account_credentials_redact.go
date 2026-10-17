@@ -16,6 +16,8 @@ var SensitiveCredentialKeys = []string{
 	"client_secret", "pt_key",
 	// Qoder 桌面端账号：设备标识 umid_token 脱敏与编辑保留
 	"umid_token",
+	// 小米 MiMo 原生账号：通行证与会话 Cookie 密钥脱敏与编辑保留
+	"pass_token", "service_token", "mimo_ph",
 }
 
 var sensitiveCredentialKeySet = func() map[string]struct{} {

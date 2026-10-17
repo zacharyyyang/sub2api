@@ -321,6 +321,7 @@ export default {
         typesafe: 'TypeSafe / Jev',
         wb: 'wb 企业',
         qoder: 'Qoder',
+        mimo: 'MiMo',
       },
       cnProviders: {
         accountMode: {
@@ -554,6 +555,10 @@ export default {
       qoderCredits: {
         remaining: '剩余积分',
         expiresAt: '（{date} 到期）'
+      },
+      mimoQuota: {
+        defaultPlan: 'MiMo 会员',
+        resetAt: '（{date} 重置）'
       },
       googleQuota: {
         groupGemini: 'Gemini',

@@ -200,11 +200,14 @@ func resolveOpenAIMessagesDispatchMappedModel(c *gin.Context, apiKey *service.AP
 	if apiKey == nil || apiKey.Group == nil {
 		return ""
 	}
+	if apiKey.Group.Platform == service.PlatformMimo {
+		return ""
+	}
 	// composite 解析到 grok/CN/OpenCode 目标时调度级映射不适用（Group 级映射的
 	// gpt-5.x 默认值是 openai 专属,发给这些上游必错）,模型改写交给账号级 model_mapping。
 	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
 		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
-			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform)) {
+			(platform == service.PlatformGrok || platform == service.PlatformMimo || service.IsMultiProtocolAPIKeyProvider(platform)) {
 			return ""
 		}
 	}
@@ -308,7 +311,7 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 	if apiKey == nil || apiKey.Group == nil {
 		return true
 	}
-	if apiKey.Group.Platform == service.PlatformGrok {
+	if apiKey.Group.Platform == service.PlatformGrok || apiKey.Group.Platform == service.PlatformMimo {
 		return true
 	}
 	// 国产供应商分组与 grok 同语义:/v1/messages 就是其主要服务形态(anthropic
@@ -322,7 +325,7 @@ func allowOpenAICompatibleMessagesDispatch(c *gin.Context, apiKey *service.APIKe
 	// 解析到 openai 目标则受 composite 分组自身的可配置开关控制。
 	if apiKey.Group.Platform == service.PlatformComposite && c != nil && c.Request != nil {
 		if platform, ok := service.ResolvedTargetPlatformFromContext(c.Request.Context()); ok &&
-			(platform == service.PlatformGrok || service.IsMultiProtocolAPIKeyProvider(platform)) {
+			(platform == service.PlatformGrok || platform == service.PlatformMimo || service.IsMultiProtocolAPIKeyProvider(platform)) {
 			return true
 		}
 	}
@@ -344,8 +347,23 @@ func openAICompatibleTextTargetAllowed(c *gin.Context, apiKey *service.APIKey, m
 	allowed := domain.PlatformIDsWhere(func(spec domain.PlatformSpec) bool {
 		return spec.Gateway == domain.PlatformGatewayOpenAI
 	})
-	allowed = append(allowed, service.PlatformWB, service.PlatformQoder)
+	allowed = append(allowed, service.PlatformWB, service.PlatformQoder, service.PlatformMimo)
 	return compositeTargetPlatformAllowed(c, apiKey, model, allowed...)
+}
+
+func classifyMimoNoAccountInvalidModel(c *gin.Context, apiKey *service.APIKey, reqModel string, cls noAccountErrorClassification) noAccountErrorClassification {
+	if effectiveAPIKeyPlatform(c, apiKey) != service.PlatformMimo {
+		return cls
+	}
+	if _, _, err := domain.NormalizeMimoModel(reqModel); err != nil {
+		return noAccountErrorClassification{
+			Status:        http.StatusBadRequest,
+			ErrType:       "invalid_request_error",
+			Message:       err.Error(),
+			ModelNotFound: true,
+		}
+	}
+	return cls
 }
 
 // isResponsesWebSocketCompositePlatform 限定 composite 分组在 Responses WebSocket
@@ -716,6 +734,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				}
 				cls := classifyNoAccountErrorFromGin(c, h.gatewayService, apiKey, reqModel, reqModel, requestPlatform)
 				cls = classifySelectionFailureError(err, cls)
+				cls = classifyMimoNoAccountInvalidModel(c, apiKey, reqModel, cls)
 				if !cls.ModelNotFound {
 					markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 				}
@@ -1344,6 +1363,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			if len(failedAccountIDs) == 0 {
 				if err != nil {
 					cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
+					cls = classifyMimoNoAccountInvalidModel(c, apiKey, reqModel, cls)
 					if !cls.ModelNotFound {
 						markOpsRoutingCapacityLimitedIfNoAvailable(c, err)
 					}
@@ -1361,6 +1381,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		}
 		if selection == nil || selection.Account == nil {
 			cls := classifyOpenAICompatibleNoAccountErrorFromGin(c, h.gatewayService, apiKey, currentRoutingModel, reqModel)
+			cls = classifyMimoNoAccountInvalidModel(c, apiKey, reqModel, cls)
 			if !cls.ModelNotFound {
 				markOpsRoutingCapacityLimited(c)
 			}
@@ -3767,6 +3788,16 @@ func (h *OpenAIGatewayHandler) handleStreamingAwareErrorWithCode(
 	}
 
 	// Normal case: return JSON response with proper status code
+	if status == http.StatusServiceUnavailable && errType == "api_error" && code == "" {
+		if apiKey, ok := middleware2.GetAPIKeyFromContext(c); ok {
+			cls := classifyMimoNoAccountInvalidModel(c, apiKey, c.GetString(opsModelKey), noAccountErrorClassification{
+				Status:  status,
+				ErrType: errType,
+				Message: message,
+			})
+			status, errType, message = cls.Status, cls.ErrType, cls.Message
+		}
+	}
 	if code == "" {
 		h.errorResponse(c, status, errType, message)
 		return

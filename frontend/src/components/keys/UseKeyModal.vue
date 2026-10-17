@@ -1339,6 +1339,7 @@ function generateRoutedCodexFiles(
     cline: 'Cline',
     wb: 'WorkBuddy',
     qoder: 'Qoder',
+    mimo: 'MiMo',
     composite: 'Composite'
   }
   const label = labels[platform]

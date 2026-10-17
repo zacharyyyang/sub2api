@@ -31,13 +31,18 @@ export const QODER_PLATFORM_OPTION: PlatformOption<AccountPlatform> = {
   label: 'Qoder'
 }
 
+export const MIMO_PLATFORM_OPTION: PlatformOption<AccountPlatform> = {
+  value: 'mimo',
+  label: 'MiMo'
+}
+
 /** Platforms that can own a group. */
 export const GROUP_PLATFORM_OPTIONS: PlatformOption<GroupPlatform>[] = reactive([])
 
 watchSyncEffect(() => {
   const concrete = listPlatforms().map(spec => ({ value: spec.id, label: spec.display_name }))
   CONCRETE_PLATFORM_OPTIONS.splice(0, CONCRETE_PLATFORM_OPTIONS.length, ...concrete)
-  GROUP_PLATFORM_OPTIONS.splice(0, GROUP_PLATFORM_OPTIONS.length, ...concrete, {
+  GROUP_PLATFORM_OPTIONS.splice(0, GROUP_PLATFORM_OPTIONS.length, ...concrete, MIMO_PLATFORM_OPTION, {
     value: 'composite',
     label: 'Composite'
   })

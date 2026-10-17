@@ -63,6 +63,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, err
 	}
 
+	if account.Platform == PlatformMimo {
+		return s.forwardMimoAnthropicMessages(ctx, c, account, body, defaultMappedModel)
+	}
+
 	// 上游协议统一由 resolveUpstreamProtocol 判定（按模型分流时带上游模型目录）。Anthropic 分流必须先于
 	// ShouldUseResponsesAPI：Anthropic 协议账号经 probe 落标
 	// openai_responses_supported=false，否则会命中 CC 直转。

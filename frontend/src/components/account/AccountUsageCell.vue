@@ -644,9 +644,22 @@
         💳 {{ t('admin.accounts.qoderCredits.remaining') }}: {{ qoderCreditsDisplay.remaining }} / {{ qoderCreditsDisplay.total }}{{ qoderCreditsExpiresLabel }}
       </div>
 
+      <!-- MiMo quota (/api/user/usage + /api/user/xiaomi/subscription/self) -->
+      <template v-if="mimoQuotaDisplay">
+        <UsageProgressBar
+          label="5h"
+          :utilization="mimoQuotaDisplay.usedPercent"
+          :resets-at="mimoQuotaDisplay.resetAt"
+          color="indigo"
+        />
+        <div class="text-[10px] text-gray-500 dark:text-gray-400">
+          ⚡ {{ mimoQuotaDisplay.planTitle }}: {{ mimoQuotaDisplay.remainingPercent }}%{{ mimoQuotaResetLabel }}
+        </div>
+      </template>
+
       <!-- No data at all -->
       <div
-        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !wbCreditsDisplay && !qoderCreditsDisplay && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
+        v-if="!todayStats && !todayStatsLoading && !hasApiKeyQuota && !wbCreditsDisplay && !qoderCreditsDisplay && !mimoQuotaDisplay && !account.ollama_cloud_usage?.eligible && !account.opencode_go_usage?.eligible"
         class="text-xs text-gray-400"
       >-</div>
     </div>
@@ -780,6 +793,9 @@ const shouldFetchUsage = computed(() => {
     return true
   }
   if (props.account.platform === 'qoder') {
+    return true
+  }
+  if (props.account.platform === 'mimo') {
     return true
   }
   return false
@@ -1569,6 +1585,41 @@ const qoderCreditsExpiresLabel = computed(() => {
   const expiresAt = qoderCreditsDisplay.value?.expiresAt
   if (!expiresAt) return ''
   return t('admin.accounts.qoderCredits.expiresAt', { date: expiresAt })
+})
+
+// MiMo 会员配额（usageInfo.mimo_quota：/api/user/usage + /api/user/xiaomi/subscription/self）。
+// 字段缺失/畸形（remaining_percent 与 used_percent 均非有效数字）→ null 不渲染，不造 0 兜底。
+const clampMimoPct = (v: number) => Math.max(0, Math.min(100, Number(v.toFixed(1))))
+const mimoQuotaDisplay = computed<{
+  planTitle: string
+  remainingPercent: number
+  usedPercent: number
+  resetAt: string | null
+} | null>(() => {
+  if (props.account.platform !== 'mimo') return null
+  const quota = usageInfo.value?.mimo_quota
+  if (!quota) return null
+  const hasRemaining = typeof quota.remaining_percent === 'number' && Number.isFinite(quota.remaining_percent)
+  const hasUsed = typeof quota.used_percent === 'number' && Number.isFinite(quota.used_percent)
+  const hasFiveHour = typeof quota.five_hour_used_pct === 'number' && Number.isFinite(quota.five_hour_used_pct)
+  if (!hasRemaining && !hasUsed && !hasFiveHour) return null
+  const baseUsed = hasFiveHour ? quota.five_hour_used_pct! : (hasUsed ? quota.used_percent! : 100 - quota.remaining_percent!)
+  const usedPercent = clampMimoPct(baseUsed)
+  const remainingPercent = hasRemaining ? clampMimoPct(quota.remaining_percent!) : clampMimoPct(100 - usedPercent)
+  const planTitle = typeof quota.plan_title === 'string' && quota.plan_title.trim() ? quota.plan_title.trim() : t('admin.accounts.mimoQuota.defaultPlan')
+  const resetAt = typeof quota.reset_at === 'string' && quota.reset_at.trim() ? quota.reset_at.trim() : null
+  return {
+    planTitle,
+    remainingPercent,
+    usedPercent,
+    resetAt
+  }
+})
+
+const mimoQuotaResetLabel = computed(() => {
+  const resetAt = mimoQuotaDisplay.value?.resetAt
+  if (!resetAt) return ''
+  return t('admin.accounts.mimoQuota.resetAt', { date: resetAt })
 })
 
 const handleQuotaResetAccountUpdated = (account: Account) => {

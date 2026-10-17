@@ -21,7 +21,8 @@ const PROVIDER_BY_PLATFORM: Record<GroupPlatform, KeyGroupProvider> = {
   command_code: 'other',
   cline: 'other',
   wb: 'other',
-  qoder: 'other'
+  qoder: 'other',
+  mimo: 'domestic'
 }
 
 export function getKeyGroupProvider(platform: GroupPlatform): KeyGroupProvider {
