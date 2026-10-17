@@ -1403,23 +1403,67 @@ func TestAntigravityRetryLoop_SmartRetryFailed_StickySession_SwitchErrorPropagat
 	require.Equal(t, "sticky-loop-test", cache.deleteCalls[0].sessionHash)
 }
 
-func TestAntigravityRetryLoop_TransientInvalidArgument400_RetriesAndSucceeds(t *testing.T) {
-	transient400Body := `{"error":{"code":400,"message":"Invalid argument:request is invalid.","status":"INVALID_ARGUMENT"}}`
-	resp1 := &http.Response{
-		StatusCode: http.StatusBadRequest,
-		Header:     http.Header{},
-		Body:       io.NopCloser(strings.NewReader(transient400Body)),
-	}
-	resp2 := &http.Response{
-		StatusCode: http.StatusOK,
-		Header:     http.Header{},
-		Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+func TestIsAntigravityTransientInvalidArgument400(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "generic no-space message matches",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"code":400,"message":"Invalid argument:request is invalid.","status":"INVALID_ARGUMENT"}}`,
+			want:       true,
+		},
+		{
+			name:       "generic spaced message without period matches",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"code":400,"message":"Invalid argument: request is invalid","status":"INVALID_ARGUMENT"}}`,
+			want:       true,
+		},
+		{
+			name:       "message with field suffix does not match",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"code":400,"message":"Invalid argument: request is invalid. contents[3].parts[0]: missing field","status":"INVALID_ARGUMENT"}}`,
+			want:       false,
+		},
+		{
+			name:       "schema field error does not match",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"foo\": Cannot find field.","status":"INVALID_ARGUMENT"}}`,
+			want:       false,
+		},
+		{
+			name:       "non-400 status code does not match",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"code":500,"message":"Invalid argument:request is invalid.","status":"INVALID_ARGUMENT"}}`,
+			want:       false,
+		},
+		{
+			name:       "non-INVALID_ARGUMENT status does not match",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"code":400,"message":"Invalid argument:request is invalid.","status":"FAILED_PRECONDITION"}}`,
+			want:       false,
+		},
+		{
+			name:       "empty body does not match",
+			statusCode: http.StatusBadRequest,
+			body:       ``,
+			want:       false,
+		},
 	}
 
-	upstream := &mockSmartRetryUpstream{
-		responses: []*http.Response{resp1, resp2},
-		errors:    []error{nil, nil},
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isAntigravityTransientInvalidArgument400(tc.statusCode, []byte(tc.body))
+			require.Equal(t, tc.want, got)
+		})
 	}
+}
+
+func TestAntigravityRetryLoop_TransientInvalidArgument400(t *testing.T) {
+	transient400Body := `{"error":{"code":400,"message":"Invalid argument:request is invalid.","status":"INVALID_ARGUMENT"}}`
 	account := &Account{
 		ID:          18,
 		Name:        "acc-18",
@@ -1429,53 +1473,114 @@ func TestAntigravityRetryLoop_TransientInvalidArgument400_RetriesAndSucceeds(t *
 		Status:      StatusActive,
 		Concurrency: 1,
 	}
-
 	svc := &AntigravityGatewayService{}
-	result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
-		ctx:          context.Background(),
-		prefix:       "[test-400-retry]",
-		account:      account,
-		accessToken:  "token",
-		action:       "streamGenerateContent",
-		body:         []byte(`{"input":"test"}`),
-		httpUpstream: upstream,
-		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
-			return nil
-		},
-	})
-
-	require.NoError(t, err)
-	require.NotNil(t, result)
-	require.NotNil(t, result.resp)
-	require.Equal(t, http.StatusOK, result.resp.StatusCode)
-	require.Equal(t, 2, upstream.callIdx, "transient 400 INVALID_ARGUMENT should retry and succeed on 2nd attempt")
-
-	// 对照：真实字段级 400 INVALID_ARGUMENT 不应触发重试
-	schema400Body := `{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"foo\": Cannot find field.","status":"INVALID_ARGUMENT"}}`
-	upstreamNoRetry := &mockSmartRetryUpstream{
-		responses: []*http.Response{
-			{
-				StatusCode: http.StatusBadRequest,
-				Header:     http.Header{},
-				Body:       io.NopCloser(strings.NewReader(schema400Body)),
-			},
-		},
-		errors: []error{nil},
+	noopHandleError := func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
+		return nil
 	}
-	resultNoRetry, errNoRetry := svc.antigravityRetryLoop(antigravityRetryLoopParams{
-		ctx:          context.Background(),
-		prefix:       "[test-400-no-retry]",
-		account:      account,
-		accessToken:  "token",
-		action:       "streamGenerateContent",
-		body:         []byte(`{"input":"test"}`),
-		httpUpstream: upstreamNoRetry,
-		handleError: func(ctx context.Context, prefix string, account *Account, statusCode int, headers http.Header, body []byte, requestedModel string, groupID int64, sessionHash string, isStickySession bool) *handleModelRateLimitResult {
-			return nil
-		},
+
+	t.Run("retries transient 400 and succeeds on 2nd attempt", func(t *testing.T) {
+		upstream := &mockSmartRetryUpstream{
+			responses: []*http.Response{
+				{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(transient400Body)),
+				},
+				{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				},
+			},
+			errors: []error{nil, nil},
+		}
+
+		result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+			ctx:          context.Background(),
+			prefix:       "[test-400-retry]",
+			account:      account,
+			accessToken:  "token",
+			action:       "streamGenerateContent",
+			body:         []byte(`{"input":"test"}`),
+			httpUpstream: upstream,
+			handleError:  noopHandleError,
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.resp)
+		require.Equal(t, http.StatusOK, result.resp.StatusCode)
+		require.Equal(t, 2, upstream.callIdx, "transient 400 INVALID_ARGUMENT should retry and succeed on 2nd attempt")
 	})
-	require.NoError(t, errNoRetry)
-	require.NotNil(t, resultNoRetry)
-	require.Equal(t, http.StatusBadRequest, resultNoRetry.resp.StatusCode)
-	require.Equal(t, 1, upstreamNoRetry.callIdx, "non-transient 400 must not retry")
+
+	t.Run("exhausts 3 attempts on persistent transient 400 and returns 400", func(t *testing.T) {
+		upstream := &mockSmartRetryUpstream{
+			responses: []*http.Response{
+				{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(transient400Body)),
+				},
+				{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(transient400Body)),
+				},
+				{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(transient400Body)),
+				},
+			},
+			errors: []error{nil, nil, nil},
+		}
+
+		result, err := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+			ctx:          context.Background(),
+			prefix:       "[test-400-exhaust]",
+			account:      account,
+			accessToken:  "token",
+			action:       "streamGenerateContent",
+			body:         []byte(`{"input":"test"}`),
+			httpUpstream: upstream,
+			handleError:  noopHandleError,
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.resp)
+		require.Equal(t, http.StatusBadRequest, result.resp.StatusCode)
+		require.Equal(t, 3, upstream.callIdx, "persistent transient 400 should exhaust all 3 attempts")
+	})
+
+	t.Run("does not retry non-transient field-level 400", func(t *testing.T) {
+		schema400Body := `{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"foo\": Cannot find field.","status":"INVALID_ARGUMENT"}}`
+		upstreamNoRetry := &mockSmartRetryUpstream{
+			responses: []*http.Response{
+				{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{},
+					Body:       io.NopCloser(strings.NewReader(schema400Body)),
+				},
+			},
+			errors: []error{nil},
+		}
+
+		resultNoRetry, errNoRetry := svc.antigravityRetryLoop(antigravityRetryLoopParams{
+			ctx:          context.Background(),
+			prefix:       "[test-400-no-retry]",
+			account:      account,
+			accessToken:  "token",
+			action:       "streamGenerateContent",
+			body:         []byte(`{"input":"test"}`),
+			httpUpstream: upstreamNoRetry,
+			handleError:  noopHandleError,
+		})
+
+		require.NoError(t, errNoRetry)
+		require.NotNil(t, resultNoRetry)
+		require.NotNil(t, resultNoRetry.resp)
+		require.Equal(t, http.StatusBadRequest, resultNoRetry.resp.StatusCode)
+		require.Equal(t, 1, upstreamNoRetry.callIdx, "non-transient 400 must not retry")
+	})
 }

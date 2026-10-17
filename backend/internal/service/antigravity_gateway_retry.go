@@ -698,7 +698,7 @@ urlFallbackLoop:
 					break urlFallbackLoop
 				}
 
-				// 其他可重试错误（500/502/504/529，以及 Google 上游偶发首包泛化 400 INVALID_ARGUMENT，不包括 429 和 503）
+				// 其他可重试错误（500/502/504/529，以及 Google 上游偶发首包泛化 400 INVALID_ARGUMENT；429/503 已在上方 :646 分支单独处理）
 				if shouldRetryAntigravityError(resp.StatusCode) || isAntigravityTransientInvalidArgument400(resp.StatusCode, respBody) {
 					if attempt < antigravityMaxRetries {
 						upstreamMsg := strings.TrimSpace(extractAntigravityErrorMessage(respBody))
@@ -772,8 +772,8 @@ func shouldRetryAntigravityError(statusCode int) bool {
 
 // isAntigravityTransientInvalidArgument400 判断是否为 Google v1internal 在长上下文+多工具下
 // 首包生成 thought/functionCall 块时偶发触发的泛化 400 INVALID_ARGUMENT 瞬态错误。
-// 仅精确匹配泛化 "invalid argument:request is invalid" / "invalid argument: request is invalid"，
-// 排除带具体字段、签名或长度信息的真实客户端 400 错误，避免无意义重试。
+// 仅精确匹配泛化 message "invalid argument:request is invalid" / "invalid argument: request is invalid"（去首尾空白与末尾句号），
+// 排除带具体字段、签名或长度后缀信息的真实客户端 400 错误，避免无意义重试。
 func isAntigravityTransientInvalidArgument400(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest || len(body) == 0 {
 		return false
@@ -782,9 +782,11 @@ func isAntigravityTransientInvalidArgument400(statusCode int, body []byte) bool 
 	if !strings.Contains(lower, "invalid_argument") {
 		return false
 	}
-	return strings.Contains(lower, "invalid argument:request is invalid") ||
-		strings.Contains(lower, "invalid argument: request is invalid")
+	msg := strings.TrimRight(strings.TrimSpace(strings.ToLower(extractAntigravityErrorMessage(body))), ".")
+	return msg == "invalid argument:request is invalid" ||
+		msg == "invalid argument: request is invalid"
 }
+
 // isPersonalQuotaExhausted429 判断是否为「账号×域个人配额打满」（gemini 每日配额耗尽）。
 // 命中即换下一域且不 MarkUnavailable（S15 细则①）：账号级消耗、非 URL/节点级故障，
 // 标记会把 URL 可用性记忆跨账号污染。文案因子（互斥于 isURLLevelRateLimit 关键词，S15 ③）：
