@@ -18,13 +18,17 @@ import (
 const (
 	wbCLIDefaultTimeout  = 120 * time.Second
 	wbCLIProbeTimeout    = 10 * time.Second
-	wbCLIKillGrace       = 3 * time.Second
 	wbCLIWorkDirName     = "wb-cli-workdir"
 	wbCLIEnvToken        = "CODEBUDDY_AUTH_TOKEN"
 	wbCLIEnvEnterpriseID = "CODEBUDDY_ENTERPRISE_ID"
 	wbCLIEnvInternet     = "CODEBUDDY_INTERNET_ENVIRONMENT"
 	wbCLIEnvInternetVal  = "internal"
 	wbCLIEnvPath         = "PATH"
+)
+
+var (
+	wbCLIKillGrace      = 3 * time.Second
+	wbSignalProcessHook = wbSignalProcess
 )
 
 var wbDefaultProbe = func(path string) bool { return wbProbeContext(context.Background(), path) }
@@ -156,12 +160,14 @@ type wbCLIProcess struct {
 
 func spawnWBCLIProcess(s wbSpawnConfig) (*wbCLIProcess, error) {
 	argv := []string{"-p", "-", "--model", s.Model, "--output-format", "stream-json", "--include-partial-messages"}
-	// Remove builtins except the MCP discovery meta-tools: with bypassPermissions the
-	// --allowedTools whitelist does NOT block builtins (real-machine evidence), and
-	// --tools "" also kills ToolSearch/DeferExecuteTool, making MCP tools unreachable.
-	argv = append(argv, "--tools", "ToolSearch,DeferExecuteTool")
+	// Remove builtins except the MCP discovery meta-tools when MCP tools are configured:
+	// with bypassPermissions the --allowedTools whitelist does NOT block builtins (real-machine evidence),
+	// and --tools "" kills ToolSearch/DeferExecuteTool. When no MCP tools are configured, pass --tools ""
+	// so the model cannot spin on builtin ToolSearch without an MCP bridge.
 	if s.MCPConfigPath != "" {
-		argv = append(argv, "--mcp-config", s.MCPConfigPath)
+		argv = append(argv, "--tools", "ToolSearch,DeferExecuteTool", "--mcp-config", s.MCPConfigPath)
+	} else {
+		argv = append(argv, "--tools", "")
 	}
 	if s.AllowedTools != "" {
 		for _, name := range strings.Split(s.AllowedTools, ",") {
@@ -220,11 +226,20 @@ func (p *wbCLIProcess) Kill() {
 		return
 	}
 	defer close(p.killDone)
-	_ = wbSignalProcess(p.cmd, false)
-	timer := time.NewTimer(wbCLIKillGrace)
-	defer timer.Stop()
-	<-timer.C
-	_ = wbSignalProcess(p.cmd, true)
+	select {
+	case <-p.done:
+	default:
+		_ = wbSignalProcessHook(p.cmd, false)
+		timer := time.NewTimer(wbCLIKillGrace)
+		defer timer.Stop()
+		select {
+		case <-p.done:
+		case <-timer.C:
+		}
+	}
+	// Always force-terminate the process group/tree so MCP descendants are
+	// cleaned up even when the parent CLI process exited first.
+	_ = wbSignalProcessHook(p.cmd, true)
 	_ = p.stdin.Close()
 	_ = p.stdout.Close()
 }

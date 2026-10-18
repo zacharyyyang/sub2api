@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -20,6 +21,13 @@ const (
 type wbUsage struct {
 	InputTokens, OutputTokens, CacheCreation, CacheRead int
 	hasCache                                            bool
+}
+
+// WBToolCall represents a client-executed tool call intercepted from a CLI assistant tool_use block.
+type WBToolCall struct {
+	ID        string
+	Name      string
+	Arguments string
 }
 
 type wbOpenAIUsage struct {
@@ -52,6 +60,32 @@ func buildWbTerminalFrame(u wbUsage) string {
 	return wbSSE(map[string]any{"object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}}, "usage": wbUsageToOpenAI(u)})
 }
 
+func buildWbToolCallsFrame(calls []WBToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	items := make([]any, len(calls))
+	for i, call := range calls {
+		items[i] = map[string]any{
+			"index": i,
+			"id":    call.ID,
+			"type":  "function",
+			"function": map[string]any{
+				"name":      call.Name,
+				"arguments": call.Arguments,
+			},
+		}
+	}
+	return wbSSE(map[string]any{
+		"object":  "chat.completion.chunk",
+		"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": items}, "finish_reason": nil}},
+	})
+}
+
+func buildWbToolCallsTerminalFrame(u wbUsage) string {
+	return wbSSE(map[string]any{"object": "chat.completion.chunk", "choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}, "usage": wbUsageToOpenAI(u)})
+}
+
 func wbSSE(v any) string {
 	b, _ := json.Marshal(v)
 	return "data: " + string(b) + "\n\n"
@@ -73,11 +107,12 @@ type wbLineFrame struct {
 	kind                                     wbLineKind
 	text, thinking, code, message, messageID string
 	usage                                    wbUsage
+	toolCalls                                []WBToolCall
 }
 
 func frameStr(m map[string]any, key string) string { s, _ := m[key].(string); return s }
 
-func classifyWBLine(obj map[string]any) wbLineFrame {
+func classifyWBLine(obj map[string]any, allowedClientTools ...map[string]bool) wbLineFrame {
 	if frameStr(obj, "type") == "error" {
 		return makeErrorFrame(obj)
 	}
@@ -113,7 +148,21 @@ func classifyWBLine(obj map[string]any) wbLineFrame {
 		if !ok {
 			m = obj
 		}
-		return wbLineFrame{kind: wbLineAssistant, text: extractWBText(m["content"]), messageID: frameStr(m, "id")}
+		u, _ := m["usage"].(map[string]any)
+		if u == nil {
+			u, _ = obj["usage"].(map[string]any)
+		}
+		var allowlist map[string]bool
+		if len(allowedClientTools) > 0 {
+			allowlist = allowedClientTools[0]
+		}
+		return wbLineFrame{
+			kind:      wbLineAssistant,
+			text:      extractWBText(m["content"]),
+			messageID: frameStr(m, "id"),
+			usage:     parseWBUsage(u),
+			toolCalls: extractWBClientToolCalls(m["content"], allowlist),
+		}
 	case "result":
 		// CLI result is a top-level string; accept the older nested envelope too.
 		r := obj
@@ -175,9 +224,53 @@ func extractWBText(content any) string {
 	return b.String()
 }
 
+func extractWBClientToolCalls(content any, allowlist map[string]bool) []WBToolCall {
+	blocks, ok := content.([]any)
+	if !ok {
+		return nil
+	}
+	var calls []WBToolCall
+	for _, raw := range blocks {
+		m, _ := raw.(map[string]any)
+		if frameStr(m, "type") != "tool_use" {
+			continue
+		}
+		rawName := frameStr(m, "name")
+		if rawName == "" || rawName == "ToolSearch" || rawName == "DeferExecuteTool" {
+			continue
+		}
+		if !strings.HasPrefix(rawName, "mcp__wb__") {
+			continue
+		}
+		name := strings.TrimPrefix(rawName, "mcp__wb__")
+		if name == "" || wbBridgeRegistry[name] != nil {
+			continue
+		}
+		if allowlist != nil && !allowlist[name] {
+			continue
+		}
+		args := "{}"
+		if input, exists := m["input"]; exists && input != nil {
+			if b, err := json.Marshal(input); err == nil && len(b) > 0 && string(b) != "null" {
+				args = string(b)
+			}
+		}
+		calls = append(calls, WBToolCall{
+			ID:        frameStr(m, "id"),
+			Name:      name,
+			Arguments: args,
+		})
+	}
+	return calls
+}
+
 func uInt(m map[string]any, keys ...string) int {
 	for _, k := range keys {
 		switch n := m[k].(type) {
+		case json.Number:
+			if v, err := n.Int64(); err == nil {
+				return int(v)
+			}
 		case float64:
 			return int(n)
 		case int:
@@ -199,11 +292,48 @@ type wbStreamAccumulator struct {
 	delta, requestText, lastFull, scopeID string
 	backfilled                            bool
 	seen                                  map[string]bool
+	seenToolCalls                         map[string]bool
+	nextAutoCallID                        int
+	clientToolCalls                       []WBToolCall
 }
 
 func newWbStreamAccumulator() *wbStreamAccumulator {
-	return &wbStreamAccumulator{seen: map[string]bool{}}
+	return &wbStreamAccumulator{seen: map[string]bool{}, seenToolCalls: map[string]bool{}}
 }
+func (a *wbStreamAccumulator) AddClientToolCalls(calls []WBToolCall) {
+	batchRealIDs := make(map[string]bool, len(calls))
+	for _, call := range calls {
+		if call.ID != "" {
+			batchRealIDs[call.ID] = true
+		}
+	}
+	for idx, call := range calls {
+		if call.ID != "" {
+			if a.seenToolCalls[call.ID] {
+				continue
+			}
+			a.seenToolCalls[call.ID] = true
+			a.clientToolCalls = append(a.clientToolCalls, call)
+			continue
+		}
+		anonKey := "\x00anon:" + strconv.Itoa(idx) + ":" + call.Name + ":" + call.Arguments
+		if a.seenToolCalls[anonKey] {
+			continue
+		}
+		a.seenToolCalls[anonKey] = true
+		for {
+			a.nextAutoCallID++
+			candidate := "call_" + strconv.Itoa(a.nextAutoCallID)
+			if !a.seenToolCalls[candidate] && !batchRealIDs[candidate] {
+				call.ID = candidate
+				a.seenToolCalls[candidate] = true
+				break
+			}
+		}
+		a.clientToolCalls = append(a.clientToolCalls, call)
+	}
+}
+func (a *wbStreamAccumulator) ClientToolCalls() []WBToolCall { return a.clientToolCalls }
 func (a *wbStreamAccumulator) OnMessageStart() { a.StartMessage("") }
 func (a *wbStreamAccumulator) StartMessage(id string) {
 	a.delta, a.scopeID, a.lastFull, a.backfilled = "", id, "", false

@@ -88,32 +88,32 @@ func TestWBInboundToolHistory(t *testing.T) {
 		{"3 function 带 name", `{"model":"glm-5.3-flash","messages":[{"role":"function","name":"get_weather","content":"sunny"}]}`, "Tool[get_weather]: sunny", ""},
 		// 4 tool 无 id 无 name
 		{"4 tool 无 id 无 name", `{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"bare"}]}`, "Tool: bare", ""},
-		// 5 assistant content:null 带 tool_calls → 摘要（name 列表）
-		{"5 assistant null+tool_calls 摘要", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file"}},{"id":"c2","function":{"name":"get_weather"}}]}]}`, "Assistant: [calls: create_file, get_weather]", ""},
-		// 6 assistant content:null 无 tool_calls → 空串兜底
-		{"6 assistant null 无 tool_calls 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null}]}`, "Assistant: ", ""},
-		// 7 tool content:null → 空内容不 400
-		{"7 tool content null 空内容", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"c9","content":null}]}`, "Tool[c9]: ", ""},
-		// 8 tool_calls 无 function.name → id 降级
-		{"8 assistant null tool_calls 无 name id 降级", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c9"}]}]}`, "Assistant: [calls: c9]", ""},
-		// 9 完整多轮回合（user → assistant[calls] → tool → assistant），四段顺序折叠
-		{"9 完整多轮回合", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"请创建文件并查询天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file"}},{"id":"c2","function":{"name":"get_weather"}}]},{"role":"tool","tool_call_id":"call_1","content":"文件已创建"},{"role":"assistant","content":"已创建完成"}]}`, "User: 请创建文件并查询天气\n\nAssistant: [calls: create_file, get_weather]\n\nTool[call_1]: 文件已创建\n\nAssistant: 已创建完成", ""},
-		// 10 未知角色仍 400
-		{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
-		// 11 user content 缺失仍 400
-		{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
-		// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
-		{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
-		// 13 尾部多余 JSON → 解码层拒绝（行为不变）
-		{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
-		// 14 tool_calls name 与 ID 均空 → unknown 兜底
-		{"14 摘要 name 与 ID 皆空 unknown 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"","function":{"name":""}}]}]}`, "Assistant: [calls: unknown]", ""},
-		// 15 tool 消息 tool_call_id 与 name 并存 → ToolCallID 优先
-		{"15 tool id 与 name 并存 ID 优先", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}]}`, "Tool[call_1]: sunny", ""},
-		// 16 assistant content 非空与 tool_calls 并存 → 原 content 优先、不追加摘要
-		{"16 assistant content 非空与 tool_calls 并存", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"已调用工具，先做总结","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: 已调用工具，先做总结", ""},
-		// 17 assistant content 空串（非 nil）→ 保持原样拼接（设计 §2.2：content ≠ nil 走原样分支，即使空串也不触发摘要）
-		{"17 assistant content 空串保持原样", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: ", ""},
+			// 5 assistant content:null 带 tool_calls → 摘要（含 id / name / arguments）
+			{"5 assistant null+tool_calls 摘要", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{}"}}]}]}`, `Assistant: [tool_calls: id=c1 name=create_file arguments={"path":"a.txt"}; id=c2 name=get_weather arguments={}]`, ""},
+			// 6 assistant content:null 无 tool_calls → 空串兜底
+			{"6 assistant null 无 tool_calls 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null}]}`, "Assistant: ", ""},
+			// 7 tool content:null → 空内容不 400
+			{"7 tool content null 空内容", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"c9","content":null}]}`, "Tool[c9]: ", ""},
+			// 8 tool_calls 无 function.name 与 arguments → id 降级 + {} 兜底
+			{"8 assistant null tool_calls 无 name id 降级", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c9"}]}]}`, "Assistant: [tool_calls: id=c9 name=c9 arguments={}]", ""},
+			// 9 完整多轮回合（user → assistant[tool_calls] → tool → assistant），四段顺序折叠
+			{"9 完整多轮回合", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"请创建文件并查询天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{\"city\":\"bj\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"文件已创建"},{"role":"assistant","content":"已创建完成"}]}`, "User: 请创建文件并查询天气\n\nAssistant: [tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}; id=c2 name=get_weather arguments={\"city\":\"bj\"}]\n\nTool[call_1]: 文件已创建\n\nAssistant: 已创建完成", ""},
+			// 10 未知角色仍 400
+			{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
+			// 11 user content 缺失仍 400
+			{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
+			// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
+			{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
+			// 13 尾部多余 JSON → 解码层拒绝（行为不变）
+			{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
+			// 14 tool_calls name 与 ID 均空 → call_1 + unknown + {} 兜底
+			{"14 摘要 name 与 ID 皆空 unknown 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"","function":{"name":""}}]}]}`, "Assistant: [tool_calls: id=call_1 name=unknown arguments={}]", ""},
+			// 15 tool 消息 tool_call_id 与 name 并存 → ToolCallID 优先
+			{"15 tool id 与 name 并存 ID 优先", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}]}`, "Tool[call_1]: sunny", ""},
+			// 16 assistant content 非空与 tool_calls 并存 → content 与 tool_calls 摘要换行并存
+			{"16 assistant content 非空与 tool_calls 并存", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"已调用工具，先做总结","tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}}]}]}`, "Assistant: 已调用工具，先做总结\n[tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}]", ""},
+			// 17 assistant content 空串（非 nil）带 tool_calls → 仅输出 tool_calls 摘要
+			{"17 assistant content 空串带 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: [tool_calls: id=c1 name=create_file arguments={}]", ""},
 		// 18 assistant content 空串（非 nil）无 tool_calls → 原样拼接（输出与空串兜底同形）
 		{"18 assistant content 空串无 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":""}]}`, "Assistant: ", ""},
 		// 19 system content 缺失 → 400（fail-closed 边界，设计 §6 行 11 的 system 侧补齐）
@@ -193,9 +193,12 @@ func TestWBTools(t *testing.T) {
 	require.Equal(t, "ECHO: hello", text)
 	_, err = ExecuteWBBridgeTool(declarations, "Glob", json.RawMessage(`{}`))
 	require.ErrorContains(t, err, wbErrBridgeToolUnmatched)
-	tools, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
-	require.NoError(t, err)
-	require.Empty(t, tools)
+		tools, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
+		require.NoError(t, err)
+		require.Len(t, tools, 1)
+		require.Equal(t, "unknown", tools[0].Name)
+		require.False(t, tools[0].ServerExecuted)
+		require.Equal(t, "object", tools[0].InputSchema["type"])
 	cfg.Close()
 	_, err = os.Stat(cfg.Path)
 	require.True(t, os.IsNotExist(err))

@@ -64,6 +64,7 @@ type wbInbound struct {
 	Stream        bool               `json:"stream"`
 	Tools         json.RawMessage    `json:"tools"`
 	StreamOptions *wbStreamOptions   `json:"stream_options"`
+	clientTools   map[string]bool    `json:"-"`
 }
 
 func wbStrictJSON(raw []byte, dst any) error {
@@ -123,15 +124,24 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 		parts[i] = segment
 	}
 	tools, err := wbMapTools(req.Tools)
-	return req, strings.Join(parts, "\n\n"), tools, err
+	if err != nil {
+		return req, "", nil, err
+	}
+	req.clientTools = make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		if !tool.ServerExecuted {
+			req.clientTools[tool.Name] = true
+		}
+	}
+	return req, strings.Join(parts, "\n\n"), tools, nil
 }
 
 // wbFoldInboundMessage 将单条入站消息折叠为确定性 prompt segment（每条消息
 // 恰好一个 segment）。system / user 保持 System:/User: 纯文本折叠；tool /
 // function 按 Tool[<id|name>]: <content> 折叠（均无则 Tool: <content>，
-// content 为 nil 视为空）；assistant 仅在 content 为 nil（含 tool_calls 摘要
-// Assistant: [calls: <name>, ...] / 无则空串兜底 Assistant: ）时特殊折叠，
-// content 非 nil（含空串）一律原样拼接；未知角色仍 400。
+// content 为 nil 视为空）；assistant 支持 content 与 tool_calls 并存
+// （[tool_calls: id=<id> name=<name> arguments=<args>; ...]），无 tool_calls 且
+// content 为 nil 时空串兜底 Assistant: ；未知角色仍 400。
 func wbFoldInboundMessage(i int, message wbInboundMessage) (string, error) {
 	switch message.Role {
 	case "system", "user":
@@ -144,13 +154,18 @@ func wbFoldInboundMessage(i int, message wbInboundMessage) (string, error) {
 		}
 		return prefix + ": " + *message.Content, nil
 	case "assistant":
+		text := ""
 		if message.Content != nil {
-			return "Assistant: " + *message.Content, nil
+			text = *message.Content
 		}
 		if len(message.ToolCalls) > 0 {
-			return "Assistant: [calls: " + wbToolCallSummary(message.ToolCalls) + "]", nil
+			summary := "[tool_calls: " + wbToolCallSummary(message.ToolCalls) + "]"
+			if text != "" {
+				return "Assistant: " + text + "\n" + summary, nil
+			}
+			return "Assistant: " + summary, nil
 		}
-		return "Assistant: ", nil
+		return "Assistant: " + text, nil
 	case "tool", "function":
 		content := ""
 		if message.Content != nil {
@@ -176,22 +191,31 @@ func wbToolBracket(message wbInboundMessage) string {
 	}
 }
 
-// wbToolCallSummary 将 assistant 消息的 tool_calls 折叠为摘要列表：每个调用取
-// Function.Name，为空则取 ID，两者皆空取 unknown；逗号 + 空格连接（按入站
-// 顺序），arguments 不进入摘要（KDR-3）。
+// wbToolCallSummary 将 assistant 消息的 tool_calls 折叠为结构化摘要列表：
+// 每个调用输出 id=<id> name=<name> arguments=<args>（id 缺省为 call_<i> 1-based，
+// name 缺省取 ID 再空取 unknown，arguments 缺省为 {}），以 "; " 连接。
 func wbToolCallSummary(calls []wbInboundToolCall) string {
-	names := make([]string, len(calls))
+	items := make([]string, len(calls))
 	for i, call := range calls {
-		switch {
-		case call.Function.Name != "":
-			names[i] = call.Function.Name
-		case call.ID != "":
-			names[i] = call.ID
-		default:
-			names[i] = "unknown"
+		id := call.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%d", i+1)
 		}
+		name := call.Function.Name
+		if name == "" {
+			if call.ID != "" {
+				name = call.ID
+			} else {
+				name = "unknown"
+			}
+		}
+		args := strings.TrimSpace(call.Function.Arguments)
+		if args == "" {
+			args = "{}"
+		}
+		items[i] = fmt.Sprintf("id=%s name=%s arguments=%s", id, name, args)
 	}
-	return strings.Join(names, ", ")
+	return strings.Join(items, "; ")
 }
 
 func wbWriteError(c *gin.Context, status int, code, message string, streamed bool) error {
@@ -291,16 +315,19 @@ func wbConsumeCLI(ctx context.Context, c *gin.Context, process *wbCLIProcess, re
 	scanner := bufio.NewScanner(process.stdout)
 	scanner.Buffer(make([]byte, 4096), 16*1024*1024)
 	var completion *wbLineFrame
+	var lastUsage wbUsage
 scan:
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			break
 		}
 		var obj map[string]any
-		if json.Unmarshal(scanner.Bytes(), &obj) != nil {
+		dec := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
+		dec.UseNumber()
+		if dec.Decode(&obj) != nil {
 			continue
 		}
-		frame := classifyWBLine(obj)
+		frame := classifyWBLine(obj, req.clientTools)
 		switch frame.kind {
 		case wbLineMessageStart:
 			accumulator.StartMessage(frame.messageID)
@@ -310,8 +337,16 @@ scan:
 		case wbLineThinkingDelta:
 			emit(buildWbChunkFrame("", frame.thinking))
 		case wbLineAssistant:
+			if frame.usage.InputTokens > 0 || frame.usage.OutputTokens > 0 || frame.usage.hasCache {
+				lastUsage = frame.usage
+			}
 			if suffix, ok := accumulator.Assistant(frame.messageID, frame.text); ok {
 				emit(buildWbChunkFrame(suffix, ""))
+			}
+			if len(frame.toolCalls) > 0 {
+				accumulator.AddClientToolCalls(frame.toolCalls)
+				process.Kill()
+				break scan
 			}
 		case wbLineError:
 			return fail(502, frame.code, frame.message)
@@ -322,6 +357,47 @@ scan:
 	}
 	if ctx.Err() != nil {
 		return fail(http.StatusGatewayTimeout, wbErrCLITimeout, ctx.Err().Error())
+	}
+	if calls := accumulator.ClientToolCalls(); len(calls) > 0 {
+		if req.Stream {
+			emit(buildWbToolCallsFrame(calls))
+			emit(buildWbToolCallsTerminalFrame(lastUsage))
+			emit(wbDoneFrame)
+		} else {
+			var contentVal any
+			if text := accumulator.RequestText(); text != "" {
+				contentVal = text
+			}
+			items := make([]any, len(calls))
+			for i, call := range calls {
+				items[i] = gin.H{
+					"id":   call.ID,
+					"type": "function",
+					"function": gin.H{
+						"name":      call.Name,
+						"arguments": call.Arguments,
+					},
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"object": "chat.completion",
+				"model":  req.Model,
+				"choices": []any{gin.H{
+					"index": 0,
+					"message": gin.H{
+						"role":       "assistant",
+						"content":    contentVal,
+						"tool_calls": items,
+					},
+					"finish_reason": "tool_calls",
+				}},
+				"usage": wbUsageToOpenAI(lastUsage),
+			})
+		}
+		return &OpenAIForwardResult{
+			Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,
+			Usage: OpenAIUsage{InputTokens: lastUsage.InputTokens, OutputTokens: lastUsage.OutputTokens, CacheCreationInputTokens: lastUsage.CacheCreation, CacheReadInputTokens: lastUsage.CacheRead},
+		}, nil
 	}
 	if err := scanner.Err(); err != nil {
 		return fail(502, wbErrCLIFailed, err.Error())

@@ -111,6 +111,36 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Equal(t, "", buildWbChunkFrame("", ""))
 	require.Contains(t, buildWbTerminalFrame(wbUsage{}), `"prompt_tokens":0`)
 	require.Equal(t, "data: [DONE]\n\n", wbDoneFrame)
+
+	af := classifyWBLine(
+		wbTestObject(t, `{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":5,"output_tokens":3},"content":[{"type":"tool_use","id":"c_meta","name":"ToolSearch","input":{}},{"type":"tool_use","id":"c_other_ns","name":"mcp__other__read","input":{}},{"type":"tool_use","id":"c_undeclared","name":"mcp__wb__bash","input":{}},{"type":"tool_use","id":"c_srv","name":"mcp__wb__echo","input":{"text":"x"}},{"type":"tool_use","id":"c_cli","name":"mcp__wb__read","input":{"path":"a.go"}}]}}`),
+		map[string]bool{"read": true},
+	)
+	require.Equal(t, wbLineAssistant, af.kind)
+	require.Equal(t, wbUsage{5, 3, 0, 0, false}, af.usage)
+	require.Len(t, af.toolCalls, 1)
+	require.Equal(t, WBToolCall{ID: "c_cli", Name: "read", Arguments: `{"path":"a.go"}`}, af.toolCalls[0])
+	acc := newWbStreamAccumulator()
+	acc.AddClientToolCalls(af.toolCalls)
+	acc.AddClientToolCalls(af.toolCalls)
+	require.Len(t, acc.ClientToolCalls(), 1)
+	require.Contains(t, buildWbToolCallsFrame(af.toolCalls), `"name":"read"`)
+	require.Contains(t, buildWbToolCallsTerminalFrame(af.usage), `"finish_reason":"tool_calls"`)
+
+	// Missing ID fallback avoids colliding with real IDs (e.g. call_2) and preserves distinct anonymous calls.
+	accCollision := newWbStreamAccumulator()
+	batch := []WBToolCall{
+		{ID: "call_2", Name: "read", Arguments: `{"path":"a"}`},
+		{ID: "", Name: "write", Arguments: `{"path":"b"}`},
+		{ID: "", Name: "edit", Arguments: `{"path":"c"}`},
+	}
+	accCollision.AddClientToolCalls(batch)
+	accCollision.AddClientToolCalls(batch) // idempotent on duplicate assistant event
+	gotCalls := accCollision.ClientToolCalls()
+	require.Len(t, gotCalls, 3)
+	require.Equal(t, "call_2", gotCalls[0].ID)
+	require.Equal(t, "call_1", gotCalls[1].ID)
+	require.Equal(t, "call_3", gotCalls[2].ID)
 }
 
 func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -40,14 +41,36 @@ func TestMain(m *testing.M) {
 			}
 			os.Exit(0)
 		}
-		if tok == "__FAKE__:argv-sse" {
-			fmt.Printf("ARGS:%q\n", os.Args[1:])
-			fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"a"}}}`)
-			fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`)
-			fmt.Println(`{"type":"assistant","message":{"id":"a","content":[{"type":"text","text":"hello world"}]}}`)
-			fmt.Println(`{"type":"result","subtype":"success","result":"hello world","usage":{"input_tokens":10,"output_tokens":2}}`)
-			os.Exit(0)
-		}
+			if tok == "__FAKE__:argv-sse" {
+				fmt.Printf("ARGS:%q\n", os.Args[1:])
+				fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"a"}}}`)
+				fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello "}}}`)
+				fmt.Println(`{"type":"assistant","message":{"id":"a","content":[{"type":"text","text":"hello world"}]}}`)
+				fmt.Println(`{"type":"result","subtype":"success","result":"hello world","usage":{"input_tokens":10,"output_tokens":2}}`)
+				os.Exit(0)
+			}
+				if tok == "__FAKE__:client-tool-use" {
+					var mcpPath, allowed string
+					for i := 1; i < len(os.Args)-1; i++ {
+						if os.Args[i] == "--mcp-config" {
+							mcpPath = os.Args[i+1]
+						}
+						if os.Args[i] == "--allowedTools" {
+							allowed = os.Args[i+1]
+						}
+					}
+					cfgBytes, cfgErr := os.ReadFile(mcpPath)
+					if cfgErr != nil || !strings.Contains(string(cfgBytes), "read") || !strings.Contains(allowed, "mcp__wb__read") {
+						fmt.Fprintf(os.Stderr, "missing client tool injection: err=%v allowed=%q cfg=%s\n", cfgErr, allowed, string(cfgBytes))
+						os.Exit(2)
+					}
+					fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_tool"}}}`)
+					fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Let me read the file."}}}`)
+					fmt.Println(`{"type":"assistant","message":{"id":"m_tool","usage":{"input_tokens":15,"output_tokens":6},"content":[{"type":"text","text":"Let me read the file."},{"type":"tool_use","id":"call_read_1","name":"mcp__wb__read","input":{"path":"README.md","id_num":9007199254740993}}]}}`)
+					time.Sleep(time.Minute)
+					fmt.Println(`{"type":"assistant","message":{"id":"m_after","content":[{"type":"text","text":"SHOULD_NOT_APPEAR"}]}}`)
+					os.Exit(0)
+				}
 		wd, _ := os.Getwd()
 		fmt.Printf("ARGS:%q\nENV:%s\nCWD:%s\nPROMPT:%s\n", os.Args[1:], strings.Join(os.Environ(), "|"), wd, body)
 		os.Exit(0)
@@ -122,9 +145,9 @@ func TestWBSpawnBoundary(t *testing.T) {
 	out, err := io.ReadAll(p.stdout)
 	require.NoError(t, err)
 	require.NoError(t, p.Wait())
-	s := string(out)
-	require.Contains(t, s, `"--tools" "ToolSearch,DeferExecuteTool"`)
-	require.Contains(t, s, "PROMPT:User: hello")
+		s := string(out)
+		require.Contains(t, s, `"--tools" ""`)
+		require.Contains(t, s, "PROMPT:User: hello")
 	require.Contains(t, s, "CWD:"+filepath.Join(os.TempDir(), wbCLIWorkDirName))
 	require.Contains(t, s, "CODEBUDDY_INTERNET_ENVIRONMENT=internal")
 	require.NotContains(t, s, "secret-host-value")
@@ -205,4 +228,45 @@ func TestWBStderrRedactionBeforeTruncation(t *testing.T) {
 			require.Equal(t, "****"+strings.Repeat("x", 396), p.StderrSummary("token", secrets...))
 		})
 	}
+}
+
+func TestWBKillAlwaysForcesTreeCleanup(t *testing.T) {
+	oldGrace, oldHook := wbCLIKillGrace, wbSignalProcessHook
+	wbCLIKillGrace = 50 * time.Millisecond
+	t.Cleanup(func() {
+		wbCLIKillGrace = oldGrace
+		wbSignalProcessHook = oldHook
+	})
+
+	var mu sync.Mutex
+	var signals []bool
+	wbSignalProcessHook = func(cmd *exec.Cmd, kill bool) error {
+		mu.Lock()
+		signals = append(signals, kill)
+		mu.Unlock()
+		return wbSignalProcess(cmd, kill)
+	}
+
+	// Case 1: parent process already exited before Kill() — must still issue forced tree kill (kill=true) for MCP descendants.
+	pExited := wbTestSpawn(t, "__FAKE__:fixture")
+	_, _ = io.Copy(io.Discard, pExited.stdout)
+	require.NoError(t, pExited.Wait())
+	mu.Lock()
+	signals = nil
+	mu.Unlock()
+	pExited.Kill()
+	mu.Lock()
+	require.Equal(t, []bool{true}, signals, "exited parent must still trigger forced tree cleanup")
+	mu.Unlock()
+
+	// Case 2: running process receives soft signal then forced tree kill.
+	pRunning := wbTestSpawn(t, "__FAKE__:sleep")
+	mu.Lock()
+	signals = nil
+	mu.Unlock()
+	pRunning.Kill()
+	mu.Lock()
+	require.Contains(t, signals, false)
+	require.Contains(t, signals, true)
+	mu.Unlock()
 }
