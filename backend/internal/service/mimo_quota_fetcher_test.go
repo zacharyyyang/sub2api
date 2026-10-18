@@ -109,9 +109,23 @@ func verifyMimoAccountServiceAndInvalidation(t *testing.T, srv *httptest.Server,
 
 	usageSvc := &AccountUsageService{accountRepo: repo}
 	dbAcc, _ := repo.GetByID(context.Background(), 401)
-	if info, err := usageSvc.getUsageForAccount(context.Background(), dbAcc, false); err != nil || info == nil || info.MimoQuota == nil || info.MimoQuota.RemainingPercent != 82.5 {
-		t.Fatalf("unexpected getUsageForAccount result: %+v err=%v", info, err)
-	}
+		if info, err := usageSvc.getUsageForAccount(context.Background(), dbAcc, false); err != nil || info == nil || info.MimoQuota == nil || info.MimoQuota.RemainingPercent != 82.5 || info.MimoQuota.IsFiveHourOnly || info.SevenDay == nil || info.SevenDay.Utilization != 35.0 || info.FiveHour == nil || info.FiveHour.Utilization != 17.5 || info.FiveHour.RemainingSeconds != 0 {
+			t.Fatalf("unexpected getUsageForAccount result: %+v err=%v", info, err)
+		}
+		equalDual := 0.0
+		equalDualSnap := buildMimoUsageInfoSnapshot(&MimoQuotaInfo{PlanTitle: "MiMo Pro", RemainingPercent: 100, UsedPercent: 0, FiveHourUsedPct: &equalDual, IsFiveHourOnly: false, ResetAt: "2026-10-22T07:06:18Z"}, time.Date(2026, 10, 18, 7, 6, 18, 0, time.UTC))
+		if equalDualSnap.FiveHour == nil || equalDualSnap.FiveHour.Utilization != 0 || equalDualSnap.FiveHour.RemainingSeconds != 0 || equalDualSnap.SevenDay == nil || equalDualSnap.SevenDay.Utilization != 0 || equalDualSnap.SevenDay.RemainingSeconds != 345600 {
+			t.Fatalf("expected dual-window with equal 0%% utilization to populate both FiveHour and SevenDay, got five_hour=%+v seven_day=%+v", equalDualSnap.FiveHour, equalDualSnap.SevenDay)
+		}
+		singleWinSnap := buildMimoUsageInfoSnapshot(&MimoQuotaInfo{PlanTitle: "MiMo Pro", RemainingPercent: 99.5, UsedPercent: 0.5, ResetAt: "2026-10-22T07:06:18Z"}, time.Date(2026, 10, 18, 7, 6, 18, 0, time.UTC))
+		if singleWinSnap.FiveHour != nil || singleWinSnap.SevenDay == nil || singleWinSnap.SevenDay.Utilization != 0.5 || singleWinSnap.SevenDay.ResetsAt == nil || singleWinSnap.SevenDay.RemainingSeconds != 345600 {
+			t.Fatalf("expected single-window MiMo quota mapped to SevenDay only with RemainingSeconds=345600, got five_hour=%+v seven_day=%+v", singleWinSnap.FiveHour, singleWinSnap.SevenDay)
+		}
+		fhOnly := buildMimoQuotaInfo(map[string]any{"fiveHourUsageRatio": 0.12, "resetAt": "2026-10-18T12:06:18Z"}, map[string]any{"title": "MiMo Pro"})
+		fhOnlySnap := buildMimoUsageInfoSnapshot(fhOnly, time.Date(2026, 10, 18, 7, 6, 18, 0, time.UTC))
+		if !fhOnly.IsFiveHourOnly || fhOnlySnap.FiveHour == nil || fhOnlySnap.FiveHour.Utilization != 12.0 || fhOnlySnap.FiveHour.ResetsAt == nil || fhOnlySnap.FiveHour.RemainingSeconds != 18000 || fhOnlySnap.SevenDay != nil {
+			t.Fatalf("expected 5h-only MiMo quota mapped to FiveHour only, got quota=%+v five_hour=%+v seven_day=%+v", fhOnly, fhOnlySnap.FiveHour, fhOnlySnap.SevenDay)
+		}
 	if _, ok := mimoUsageCache.Load(int64(401)); !ok {
 		t.Fatalf("expected mimoUsageCache populated for account 401")
 	}

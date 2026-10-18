@@ -647,8 +647,16 @@
       <!-- MiMo quota (/api/user/usage + /api/user/xiaomi/subscription/self) -->
       <template v-if="mimoQuotaDisplay">
         <UsageProgressBar
+          v-if="mimoQuotaDisplay.fiveHourUsedPercent !== null"
           label="5h"
-          :utilization="mimoQuotaDisplay.usedPercent"
+          :utilization="mimoQuotaDisplay.fiveHourUsedPercent"
+          :resets-at="mimoQuotaDisplay.fiveHourResetAt"
+          color="indigo"
+        />
+        <UsageProgressBar
+          v-if="mimoQuotaDisplay.sevenDayUsedPercent !== null"
+          label="7d"
+          :utilization="mimoQuotaDisplay.sevenDayUsedPercent"
           :resets-at="mimoQuotaDisplay.resetAt"
           color="indigo"
         />
@@ -1594,6 +1602,9 @@ const mimoQuotaDisplay = computed<{
   planTitle: string
   remainingPercent: number
   usedPercent: number
+  sevenDayUsedPercent: number | null
+  fiveHourUsedPercent: number | null
+  fiveHourResetAt: string | null
   resetAt: string | null
 } | null>(() => {
   if (props.account.platform !== 'mimo') return null
@@ -1602,16 +1613,26 @@ const mimoQuotaDisplay = computed<{
   const hasRemaining = typeof quota.remaining_percent === 'number' && Number.isFinite(quota.remaining_percent)
   const hasUsed = typeof quota.used_percent === 'number' && Number.isFinite(quota.used_percent)
   const hasFiveHour = typeof quota.five_hour_used_pct === 'number' && Number.isFinite(quota.five_hour_used_pct)
-  if (!hasRemaining && !hasUsed && !hasFiveHour) return null
-  const baseUsed = hasFiveHour ? quota.five_hour_used_pct! : (hasUsed ? quota.used_percent! : 100 - quota.remaining_percent!)
+  const hasWeekly = typeof quota.weekly_used_pct === 'number' && Number.isFinite(quota.weekly_used_pct)
+  if (!hasRemaining && !hasUsed && !hasFiveHour && !hasWeekly) return null
+  const baseUsed = hasWeekly
+    ? quota.weekly_used_pct!
+    : (hasUsed ? quota.used_percent! : (hasRemaining ? 100 - quota.remaining_percent! : quota.five_hour_used_pct!))
   const usedPercent = clampMimoPct(baseUsed)
   const remainingPercent = hasRemaining ? clampMimoPct(quota.remaining_percent!) : clampMimoPct(100 - usedPercent)
-  const planTitle = typeof quota.plan_title === 'string' && quota.plan_title.trim() ? quota.plan_title.trim() : t('admin.accounts.mimoQuota.defaultPlan')
   const resetAt = typeof quota.reset_at === 'string' && quota.reset_at.trim() ? quota.reset_at.trim() : null
+  const isFiveHourOnly = hasFiveHour && !hasWeekly && (quota.is_five_hour_only === true || (!hasUsed && !hasRemaining))
+  const fiveHourUsedPercent = hasFiveHour ? clampMimoPct(quota.five_hour_used_pct!) : null
+  const sevenDayUsedPercent = isFiveHourOnly ? null : usedPercent
+  const fiveHourResetAt = usageInfo.value?.five_hour?.resets_at ?? (isFiveHourOnly ? resetAt : null)
+  const planTitle = typeof quota.plan_title === 'string' && quota.plan_title.trim() ? quota.plan_title.trim() : t('admin.accounts.mimoQuota.defaultPlan')
   return {
     planTitle,
     remainingPercent,
     usedPercent,
+    sevenDayUsedPercent,
+    fiveHourUsedPercent,
+    fiveHourResetAt,
     resetAt
   }
 })

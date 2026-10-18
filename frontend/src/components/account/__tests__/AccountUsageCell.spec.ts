@@ -2085,7 +2085,7 @@ describe('AccountUsageCell', () => {
     })
     await flushPromises()
     expect(getUsage).toHaveBeenCalledWith(7001)
-    expect(wrapper.text()).toContain('5h|17.5|2026-10-17T22:00:00Z')
+    expect(wrapper.text()).toContain('7d|17.5|2026-10-17T22:00:00Z')
     expect(wrapper.text()).toContain('MiMo 会员: 82.5%')
     expect(wrapper.text()).toContain('admin.accounts.mimoQuota.resetAt(2026-10-17T22:00:00Z)')
     expect(wrapper.findAll('div.text-gray-400').some(node => node.text().trim() === '-')).toBe(false)
@@ -2138,5 +2138,97 @@ describe('AccountUsageCell', () => {
     })
     await flushPromises()
     expect(derived.text()).toContain('admin.accounts.mimoQuota.defaultPlan: 75%')
+  })
+
+  it('mimo 账号双窗口与仅 5h 窗口时按对应窗口渲染进度条', async () => {
+    const account = makeAccount({ id: 7003, platform: 'mimo', type: 'apikey' })
+
+    const dualWin = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          mimo_quota: {
+            plan_title: 'MiMo Pro 会员',
+            remaining_percent: 100,
+            used_percent: 0,
+            five_hour_used_pct: 0,
+            weekly_used_pct: 35,
+            is_five_hour_only: false,
+            reset_at: '2026-10-18T00:00:00Z'
+          }
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(dualWin.text()).toContain('5h|0|')
+    expect(dualWin.text()).toContain('7d|35|2026-10-18T00:00:00Z')
+
+    const equalDualNoWeekly = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          mimo_quota: {
+            plan_title: 'MiMo Pro 会员',
+            remaining_percent: 100,
+            used_percent: 0,
+            five_hour_used_pct: 0,
+            is_five_hour_only: false,
+            reset_at: '2026-10-18T00:00:00Z'
+          }
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(equalDualNoWeekly.text()).toContain('5h|0|')
+    expect(equalDualNoWeekly.text()).toContain('7d|0|2026-10-18T00:00:00Z')
+
+    const fiveHourOnly = mount(AccountUsageCell, {
+      props: {
+        account,
+        requestBatchedUsage: vi.fn(),
+        batchedUsage: {
+          mimo_quota: {
+            plan_title: 'MiMo Pro 会员',
+            remaining_percent: 88,
+            used_percent: 12,
+            five_hour_used_pct: 12,
+            is_five_hour_only: true,
+            reset_at: '2026-10-18T12:00:00Z'
+          }
+        }
+      },
+      global: {
+        stubs: {
+          UsageProgressBar: {
+            props: ['label', 'utilization', 'resetsAt', 'color'],
+            template: '<div class="usage-bar">{{ label }}|{{ utilization }}|{{ resetsAt }}</div>'
+          },
+          AccountQuotaInfo: true
+        }
+      }
+    })
+    await flushPromises()
+    expect(fiveHourOnly.text()).toContain('5h|12|2026-10-18T12:00:00Z')
+    expect(fiveHourOnly.text()).not.toContain('7d|')
   })
 })

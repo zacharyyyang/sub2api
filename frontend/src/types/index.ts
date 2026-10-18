@@ -1521,6 +1521,7 @@ export interface AccountUsageInfo {
     used_percent?: number
     five_hour_used_pct?: number
     weekly_used_pct?: number
+    is_five_hour_only?: boolean
     reset_at?: string
     reset_sec?: number
     cooldown_end_time?: string
