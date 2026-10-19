@@ -49,7 +49,7 @@ type wbInboundToolCall struct {
 
 // wbInboundMessage 是入站 messages 数组元素的具名结构体。Content 保持 *string
 // （与现有解码行为一致）；ToolCallID / Name / ToolCalls 为可选字段，仅用于
-// 工具历史折叠，零值 = 缺省。
+// 工具历史折叠与临时会话合成，零值 = 缺省。
 type wbInboundMessage struct {
 	Role       string              `json:"role"`
 	Content    *string             `json:"content"`
@@ -59,12 +59,15 @@ type wbInboundMessage struct {
 }
 
 type wbInbound struct {
-	Model         string             `json:"model"`
-	Messages      []wbInboundMessage `json:"messages"`
-	Stream        bool               `json:"stream"`
-	Tools         json.RawMessage    `json:"tools"`
-	StreamOptions *wbStreamOptions   `json:"stream_options"`
-	clientTools   map[string]bool    `json:"-"`
+	Model           string             `json:"model"`
+	Messages        []wbInboundMessage `json:"messages"`
+	Stream          bool               `json:"stream"`
+	Tools           json.RawMessage    `json:"tools"`
+	StreamOptions   *wbStreamOptions   `json:"stream_options"`
+	clientTools     map[string]bool    `json:"-"`
+	resumeSessionID string             `json:"-"`
+	sessionJSONL    []byte             `json:"-"`
+	resumePrompt    string             `json:"-"`
 }
 
 func wbStrictJSON(raw []byte, dst any) error {
@@ -83,10 +86,27 @@ func wbStrictJSON(raw []byte, dst any) error {
 // wbDecodeInboundJSON 是 HTTP 入站专用解码器：不启用 DisallowUnknownFields，
 // 兼容标准 OpenAI SDK / 兼容客户端默认携带的常规参数（stream_options、
 // temperature、user 等）；同时保留严格 JSON 语法与尾部多余数据校验，拒绝
-// 畸形 JSON 与多段粘包。wbMapTools 的 wbStrictJSON 严格模式仅覆盖命中注册表
-// 的工具声明；未注册工具声明宽容解码后静默剔除，两者互不影响。
+// 畸形 JSON 与多段粘包。wbMapTools 的 wbStrictJSON 严格模式仅覆盖命中服务端
+// 注册表（wbBridgeRegistry）的工具声明；未注册合法 function 工具映射为客户端
+// 工具（ServerExecuted: false），非 function 或无名条目静默剔除。
 func wbDecodeInboundJSON(raw []byte, dst any) error {
 	d := json.NewDecoder(bytes.NewReader(raw))
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("unexpected trailing JSON")
+	}
+	return nil
+}
+
+// wbDecodeSingleJSONValue 解出唯一一个 JSON 值并要求其后无残余内容，与入站解码
+// 保持同一严格度。只解首个值会把 `{} trailing` 当成合法 `{}`——CLI 事件行会因此
+// 把噪音行误判成完成事件，tool_calls.arguments 会因此静默改写历史参数。
+func wbDecodeSingleJSONValue(raw []byte, dst any) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
 	if err := d.Decode(dst); err != nil {
 		return err
 	}
@@ -127,170 +147,20 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 	if err != nil {
 		return req, "", nil, err
 	}
-	tools = wbFilterExecutedClientTools(tools, wbTrailingExecutedTools(req.Messages))
 	req.clientTools = make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		if !tool.ServerExecuted {
 			req.clientTools[tool.Name] = true
 		}
 	}
-	return req, strings.Join(parts, "\n\n"), tools, nil
-}
-
-// wbTrailingExecutedTools 检查入站消息末尾是否为连续的 tool / function 消息段。
-// 若是，则提取该尾部连续段涉及的全部工具名集合（自身 name + 通过 tool_call_id 反查前序
-// assistant.tool_calls 的 function.name）。若无法识别任何工具名，返回 nil（退化为不剔除）。
-func wbTrailingExecutedTools(messages []wbInboundMessage) map[string]bool {
-	n := len(messages)
-	if n == 0 {
-		return nil
+	prompt := strings.Join(parts, "\n\n")
+	if wbHasToolHistory(req.Messages) {
+		sessionID, jsonlData, resumePrompt := wbBuildResumeSession(req.Messages, tools)
+		req.resumeSessionID = sessionID
+		req.sessionJSONL = jsonlData
+		req.resumePrompt = resumePrompt
 	}
-	tailStart := n
-	for tailStart > 0 {
-		role := messages[tailStart-1].Role
-		if role != "tool" && role != "function" {
-			break
-		}
-		tailStart--
-	}
-	if tailStart == n {
-		return nil
-	}
-	callIDToName := make(map[string]string)
-	for i := 0; i < tailStart; i++ {
-		if messages[i].Role != "assistant" {
-			continue
-		}
-		for _, tc := range messages[i].ToolCalls {
-			id := strings.TrimSpace(tc.ID)
-			fnName := strings.TrimSpace(tc.Function.Name)
-			if id != "" && fnName != "" {
-				callIDToName[id] = fnName
-			}
-		}
-	}
-	var executed map[string]bool
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return
-		}
-		if executed == nil {
-			executed = make(map[string]bool)
-		}
-		executed[name] = true
-	}
-	for i := tailStart; i < n; i++ {
-		msg := messages[i]
-		if msg.Name != nil {
-			add(*msg.Name)
-		}
-		if msg.ToolCallID != nil {
-			if fnName := callIDToName[strings.TrimSpace(*msg.ToolCallID)]; fnName != "" {
-				add(fnName)
-			}
-		}
-	}
-	return executed
-}
-
-// wbFilterExecutedClientTools 从本轮 tools 中剔除刚在入站末尾连续 tool/function 段执行完的
-// B 平面客户端工具（ServerExecuted == false），防止无状态 CLI 在结果回传轮次重复调用同一工具；
-// A 平面服务端工具（ServerExecuted == true）与未执行的其余客户端工具保留不变。
-func wbFilterExecutedClientTools(tools []WBBridgeTool, executed map[string]bool) []WBBridgeTool {
-	if len(tools) == 0 || len(executed) == 0 {
-		return tools
-	}
-	filtered := make([]WBBridgeTool, 0, len(tools))
-	for _, tool := range tools {
-		if !tool.ServerExecuted && executed[tool.Name] {
-			continue
-		}
-		filtered = append(filtered, tool)
-	}
-	return filtered
-}
-
-// wbFoldInboundMessage 将单条入站消息折叠为确定性 prompt segment（每条消息
-// 恰好一个 segment）。system / user 保持 System:/User: 纯文本折叠；tool /
-// function 按 Tool[<id|name>]: <content> 折叠（均无则 Tool: <content>，
-// content 为 nil 视为空）；assistant 支持 content 与 tool_calls 并存
-// （[tool_calls: id=<id> name=<name> arguments=<args>; ...]），无 tool_calls 且
-// content 为 nil 时空串兜底 Assistant: ；未知角色仍 400。
-func wbFoldInboundMessage(i int, message wbInboundMessage) (string, error) {
-	switch message.Role {
-	case "system", "user":
-		if message.Content == nil {
-			return "", fmt.Errorf("messages[%d].content must be a string", i)
-		}
-		prefix := "System"
-		if message.Role == "user" {
-			prefix = "User"
-		}
-		return prefix + ": " + *message.Content, nil
-	case "assistant":
-		text := ""
-		if message.Content != nil {
-			text = *message.Content
-		}
-		if len(message.ToolCalls) > 0 {
-			summary := "[tool_calls: " + wbToolCallSummary(message.ToolCalls) + "]"
-			if text != "" {
-				return "Assistant: " + text + "\n" + summary, nil
-			}
-			return "Assistant: " + summary, nil
-		}
-		return "Assistant: " + text, nil
-	case "tool", "function":
-		content := ""
-		if message.Content != nil {
-			content = *message.Content
-		}
-		return "Tool" + wbToolBracket(message) + ": " + content, nil
-	default:
-		return "", fmt.Errorf("unsupported role %q", message.Role)
-	}
-}
-
-// wbToolBracket 计算 tool / function 消息折叠时的方括号括注：ToolCallID 优先，
-// 为空则降级取 Name；两者皆空返回空串（不输出方括号），对应契约
-// Tool[<id|name>]: <content> / Tool: <content>。
-func wbToolBracket(message wbInboundMessage) string {
-	switch {
-	case message.ToolCallID != nil && *message.ToolCallID != "":
-		return "[" + *message.ToolCallID + "]"
-	case message.Name != nil && *message.Name != "":
-		return "[" + *message.Name + "]"
-	default:
-		return ""
-	}
-}
-
-// wbToolCallSummary 将 assistant 消息的 tool_calls 折叠为结构化摘要列表：
-// 每个调用输出 id=<id> name=<name> arguments=<args>（id 缺省为 call_<i> 1-based，
-// name 缺省取 ID 再空取 unknown，arguments 缺省为 {}），以 "; " 连接。
-func wbToolCallSummary(calls []wbInboundToolCall) string {
-	items := make([]string, len(calls))
-	for i, call := range calls {
-		id := call.ID
-		if id == "" {
-			id = fmt.Sprintf("call_%d", i+1)
-		}
-		name := call.Function.Name
-		if name == "" {
-			if call.ID != "" {
-				name = call.ID
-			} else {
-				name = "unknown"
-			}
-		}
-		args := strings.TrimSpace(call.Function.Arguments)
-		if args == "" {
-			args = "{}"
-		}
-		items[i] = fmt.Sprintf("id=%s name=%s arguments=%s", id, name, args)
-	}
-	return strings.Join(items, "; ")
+	return req, prompt, tools, nil
 }
 
 func wbWriteError(c *gin.Context, status int, code, message string, streamed bool) error {
@@ -309,6 +179,9 @@ func (s *OpenAIGatewayService) forwardWBChatCompletions(ctx context.Context, c *
 	req, prompt, tools, err := wbParseInbound(body)
 	if err != nil {
 		return nil, wbWriteError(c, 400, wbErrUnsupportedInbound, err.Error(), false)
+	}
+	if req.resumeSessionID != "" {
+		prompt = req.resumePrompt
 	}
 	ctx, cancel := context.WithTimeout(ctx, wbCLIDefaultTimeout)
 	defer cancel()
@@ -337,8 +210,17 @@ func (s *OpenAIGatewayService) forwardWBChatCompletions(ctx context.Context, c *
 	if ctx.Err() != nil {
 		return nil, wbWriteError(c, 504, wbErrCLITimeout, ctx.Err().Error(), false)
 	}
-	process, err := spawnWBCLIProcess(wbSpawnConfig{CliPath: cli, Model: req.Model, Prompt: prompt, Token: token,
-		EnterpriseID: account.GetCredential("enterprise_id"), MCPConfigPath: config.Path, AllowedTools: config.AllowedTools})
+	process, err := spawnWBCLIProcess(wbSpawnConfig{
+		CliPath:         cli,
+		Model:           req.Model,
+		Prompt:          prompt,
+		Token:           token,
+		EnterpriseID:    account.GetCredential("enterprise_id"),
+		MCPConfigPath:   config.Path,
+		AllowedTools:    config.AllowedTools,
+		ResumeSessionID: req.resumeSessionID,
+		SessionJSONL:    req.sessionJSONL,
+	})
 	if err != nil {
 		return nil, wbWriteError(c, 502, wbErrCLIFailed, err.Error(), false)
 	}
@@ -353,10 +235,19 @@ func (s *OpenAIGatewayService) forwardWBChatCompletions(ctx context.Context, c *
 		}
 	}()
 	if err := process.WritePrompt(); err != nil {
+		if ctx.Err() != nil {
+			return nil, wbWriteError(c, 504, wbErrCLITimeout, ctx.Err().Error(), false)
+		}
 		return nil, wbWriteError(c, 502, wbErrCLIFailed, maskSecret(err.Error(), token), false)
 	}
 	return wbConsumeCLI(ctx, c, process, req, token, started, account.GetCredential("enterprise_id"), account.GetCredential("client_secret"), account.GetCredential("pt_key"), account.GetCredential("client_id"))
 }
+
+// wbWaitHook, when non-nil, fires immediately before the post-EOF process.Wait().
+// The cancellation test uses it to pin that instant: the hook runs after the
+// pre-Wait cancellation check has already passed, so a cancel raised at the hook
+// can only be answered by the re-check after Wait. Nil in production.
+var wbWaitHook func()
 
 func wbConsumeCLI(ctx context.Context, c *gin.Context, process *wbCLIProcess, req wbInbound, token string, started time.Time, secrets ...string) (*OpenAIForwardResult, error) {
 	accumulator := newWbStreamAccumulator()
@@ -397,9 +288,7 @@ scan:
 			break
 		}
 		var obj map[string]any
-		dec := json.NewDecoder(bytes.NewReader(scanner.Bytes()))
-		dec.UseNumber()
-		if dec.Decode(&obj) != nil {
+		if wbDecodeSingleJSONValue(scanner.Bytes(), &obj) != nil {
 			continue
 		}
 		frame := classifyWBLine(obj, req.clientTools)
@@ -478,7 +367,16 @@ scan:
 		return fail(502, wbErrCLIFailed, err.Error())
 	}
 	if completion == nil {
-		if err := process.Wait(); err != nil {
+		if wbWaitHook != nil {
+			wbWaitHook()
+		}
+		waitErr := process.Wait()
+		// 取消可能落在 stdout EOF 之后、进程退出之前：此时 Wait 才返回，
+		// 上下文已结束但退出码来自 Kill——按设计档超时/取消一律 504，不报 502。
+		if ctx.Err() != nil {
+			return fail(http.StatusGatewayTimeout, wbErrCLITimeout, ctx.Err().Error())
+		}
+		if waitErr != nil {
 			return fail(502, wbErrCLIFailed, fmt.Sprintf("exit %d: %s", process.ExitCode(), process.StderrSummary(token, secrets...)))
 		}
 		return fail(502, wbErrStreamNoCompletion, "wb CLI exited without result/success")

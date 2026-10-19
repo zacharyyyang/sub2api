@@ -354,7 +354,7 @@ func (a *wbStreamAccumulator) AddClientToolCalls(calls []WBToolCall) {
 	}
 }
 func (a *wbStreamAccumulator) ClientToolCalls() []WBToolCall { return a.clientToolCalls }
-func (a *wbStreamAccumulator) OnMessageStart() { a.StartMessage("") }
+func (a *wbStreamAccumulator) OnMessageStart()               { a.StartMessage("") }
 func (a *wbStreamAccumulator) StartMessage(id string) {
 	a.delta, a.scopeID, a.lastFull, a.backfilled = "", id, "", false
 }

@@ -88,32 +88,32 @@ func TestWBInboundToolHistory(t *testing.T) {
 		{"3 function 带 name", `{"model":"glm-5.3-flash","messages":[{"role":"function","name":"get_weather","content":"sunny"}]}`, "Tool[get_weather]: sunny", ""},
 		// 4 tool 无 id 无 name
 		{"4 tool 无 id 无 name", `{"model":"glm-5.3-flash","messages":[{"role":"tool","content":"bare"}]}`, "Tool: bare", ""},
-			// 5 assistant content:null 带 tool_calls → 摘要（含 id / name / arguments）
-			{"5 assistant null+tool_calls 摘要", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{}"}}]}]}`, `Assistant: [tool_calls: id=c1 name=create_file arguments={"path":"a.txt"}; id=c2 name=get_weather arguments={}]`, ""},
-			// 6 assistant content:null 无 tool_calls → 空串兜底
-			{"6 assistant null 无 tool_calls 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null}]}`, "Assistant: ", ""},
-			// 7 tool content:null → 空内容不 400
-			{"7 tool content null 空内容", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"c9","content":null}]}`, "Tool[c9]: ", ""},
-			// 8 tool_calls 无 function.name 与 arguments → id 降级 + {} 兜底
-			{"8 assistant null tool_calls 无 name id 降级", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c9"}]}]}`, "Assistant: [tool_calls: id=c9 name=c9 arguments={}]", ""},
-			// 9 完整多轮回合（user → assistant[tool_calls] → tool → assistant），四段顺序折叠
-			{"9 完整多轮回合", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"请创建文件并查询天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{\"city\":\"bj\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"文件已创建"},{"role":"assistant","content":"已创建完成"}]}`, "User: 请创建文件并查询天气\n\nAssistant: [tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}; id=c2 name=get_weather arguments={\"city\":\"bj\"}]\n\nTool[call_1]: 文件已创建\n\nAssistant: 已创建完成", ""},
-			// 10 未知角色仍 400
-			{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
-			// 11 user content 缺失仍 400
-			{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
-			// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
-			{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
-			// 13 尾部多余 JSON → 解码层拒绝（行为不变）
-			{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
-			// 14 tool_calls name 与 ID 均空 → call_1 + unknown + {} 兜底
-			{"14 摘要 name 与 ID 皆空 unknown 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"","function":{"name":""}}]}]}`, "Assistant: [tool_calls: id=call_1 name=unknown arguments={}]", ""},
-			// 15 tool 消息 tool_call_id 与 name 并存 → ToolCallID 优先
-			{"15 tool id 与 name 并存 ID 优先", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}]}`, "Tool[call_1]: sunny", ""},
-			// 16 assistant content 非空与 tool_calls 并存 → content 与 tool_calls 摘要换行并存
-			{"16 assistant content 非空与 tool_calls 并存", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"已调用工具，先做总结","tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}}]}]}`, "Assistant: 已调用工具，先做总结\n[tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}]", ""},
-			// 17 assistant content 空串（非 nil）带 tool_calls → 仅输出 tool_calls 摘要
-			{"17 assistant content 空串带 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: [tool_calls: id=c1 name=create_file arguments={}]", ""},
+		// 5 assistant content:null 带 tool_calls → 摘要（含 id / name / arguments）
+		{"5 assistant null+tool_calls 摘要", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{}"}}]}]}`, `Assistant: [tool_calls: id=c1 name=create_file arguments={"path":"a.txt"}; id=c2 name=get_weather arguments={}]`, ""},
+		// 6 assistant content:null 无 tool_calls → 空串兜底
+		{"6 assistant null 无 tool_calls 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null}]}`, "Assistant: ", ""},
+		// 7 tool content:null → 空内容不 400
+		{"7 tool content null 空内容", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"c9","content":null}]}`, "Tool[c9]: ", ""},
+		// 8 tool_calls 无 function.name 与 arguments → id 降级 + {} 兜底
+		{"8 assistant null tool_calls 无 name id 降级", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"c9"}]}]}`, "Assistant: [tool_calls: id=c9 name=c9 arguments={}]", ""},
+		// 9 完整多轮回合（user → assistant[tool_calls] → tool → assistant），四段顺序折叠
+		{"9 完整多轮回合", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"请创建文件并查询天气"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","function":{"name":"get_weather","arguments":"{\"city\":\"bj\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"文件已创建"},{"role":"assistant","content":"已创建完成"}]}`, "User: 请创建文件并查询天气\n\nAssistant: [tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}; id=c2 name=get_weather arguments={\"city\":\"bj\"}]\n\nTool[call_1]: 文件已创建\n\nAssistant: 已创建完成", ""},
+		// 10 未知角色仍 400
+		{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
+		// 11 user content 缺失仍 400
+		{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
+		// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
+		{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
+		// 13 尾部多余 JSON → 解码层拒绝（行为不变）
+		{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
+		// 14 tool_calls name 与 ID 均空 → call_1 + unknown + {} 兜底
+		{"14 摘要 name 与 ID 皆空 unknown 兜底", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"","function":{"name":""}}]}]}`, "Assistant: [tool_calls: id=call_1 name=unknown arguments={}]", ""},
+		// 15 tool 消息 tool_call_id 与 name 并存 → ToolCallID 优先
+		{"15 tool id 与 name 并存 ID 优先", `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_1","name":"get_weather","content":"sunny"}]}`, "Tool[call_1]: sunny", ""},
+		// 16 assistant content 非空与 tool_calls 并存 → content 与 tool_calls 摘要换行并存
+		{"16 assistant content 非空与 tool_calls 并存", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"已调用工具，先做总结","tool_calls":[{"id":"c1","function":{"name":"create_file","arguments":"{\"path\":\"a.txt\"}"}}]}]}`, "Assistant: 已调用工具，先做总结\n[tool_calls: id=c1 name=create_file arguments={\"path\":\"a.txt\"}]", ""},
+		// 17 assistant content 空串（非 nil）带 tool_calls → 仅输出 tool_calls 摘要
+		{"17 assistant content 空串带 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":"","tool_calls":[{"id":"c1","function":{"name":"create_file"}}]}]}`, "Assistant: [tool_calls: id=c1 name=create_file arguments={}]", ""},
 		// 18 assistant content 空串（非 nil）无 tool_calls → 原样拼接（输出与空串兜底同形）
 		{"18 assistant content 空串无 tool_calls", `{"model":"glm-5.3-flash","messages":[{"role":"assistant","content":""}]}`, "Assistant: ", ""},
 		// 19 system content 缺失 → 400（fail-closed 边界，设计 §6 行 11 的 system 侧补齐）
@@ -193,12 +193,12 @@ func TestWBTools(t *testing.T) {
 	require.Equal(t, "ECHO: hello", text)
 	_, err = ExecuteWBBridgeTool(declarations, "Glob", json.RawMessage(`{}`))
 	require.ErrorContains(t, err, wbErrBridgeToolUnmatched)
-		tools, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
-		require.NoError(t, err)
-		require.Len(t, tools, 1)
-		require.Equal(t, "unknown", tools[0].Name)
-		require.False(t, tools[0].ServerExecuted)
-		require.Equal(t, "object", tools[0].InputSchema["type"])
+	tools, err = wbMapTools(json.RawMessage(`[{"type":"function","function":{"name":"unknown"}}]`))
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+	require.Equal(t, "unknown", tools[0].Name)
+	require.False(t, tools[0].ServerExecuted)
+	require.Equal(t, "object", tools[0].InputSchema["type"])
 	cfg.Close()
 	_, err = os.Stat(cfg.Path)
 	require.True(t, os.IsNotExist(err))
@@ -214,6 +214,7 @@ func TestWBConsumeTerminal(t *testing.T) {
 		{"nonstream", `{"type":"assistant","message":{"content":"ok"}}
 {"type":"result","subtype":"success","result":"ok"}`, "", false},
 		{"missing", `{"type":"system"}`, wbErrStreamNoCompletion, false},
+		{"empty", ``, wbErrStreamNoCompletion, false},
 		{"mismatch", `{"type":"assistant","message":{"content":"bad"}}
 {"type":"result","subtype":"success","result":"ok"}`, wbErrFulltextMismatch, true},
 	} {
@@ -311,6 +312,46 @@ func TestWBConsumeCancellation(t *testing.T) {
 	}
 }
 
+// TestWBConsumeCancelAfterEOFIsTimeout guards the ordering bug where a cancel/timeout
+// landing after stdout EOF but before process exit was reported as 502 instead of 504.
+// The cancel is raised from wbWaitHook, which fires after the pre-Wait cancellation
+// check has already passed and immediately before process.Wait(): the only code that
+// can answer that cancel is the re-check after Wait. A wall-clock or EOF-reader signal
+// would leave the consumer free to hit the earlier check and return 504 without ever
+// entering Wait, so the test would keep passing even with the re-check deleted.
+func TestWBConsumeCancelAfterEOFIsTimeout(t *testing.T) {
+	p := wbTestSpawn(t, "__FAKE__:eof-sleep")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	atWait := make(chan struct{})
+	var once sync.Once
+	oldHook := wbWaitHook
+	wbWaitHook = func() { once.Do(func() { close(atWait) }) }
+	t.Cleanup(func() { wbWaitHook = oldHook })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	done := make(chan error, 1)
+	go func() { _, err := wbConsumeCLI(ctx, c, p, wbInbound{}, "", time.Now()); done <- err }()
+	select {
+	case <-atWait:
+	case <-time.After(10 * time.Second):
+		t.Fatal("consumer never reached the post-EOF wait")
+	}
+	// The pre-Wait cancellation check has passed; the consumer is entering Wait.
+	cancel()
+	p.Kill()
+	select {
+	case err := <-done:
+		require.ErrorContains(t, err, wbErrCLITimeout)
+		require.NotContains(t, err.Error(), wbErrStreamNoCompletion)
+	case <-time.After(15 * time.Second):
+		t.Fatal("cancel after EOF failed to unblock wait")
+	}
+	require.Equal(t, 504, recorder.Code)
+	require.NotContains(t, recorder.Body.String(), "[DONE]")
+	_ = p.Wait()
+}
+
 func TestWBDiscoveryCancellation(t *testing.T) {
 	oldProbe, oldDirs := wbProbeContext, wbCommonInstallDirs
 	t.Cleanup(func() { wbProbeContext, wbCommonInstallDirs = oldProbe, oldDirs; wbDiscoveryCache = sync.Map{} })
@@ -349,56 +390,215 @@ func TestWBDiscoveryCancellation(t *testing.T) {
 	}
 }
 
-// TestWBInboundTrailingToolResultSuppressesClientTools：验证方案 A —— 当入站消息末尾为连续
-// role:"tool" / role:"function" 消息段时，自动从本轮 tools 与 req.clientTools 中剔除该段
-// 已执行的 B 平面客户端工具，A 平面服务端工具与未执行的其余客户端工具保留；当后续追加
-// 新 user 消息后，工具自动恢复。
-func TestWBInboundTrailingToolResultSuppressesClientTools(t *testing.T) {
-	t.Run("single trailing tool_call_id suppresses matching client tool to empty", func(t *testing.T) {
-		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":"Checking...","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"temp\":\"23C\"}"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+// TestWBInboundResumeSessionSynthesisAndFullToolRetention：验证方案 ③-B —— 当入站消息包含工具历史时，
+// wbParseInbound 合成原生 .jsonl 会话记录链与 resumeSessionID，且全量保留客户端 tools[] 与 req.clientTools
+// （不再剔除尾部已执行工具，支持多步连续同工具调用）；无工具历史时不合成 .jsonl。
+func TestWBInboundResumeSessionSynthesisAndFullToolRetention(t *testing.T) {
+	t.Run("plain user message does not synthesize resume session", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"system","content":"Be concise."},{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
 		req, prompt, tools, err := wbParseInbound([]byte(raw))
 		require.NoError(t, err)
-		require.Empty(t, tools)
-		require.Empty(t, req.clientTools)
-		require.Contains(t, prompt, `Assistant: Checking...`+"\n"+`[tool_calls: id=call_1 name=get_weather arguments={"city":"Shanghai"}]`)
-		require.Contains(t, prompt, `Tool[call_1]: {"temp":"23C"}`)
+		require.Empty(t, req.resumeSessionID)
+		require.Empty(t, req.sessionJSONL)
+		require.Len(t, tools, 1)
+		require.True(t, req.clientTools["get_weather"])
+		require.Equal(t, "System: Be concise.\n\nUser: hello", prompt)
 	})
 
-	t.Run("multiple contiguous trailing tool messages suppress all executed client tools while keeping unexecuted and server echo", func(t *testing.T) {
-		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"read and weather"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"BJ\"}"}},{"id":"c3","type":"function","function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"file content"},{"role":"tool","tool_call_id":"c2","content":"sunny"},{"role":"tool","tool_call_id":"c3","content":"ECHO: hi"}],"tools":[{"type":"function","function":{"name":"echo","description":"E","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"read","parameters":{"type":"object"}}},{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}},{"type":"function","function":{"name":"write","parameters":{"type":"object"}}}]}`
+	t.Run("single trailing tool_call_id synthesizes linked jsonl and retains all client tools", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"system","content":"Use tools accurately."},{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":"Checking...","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"temp\":\"23C\"}"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
 		req, _, tools, err := wbParseInbound([]byte(raw))
 		require.NoError(t, err)
-		require.Len(t, tools, 2)
-		require.Equal(t, "echo", tools[0].Name)
-		require.True(t, tools[0].ServerExecuted)
-		require.Equal(t, "write", tools[1].Name)
-		require.False(t, tools[1].ServerExecuted)
-		require.Equal(t, map[string]bool{"write": true}, req.clientTools)
+		require.NotEmpty(t, req.resumeSessionID)
+		require.NotEmpty(t, req.sessionJSONL)
+		require.Equal(t, wbResumeContinuePrompt, req.resumePrompt)
+		require.Len(t, tools, 1)
+		require.Equal(t, "get_weather", tools[0].Name)
+		require.True(t, req.clientTools["get_weather"])
+
+		lines := strings.Split(strings.TrimSpace(string(req.sessionJSONL)), "\n")
+		// Expected nodes: user message, assistant text message, ToolSearch call, ToolSearch result, DeferExecuteTool call, DeferExecuteTool result
+		require.Len(t, lines, 6)
+		var prevID any
+		for i, line := range lines {
+			var node map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &node))
+			require.Equal(t, req.resumeSessionID, node["sessionId"])
+			if i == 0 {
+				require.Nil(t, node["parentId"])
+				require.Equal(t, "message", node["type"])
+				require.Equal(t, "user", node["role"])
+			} else {
+				require.Equal(t, prevID, node["parentId"])
+			}
+			prevID = node["id"]
+		}
+		require.Contains(t, lines[2], `"name":"ToolSearch"`)
+		require.Contains(t, lines[4], `"name":"DeferExecuteTool"`)
+		require.Contains(t, lines[4], `"callId":"call_1"`)
+		require.Contains(t, lines[5], `"type":"function_call_result"`)
+		require.Contains(t, lines[5], `{\"temp\":\"23C\"}`)
 	})
 
-	t.Run("legacy function role or tool with explicit name suppresses by name", func(t *testing.T) {
+	t.Run("multiple contiguous trailing tool messages retain all 5 mixed tools for multi-step calls", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"read and weather"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"BJ\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"file content"},{"role":"tool","tool_call_id":"c2","content":"sunny"}],"tools":[{"type":"function","function":{"name":"echo","description":"E","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"read","parameters":{"type":"object"}}},{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}},{"type":"function","function":{"name":"write","parameters":{"type":"object"}}},{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]}`
+		req, _, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.NotEmpty(t, req.resumeSessionID)
+		require.Len(t, tools, 5)
+		require.Equal(t, map[string]bool{"read": true, "get_weather": true, "write": true, "bash": true}, req.clientTools)
+	})
+
+	t.Run("orphan tool or function role synthesizes paired function_call and function_call_result", func(t *testing.T) {
 		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather"},{"role":"function","name":"get_weather","content":"25C"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
 		req, _, tools, err := wbParseInbound([]byte(raw))
 		require.NoError(t, err)
-		require.Empty(t, tools)
-		require.Empty(t, req.clientTools)
-	})
-
-	t.Run("unmatched tool_call_id without name degrades gracefully without dropping tools", func(t *testing.T) {
-		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather"},{"role":"tool","tool_call_id":"orphan_id","content":"25C"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
-		req, _, tools, err := wbParseInbound([]byte(raw))
-		require.NoError(t, err)
+		require.NotEmpty(t, req.resumeSessionID)
 		require.Len(t, tools, 1)
-		require.Equal(t, "get_weather", tools[0].Name)
-		require.True(t, req.clientTools["get_weather"])
+		lines := strings.Split(strings.TrimSpace(string(req.sessionJSONL)), "\n")
+		// Exactly 5 nodes: user("weather") + ToolSearch call/result + DeferExecuteTool call/result (no extra "Continue." user node)
+		require.Len(t, lines, 5)
+		require.Contains(t, lines[0], `"text":"weather"`)
+		require.NotContains(t, string(req.sessionJSONL), `"text":"Continue."`)
+		require.Contains(t, string(req.sessionJSONL), `\"toolName\":\"mcp__wb__get_weather\"`)
+		require.Contains(t, string(req.sessionJSONL), `"text":"25C"`)
+
+		// Single orphan tool message with tool_call_id and no prior user message seeds "Continue." and pairs cleanly
+		rawOrphanWithID := `{"model":"glm-5.3-flash","messages":[{"role":"tool","tool_call_id":"call_orphan_id_1","name":"read","content":"ok"}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]}`
+		req2, _, _, err := wbParseInbound([]byte(rawOrphanWithID))
+		require.NoError(t, err)
+		lines2 := strings.Split(strings.TrimSpace(string(req2.sessionJSONL)), "\n")
+		require.Len(t, lines2, 5)
+		require.Contains(t, lines2[0], `"text":"Continue."`)
+		require.Contains(t, lines2[3], `"callId":"call_orphan_id_1"`)
+		require.Contains(t, lines2[4], `"text":"ok"`)
 	})
 
-	t.Run("subsequent user message restores previously executed client tool", func(t *testing.T) {
+	t.Run("trailing user message after tool history becomes stdin resumePrompt and is excluded from jsonl", func(t *testing.T) {
 		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"23C"},{"role":"assistant","content":"It is 23C."},{"role":"user","content":"Now check Beijing"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
 		req, _, tools, err := wbParseInbound([]byte(raw))
 		require.NoError(t, err)
+		require.NotEmpty(t, req.resumeSessionID)
+		require.Equal(t, "Now check Beijing", req.resumePrompt)
+		require.NotContains(t, string(req.sessionJSONL), "Now check Beijing")
 		require.Len(t, tools, 1)
-		require.Equal(t, "get_weather", tools[0].Name)
-		require.True(t, req.clientTools["get_weather"])
+	})
+
+	t.Run("missing tool result, duplicate call_id across rounds, and malformed arguments are handled without cross-round mispairing", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[` +
+			`{"role":"user","content":"step 1"},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"get_weather","arguments":"{}"}},{"id":"call_dup","type":"function","function":{"name":"read","arguments":"not-valid-json"}}]},` +
+			`{"role":"function","name":"get_weather","content":"round1_weather"},` +
+			`{"role":"user","content":"step 2"},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"call_dup","type":"function","function":{"name":"read","arguments":"{\"path\":\"b.txt\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"call_dup","content":"round2_read_result"},` +
+			`{"role":"user","content":"   "}` +
+			`],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}},{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]}`
+		req, _, _, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.NotEmpty(t, req.resumeSessionID)
+		// Whitespace-only trailing user prompt falls back to wbResumeContinuePrompt
+		require.Equal(t, wbResumeContinuePrompt, req.resumePrompt)
+		lines := strings.Split(strings.TrimSpace(string(req.sessionJSONL)), "\n")
+		// Expected nodes:
+		// 0: user("step 1")
+		// 1: ToolSearch call
+		// 2: ToolSearch result
+		// 3: DeferExecuteTool call (c1)
+		// 4: DeferExecuteTool result (c1 -> round1_weather)
+		// 5: DeferExecuteTool call (call_dup round 1, with _raw: "not-valid-json")
+		// 6: DeferExecuteTool result (call_dup round 1 -> "" empty fallback, NOT stealing round 2's result!)
+		// 7: user("step 2")
+		// 8: DeferExecuteTool call (call_dup round 2)
+		// 9: DeferExecuteTool result (call_dup round 2 -> "round2_read_result")
+		require.Len(t, lines, 10)
+		require.Contains(t, lines[4], `"text":"round1_weather"`)
+		require.Contains(t, lines[5], `\"_raw\":\"not-valid-json\"`)
+		require.Contains(t, lines[6], `"callId":"call_dup"`)
+		require.Contains(t, lines[6], `"text":""`)
+		require.Contains(t, lines[9], `"callId":"call_dup"`)
+		require.Contains(t, lines[9], `"text":"round2_read_result"`)
+		require.NotContains(t, string(req.sessionJSONL), "call_orphan")
+	})
+}
+
+// TestWBDecodeRejectsTrailingData guards the two non-HTTP decode sites: a CLI event
+// line and a tool_calls.arguments string must each hold exactly one JSON value.
+// Accepting only the first value would let `{...} garbage` pass as a valid completion
+// event and would silently rewrite historical tool arguments.
+func TestWBDecodeRejectsTrailingData(t *testing.T) {
+	t.Run("arguments with trailing garbage falls back to _raw", func(t *testing.T) {
+		var nodes []map[string]any
+		wbEmitDeferToolPair(func(node map[string]any) { nodes = append(nodes, node) }, "call_1", "read", `{"path":"a.txt"} garbage`, "out")
+		require.Len(t, nodes, 2)
+		args, ok := nodes[0]["arguments"].(string)
+		require.True(t, ok)
+		require.Contains(t, args, `_raw`)
+		require.Contains(t, args, `a.txt`)
+	})
+
+	t.Run("completion line with trailing garbage is not a completion event", func(t *testing.T) {
+		p := wbTestSpawn(t, "__FAKE__:echo")
+		_, _ = io.Copy(io.Discard, p.stdout)
+		require.NoError(t, p.Wait())
+		_ = p.stdout.Close()
+		p.stdout = io.NopCloser(strings.NewReader(`{"type":"result","subtype":"success","result":"ok"} garbage` + "\n"))
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		_, err := wbConsumeCLI(context.Background(), c, p, wbInbound{Model: "glm-5.3-flash"}, "", time.Now())
+		require.ErrorContains(t, err, wbErrStreamNoCompletion)
+		require.Equal(t, 502, recorder.Code)
+	})
+
+	t.Run("assistant tool_use line with trailing garbage is not a tool handoff", func(t *testing.T) {
+		p := wbTestSpawn(t, "__FAKE__:echo")
+		_, _ = io.Copy(io.Discard, p.stdout)
+		require.NoError(t, p.Wait())
+		_ = p.stdout.Close()
+		line := `{"type":"assistant","message":{"id":"m_noise","content":[{"type":"tool_use","id":"call_read","name":"mcp__wb__read","input":{}}]}} stray`
+		p.stdout = io.NopCloser(strings.NewReader(line + "\n"))
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		req := wbInbound{Model: "glm-5.3-flash", clientTools: map[string]bool{"read": true}}
+		_, err := wbConsumeCLI(context.Background(), c, p, req, "", time.Now())
+		require.ErrorContains(t, err, wbErrStreamNoCompletion)
+		require.Equal(t, 502, recorder.Code)
+		require.NotContains(t, recorder.Body.String(), "tool_calls")
+	})
+}
+
+// TestWBDecodeSingleJSONValueContract pins the single-value contract at the decoder
+// itself: exactly one JSON value with nothing after it but whitespace, and numbers
+// kept as their original literal so big integers survive the round trip.
+func TestWBDecodeSingleJSONValueContract(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{"object with trailing whitespace", "{\"a\":1} \t\r\n", ""},
+		{"object then garbage", `{"a":1} garbage`, "unexpected trailing JSON"},
+		{"two consecutive values", `{"a":1}{"b":2}`, "unexpected trailing JSON"},
+		{"non-object top level string", `"just a string"`, "cannot unmarshal"},
+		{"non-object top level array", `[1,2]`, "cannot unmarshal"},
+		{"truncated object", `{"a":1`, "unexpected EOF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var obj map[string]any
+			err := wbDecodeSingleJSONValue([]byte(tc.raw), &obj)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+
+	t.Run("big integer keeps its literal", func(t *testing.T) {
+		var obj map[string]any
+		require.NoError(t, wbDecodeSingleJSONValue([]byte(`{"usage":{"input_tokens":9007199254740993}}`), &obj))
+		usage, ok := obj["usage"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, json.Number("9007199254740993"), usage["input_tokens"])
 	})
 }

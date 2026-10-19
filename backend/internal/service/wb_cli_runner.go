@@ -5,14 +5,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -23,12 +27,20 @@ const (
 	wbCLIEnvEnterpriseID = "CODEBUDDY_ENTERPRISE_ID"
 	wbCLIEnvInternet     = "CODEBUDDY_INTERNET_ENVIRONMENT"
 	wbCLIEnvInternetVal  = "internal"
+	wbCLIEnvConfigDir    = "CODEBUDDY_CONFIG_DIR"
 	wbCLIEnvPath         = "PATH"
+	// wbCLIEnvServerPort pins the child's web-ui listener to a port we own.
+	// Left unset, every child draws from the CLI's shared pool
+	// (web-ui-port.json, 4 slots); once concurrent cold starts exhaust it the CLI
+	// exits with rc=0 and no output at all — no EADDRINUSE, no stderr — which
+	// surfaces upstream only as WB_STREAM_NO_COMPLETION.
+	wbCLIEnvServerPort = "SERVER__PORT"
 )
 
 var (
 	wbCLIKillGrace      = 3 * time.Second
 	wbSignalProcessHook = wbSignalProcess
+	wbWriteFileHook     = os.WriteFile
 )
 
 var wbDefaultProbe = func(path string) bool { return wbProbeContext(context.Background(), path) }
@@ -36,7 +48,7 @@ var wbProbeContext = func(parent context.Context, path string) bool {
 	ctx, cancel := context.WithTimeout(parent, wbCLIProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--version")
-	cmd.Env = wbCLIEnv(path, "", "")
+	cmd.Env = wbCLIEnv(path, "", "", "")
 	cmd.Dir = filepath.Join(os.TempDir(), wbCLIWorkDirName)
 	if os.MkdirAll(cmd.Dir, 0o700) != nil {
 		return false
@@ -116,14 +128,132 @@ func resolveWBCLIWithProbe(ctx context.Context, accountPath string, probe func(s
 	return "", fmt.Errorf("%s: CLI 未安装", wbErrCLINotFound)
 }
 
-func wbCLIEnv(path, token, enterprise string) []string {
-	return []string{wbCLIEnvToken + "=" + token, wbCLIEnvEnterpriseID + "=" + enterprise,
+func wbCLIEnv(path, token, enterprise, port string) []string {
+	env := []string{wbCLIEnvToken + "=" + token, wbCLIEnvEnterpriseID + "=" + enterprise,
 		wbCLIEnvInternet + "=" + wbCLIEnvInternetVal,
+		wbCLIEnvConfigDir + "=" + wbCLIHomeDir(),
 		"PATH=" + filepath.Dir(path) + string(os.PathListSeparator) + os.Getenv("PATH")}
+	if port != "" {
+		env = append(env, wbCLIEnvServerPort+"="+port)
+	}
+	return env
+}
+
+var wbPortMu sync.Mutex
+var wbPortTaken = map[int]struct{}{}
+
+// wbReservePort asks the kernel for a free loopback port and marks it taken for
+// this gateway, so two concurrent spawns never receive the same port number.
+// The registry only excludes collisions between our own spawns — it cannot stop
+// an unrelated process from grabbing the port in the window between Close and
+// the child's bind.
+func wbReservePort() (int, error) {
+	wbPortMu.Lock()
+	defer wbPortMu.Unlock()
+	for attempt := 0; attempt < 32; attempt++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		if _, taken := wbPortTaken[port]; taken {
+			continue
+		}
+		wbPortTaken[port] = struct{}{}
+		return port, nil
+	}
+	return 0, fmt.Errorf("wb CLI 无法分配空闲端口")
+}
+
+func wbReleasePort(port int) {
+	if port == 0 {
+		return
+	}
+	wbPortMu.Lock()
+	delete(wbPortTaken, port)
+	wbPortMu.Unlock()
+}
+
+func wbCLIHomeDir() string {
+	if custom := strings.TrimSpace(os.Getenv(wbCLIEnvConfigDir)); custom != "" {
+		return custom
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".codebuddy")
+	}
+	if u, err := user.Current(); err == nil && u != nil && u.HomeDir != "" {
+		return filepath.Join(u.HomeDir, ".codebuddy")
+	}
+	return filepath.Join(os.TempDir(), ".codebuddy")
+}
+
+func wbDJB2Base36(s string) string {
+	var h uint32 = 5381
+	for _, r := range s {
+		h = ((h << 5) + h) + uint32(r)
+	}
+	return strconv.FormatUint(uint64(h), 36)
+}
+
+func wbCompressWorkDir(workDir string) string {
+	resolved, err := filepath.EvalSymlinks(workDir)
+	if err != nil || resolved == "" {
+		resolved = filepath.Clean(workDir)
+	}
+	var b strings.Builder
+	prevDash := false
+	for _, r := range resolved {
+		if r == '/' || r == '\\' || r == ':' || r == '-' {
+			if !prevDash && b.Len() > 0 {
+				b.WriteByte('-')
+				prevDash = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevDash = false
+	}
+	cleaned := strings.Trim(b.String(), "-")
+	if cleaned == "" {
+		cleaned = "root"
+	}
+	if len(cleaned) <= 255 {
+		return cleaned
+	}
+	prefix := cleaned[:180]
+	for len(prefix) > 0 && !utf8.ValidString(prefix) {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return strings.TrimRight(prefix, "-") + "-" + wbDJB2Base36(resolved)
+}
+
+func wbSessionFilePath(workDir, sessionID string) string {
+	return filepath.Join(wbCLIHomeDir(), "projects", wbCompressWorkDir(workDir), sessionID+".jsonl")
+}
+
+func wbWriteSessionFile(sessionPath string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(sessionPath), 0o700); err != nil {
+		return err
+	}
+	tmpPath := sessionPath + ".tmp"
+	if err := wbWriteFileHook(tmpPath, data, 0o600); err != nil {
+		_ = os.Remove(tmpPath)
+		_ = os.Remove(sessionPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, sessionPath); err != nil {
+		_ = os.Remove(tmpPath)
+		_ = os.Remove(sessionPath)
+		return err
+	}
+	return nil
 }
 
 type wbSpawnConfig struct {
 	CliPath, Model, Prompt, Token, EnterpriseID, MCPConfigPath, AllowedTools string
+	ResumeSessionID                                                          string
+	SessionJSONL                                                             []byte
 }
 
 // A bounded, synchronized stderr tail avoids races and unbounded upstream output retention.
@@ -147,19 +277,44 @@ func (b *wbStderrBuffer) Write(p []byte) (int, error) {
 func (b *wbStderrBuffer) String() string { b.mu.Lock(); defer b.mu.Unlock(); return string(b.data) }
 
 type wbCLIProcess struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	stderr   *wbStderrBuffer
-	prompt   string
-	done     chan struct{}
-	waitErr  error
-	killed   atomic.Bool
-	killDone chan struct{}
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	stdout      io.ReadCloser
+	stderr      *wbStderrBuffer
+	prompt      string
+	sessionPath string
+	done        chan struct{}
+	waitErr     error
+	killed      atomic.Bool
+	killDone    chan struct{}
+	port        int
 }
 
 func spawnWBCLIProcess(s wbSpawnConfig) (*wbCLIProcess, error) {
-	argv := []string{"-p", "-", "--model", s.Model, "--output-format", "stream-json", "--include-partial-messages"}
+	workDir := filepath.Join(os.TempDir(), wbCLIWorkDirName)
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		return nil, err
+	}
+	port, err := wbReservePort()
+	if err != nil {
+		return nil, err
+	}
+	portKept := false
+	defer func() {
+		if !portKept {
+			wbReleasePort(port)
+		}
+	}()
+	argv := []string{"-p", "-", "--model", s.Model, "--output-format", "stream-json", "--include-partial-messages",
+		"--port", strconv.Itoa(port)}
+	var sessionPath string
+	if s.ResumeSessionID != "" && len(s.SessionJSONL) > 0 {
+		sessionPath = wbSessionFilePath(workDir, s.ResumeSessionID)
+		if err := wbWriteSessionFile(sessionPath, s.SessionJSONL); err != nil {
+			return nil, err
+		}
+		argv = append(argv, "--resume", s.ResumeSessionID)
+	}
 	// Remove builtins except the MCP discovery meta-tools when MCP tools are configured:
 	// with bypassPermissions the --allowedTools whitelist does NOT block builtins (real-machine evidence),
 	// and --tools "" kills ToolSearch/DeferExecuteTool. When no MCP tools are configured, pass --tools ""
@@ -172,26 +327,32 @@ func spawnWBCLIProcess(s wbSpawnConfig) (*wbCLIProcess, error) {
 	if s.AllowedTools != "" {
 		for _, name := range strings.Split(s.AllowedTools, ",") {
 			if !strings.HasPrefix(name, "mcp__wb__") || strings.ContainsAny(name, "*? []\t\r\n") {
+				if sessionPath != "" {
+					_ = os.Remove(sessionPath)
+				}
 				return nil, fmt.Errorf("invalid wb tool allowlist")
 			}
 		}
 		argv = append(argv, "--allowedTools", s.AllowedTools, "--permission-mode", "bypassPermissions")
 	}
 	cmd := exec.Command(s.CliPath, argv...)
-	cmd.Dir = filepath.Join(os.TempDir(), wbCLIWorkDirName)
-	if err := os.MkdirAll(cmd.Dir, 0o700); err != nil {
-		return nil, err
-	}
-	cmd.Env = wbCLIEnv(s.CliPath, s.Token, s.EnterpriseID)
+	cmd.Dir = workDir
+	cmd.Env = wbCLIEnv(s.CliPath, s.Token, s.EnterpriseID, strconv.Itoa(port))
 	wbPrepareProcess(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if sessionPath != "" {
+			_ = os.Remove(sessionPath)
+		}
 		return nil, err
 	}
 	// Own the pipe: Cmd.Wait must not close unread stdout while the scanner drains it.
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
+		if sessionPath != "" {
+			_ = os.Remove(sessionPath)
+		}
 		return nil, err
 	}
 	cmd.Stdout = writer
@@ -201,11 +362,22 @@ func spawnWBCLIProcess(s wbSpawnConfig) (*wbCLIProcess, error) {
 		_ = stdin.Close()
 		_ = reader.Close()
 		_ = writer.Close()
+		if sessionPath != "" {
+			_ = os.Remove(sessionPath)
+		}
 		return nil, fmt.Errorf("无法启动 wb CLI: %s", maskSecret(err.Error(), s.Token))
 	}
 	_ = writer.Close()
-	p := &wbCLIProcess{cmd: cmd, stdin: stdin, stdout: reader, stderr: stderr, prompt: s.Prompt, done: make(chan struct{}), killDone: make(chan struct{})}
-	go func() { p.waitErr = cmd.Wait(); close(p.done) }()
+	p := &wbCLIProcess{cmd: cmd, stdin: stdin, stdout: reader, stderr: stderr, prompt: s.Prompt, sessionPath: sessionPath, port: port, done: make(chan struct{}), killDone: make(chan struct{})}
+	portKept = true
+	go func() {
+		p.waitErr = cmd.Wait()
+		if p.sessionPath != "" {
+			_ = os.Remove(p.sessionPath)
+		}
+		wbReleasePort(p.port)
+		close(p.done)
+	}()
 	return p, nil
 }
 
@@ -242,6 +414,9 @@ func (p *wbCLIProcess) Kill() {
 	_ = wbSignalProcessHook(p.cmd, true)
 	_ = p.stdin.Close()
 	_ = p.stdout.Close()
+	if p.sessionPath != "" {
+		_ = os.Remove(p.sessionPath)
+	}
 }
 func (p *wbCLIProcess) Wait() error { <-p.done; return p.waitErr }
 func (p *wbCLIProcess) ExitCode() int {

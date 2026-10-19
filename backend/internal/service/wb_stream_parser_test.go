@@ -66,25 +66,25 @@ func TestWBMessageScope(t *testing.T) {
 		require.False(t, ok)
 		require.True(t, a.CheckFulltext("AAAABBBB"))
 	})
-		t.Run("partial prefix duplicate and tool round", func(t *testing.T) {
-			a := newWbStreamAccumulator()
-			a.StartMessage("m1")
-			a.OnTextDelta("hello ")
-			// Thinking-only or tool_use-only partial assistant frame (empty text) must not poison seen[m1].
-			_, ok := a.Assistant("m1", "")
-			require.False(t, ok)
-			x, ok := a.Assistant("m1", "hello world")
-			require.True(t, ok)
-			require.Equal(t, "world", x)
-			_, ok = a.Assistant("m1", "hello world")
-			require.False(t, ok)
-			a.StartMessage("m2")
-			a.OnTextDelta(" answer")
-			_, ok = a.Assistant("m2", " answer")
-			require.False(t, ok)
-			require.Equal(t, "hello world answer", a.RequestText())
-			require.True(t, a.CheckFulltext("hello world answer"))
-		})
+	t.Run("partial prefix duplicate and tool round", func(t *testing.T) {
+		a := newWbStreamAccumulator()
+		a.StartMessage("m1")
+		a.OnTextDelta("hello ")
+		// Thinking-only or tool_use-only partial assistant frame (empty text) must not poison seen[m1].
+		_, ok := a.Assistant("m1", "")
+		require.False(t, ok)
+		x, ok := a.Assistant("m1", "hello world")
+		require.True(t, ok)
+		require.Equal(t, "world", x)
+		_, ok = a.Assistant("m1", "hello world")
+		require.False(t, ok)
+		a.StartMessage("m2")
+		a.OnTextDelta(" answer")
+		_, ok = a.Assistant("m2", " answer")
+		require.False(t, ok)
+		require.Equal(t, "hello world answer", a.RequestText())
+		require.True(t, a.CheckFulltext("hello world answer"))
+	})
 	t.Run("distinct message IDs may carry equal text", func(t *testing.T) {
 		a := newWbStreamAccumulator()
 		a.Assistant("a", "same")
@@ -115,22 +115,22 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Contains(t, buildWbTerminalFrame(wbUsage{}), `"prompt_tokens":0`)
 	require.Equal(t, "data: [DONE]\n\n", wbDoneFrame)
 
-		af := classifyWBLine(
-			wbTestObject(t, `{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":5,"output_tokens":3},"content":[{"type":"tool_use","id":"c_meta","name":"ToolSearch","input":{"tool_names":["mcp__wb__read"]}},{"type":"tool_use","id":"c_other_ns","name":"mcp__other__read","input":{}},{"type":"tool_use","id":"c_undeclared","name":"mcp__wb__bash","input":{}},{"type":"tool_use","id":"c_srv","name":"mcp__wb__echo","input":{"text":"x"}},{"type":"tool_use","id":"c_defer_srv","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__echo","params":{"text":"x"}}},{"type":"tool_use","id":"c_defer_undecl","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__bash","params":{}}},{"type":"tool_use","id":"c_cli","name":"mcp__wb__read","input":{"path":"a.go"}},{"type":"tool_use","id":"c_defer_cli","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__get_local_weather","params":{"city":"Shenzhen"}}}]}}`),
-			map[string]bool{"read": true, "get_local_weather": true},
-		)
-		require.Equal(t, wbLineAssistant, af.kind)
-		require.Equal(t, wbUsage{5, 3, 0, 0, false}, af.usage)
-		require.Len(t, af.toolCalls, 2)
-		require.Equal(t, WBToolCall{ID: "c_cli", Name: "read", Arguments: `{"path":"a.go"}`}, af.toolCalls[0])
-		require.Equal(t, WBToolCall{ID: "c_defer_cli", Name: "get_local_weather", Arguments: `{"city":"Shenzhen"}`}, af.toolCalls[1])
-		acc := newWbStreamAccumulator()
-		acc.AddClientToolCalls(af.toolCalls)
-		acc.AddClientToolCalls(af.toolCalls)
-		require.Len(t, acc.ClientToolCalls(), 2)
-		require.Contains(t, buildWbToolCallsFrame(af.toolCalls), `"name":"read"`)
-		require.Contains(t, buildWbToolCallsFrame(af.toolCalls), `"name":"get_local_weather"`)
-		require.Contains(t, buildWbToolCallsTerminalFrame(af.usage), `"finish_reason":"tool_calls"`)
+	af := classifyWBLine(
+		wbTestObject(t, `{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":5,"output_tokens":3},"content":[{"type":"tool_use","id":"c_meta","name":"ToolSearch","input":{"tool_names":["mcp__wb__read"]}},{"type":"tool_use","id":"c_other_ns","name":"mcp__other__read","input":{}},{"type":"tool_use","id":"c_undeclared","name":"mcp__wb__bash","input":{}},{"type":"tool_use","id":"c_srv","name":"mcp__wb__echo","input":{"text":"x"}},{"type":"tool_use","id":"c_defer_srv","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__echo","params":{"text":"x"}}},{"type":"tool_use","id":"c_defer_undecl","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__bash","params":{}}},{"type":"tool_use","id":"c_cli","name":"mcp__wb__read","input":{"path":"a.go"}},{"type":"tool_use","id":"c_defer_cli","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__get_local_weather","params":{"city":"Shenzhen"}}}]}}`),
+		map[string]bool{"read": true, "get_local_weather": true},
+	)
+	require.Equal(t, wbLineAssistant, af.kind)
+	require.Equal(t, wbUsage{5, 3, 0, 0, false}, af.usage)
+	require.Len(t, af.toolCalls, 2)
+	require.Equal(t, WBToolCall{ID: "c_cli", Name: "read", Arguments: `{"path":"a.go"}`}, af.toolCalls[0])
+	require.Equal(t, WBToolCall{ID: "c_defer_cli", Name: "get_local_weather", Arguments: `{"city":"Shenzhen"}`}, af.toolCalls[1])
+	acc := newWbStreamAccumulator()
+	acc.AddClientToolCalls(af.toolCalls)
+	acc.AddClientToolCalls(af.toolCalls)
+	require.Len(t, acc.ClientToolCalls(), 2)
+	require.Contains(t, buildWbToolCallsFrame(af.toolCalls), `"name":"read"`)
+	require.Contains(t, buildWbToolCallsFrame(af.toolCalls), `"name":"get_local_weather"`)
+	require.Contains(t, buildWbToolCallsTerminalFrame(af.usage), `"finish_reason":"tool_calls"`)
 
 	// Missing ID fallback avoids colliding with real IDs (e.g. call_2) and preserves distinct anonymous calls.
 	accCollision := newWbStreamAccumulator()
