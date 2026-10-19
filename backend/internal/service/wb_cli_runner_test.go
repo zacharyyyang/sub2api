@@ -69,11 +69,28 @@ func TestMain(m *testing.M) {
 						fmt.Println(`{"type":"assistant","message":{"id":"m_search","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Let me read the file."}]}}`)
 						fmt.Println(`{"type":"assistant","message":{"id":"m_search","usage":{"input_tokens":10,"output_tokens":4},"content":[{"type":"tool_use","id":"call_search_1","name":"ToolSearch","input":{"tool_names":["mcp__wb__read"]}}]}}`)
 						fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_tool"}}}`)
-						fmt.Println(`{"type":"assistant","message":{"id":"m_tool","usage":{"input_tokens":15,"output_tokens":6},"content":[{"type":"tool_use","id":"call_read_1","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","params":{"path":"README.md","id_num":9007199254740993}}}]}}`)
-						time.Sleep(time.Minute)
-					fmt.Println(`{"type":"assistant","message":{"id":"m_after","content":[{"type":"text","text":"SHOULD_NOT_APPEAR"}]}}`)
-					os.Exit(0)
-				}
+							fmt.Println(`{"type":"assistant","message":{"id":"m_tool","usage":{"input_tokens":15,"output_tokens":6},"content":[{"type":"tool_use","id":"call_read_1","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","params":{"path":"README.md","id_num":9007199254740993}}}]}}`)
+							time.Sleep(time.Minute)
+						fmt.Println(`{"type":"assistant","message":{"id":"m_after","content":[{"type":"text","text":"SHOULD_NOT_APPEAR"}]}}`)
+						os.Exit(0)
+					}
+					if tok == "__FAKE__:round2-tool-result" {
+						for i := 1; i < len(os.Args); i++ {
+							if os.Args[i] == "--mcp-config" || os.Args[i] == "--allowedTools" {
+								fmt.Fprintf(os.Stderr, "unexpected tool config in round 2 after single client tool suppression: %v\n", os.Args[1:])
+								os.Exit(3)
+							}
+						}
+						if !strings.Contains(string(body), "Tool[call_read_1]: # Sub2API") {
+							fmt.Fprintf(os.Stderr, "missing folded tool result in prompt: %s\n", string(body))
+							os.Exit(4)
+						}
+						fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_r2"}}}`)
+						fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"README Title: Sub2API"}}}`)
+						fmt.Println(`{"type":"assistant","message":{"id":"m_r2","usage":{"input_tokens":20,"output_tokens":5},"content":[{"type":"text","text":"README Title: Sub2API"}]}}`)
+						fmt.Println(`{"type":"result","subtype":"success","result":"README Title: Sub2API","usage":{"input_tokens":20,"output_tokens":5}}`)
+						os.Exit(0)
+					}
 		wd, _ := os.Getwd()
 		fmt.Printf("ARGS:%q\nENV:%s\nCWD:%s\nPROMPT:%s\n", os.Args[1:], strings.Join(os.Environ(), "|"), wd, body)
 		os.Exit(0)

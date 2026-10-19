@@ -300,11 +300,37 @@ func TestWBForwardPermissive(t *testing.T) {
 		require.Len(t, tcs, 1)
 		tc := tcs[0].(map[string]any)
 		require.Equal(t, "call_read_1", tc["id"])
-		fn := tc["function"].(map[string]any)
-		require.Equal(t, "read", fn["name"])
-		wbRequireToolArgs(t, fn["arguments"].(string))
-	})
+			fn := tc["function"].(map[string]any)
+			require.Equal(t, "read", fn["name"])
+			wbRequireToolArgs(t, fn["arguments"].(string))
+		})
+
+		t.Run("round 2 trailing tool result suppresses executed client tool and converges to stop", func(t *testing.T) {
+			body := []byte(`{"model":"glm-5.3-flash","stream":false,"messages":[{"role":"user","content":"read README"},{"role":"assistant","content":"Let me read the file.","tool_calls":[{"id":"call_read_1","type":"function","function":{"name":"read","arguments":"{\"path\":\"README.md\"}"}}]},{"role":"tool","tool_call_id":"call_read_1","content":"# Sub2API"}],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"}}}}}]}`)
+			account := &Account{Credentials: map[string]any{"cli_path": wbFakeCLI(t)}}
+			s := &OpenAIGatewayService{wbTokenProvider: wbRound2ToolResultTokenSource{}}
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			result, err := s.forwardWBChatCompletions(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.Equal(t, 200, recorder.Code)
+			require.Equal(t, 20, result.Usage.InputTokens)
+			require.Equal(t, 5, result.Usage.OutputTokens)
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &resp))
+			choice := resp["choices"].([]any)[0].(map[string]any)
+			require.Equal(t, "stop", choice["finish_reason"])
+			msg := choice["message"].(map[string]any)
+			require.Equal(t, "README Title: Sub2API", msg["content"])
+		})
+	}
+
+type wbRound2ToolResultTokenSource struct{}
+
+func (wbRound2ToolResultTokenSource) GetAccessToken(context.Context, *Account) (string, error) {
+	return "__FAKE__:round2-tool-result", nil
 }
+func (wbRound2ToolResultTokenSource) InvalidateAccountCache(int64) {}
 
 func wbRequireToolArgs(t *testing.T, raw string) {
 	t.Helper()

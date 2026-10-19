@@ -127,6 +127,7 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 	if err != nil {
 		return req, "", nil, err
 	}
+	tools = wbFilterExecutedClientTools(tools, wbTrailingExecutedTools(req.Messages))
 	req.clientTools = make(map[string]bool, len(tools))
 	for _, tool := range tools {
 		if !tool.ServerExecuted {
@@ -134,6 +135,80 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 		}
 	}
 	return req, strings.Join(parts, "\n\n"), tools, nil
+}
+
+// wbTrailingExecutedTools 检查入站消息末尾是否为连续的 tool / function 消息段。
+// 若是，则提取该尾部连续段涉及的全部工具名集合（自身 name + 通过 tool_call_id 反查前序
+// assistant.tool_calls 的 function.name）。若无法识别任何工具名，返回 nil（退化为不剔除）。
+func wbTrailingExecutedTools(messages []wbInboundMessage) map[string]bool {
+	n := len(messages)
+	if n == 0 {
+		return nil
+	}
+	tailStart := n
+	for tailStart > 0 {
+		role := messages[tailStart-1].Role
+		if role != "tool" && role != "function" {
+			break
+		}
+		tailStart--
+	}
+	if tailStart == n {
+		return nil
+	}
+	callIDToName := make(map[string]string)
+	for i := 0; i < tailStart; i++ {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		for _, tc := range messages[i].ToolCalls {
+			id := strings.TrimSpace(tc.ID)
+			fnName := strings.TrimSpace(tc.Function.Name)
+			if id != "" && fnName != "" {
+				callIDToName[id] = fnName
+			}
+		}
+	}
+	var executed map[string]bool
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if executed == nil {
+			executed = make(map[string]bool)
+		}
+		executed[name] = true
+	}
+	for i := tailStart; i < n; i++ {
+		msg := messages[i]
+		if msg.Name != nil {
+			add(*msg.Name)
+		}
+		if msg.ToolCallID != nil {
+			if fnName := callIDToName[strings.TrimSpace(*msg.ToolCallID)]; fnName != "" {
+				add(fnName)
+			}
+		}
+	}
+	return executed
+}
+
+// wbFilterExecutedClientTools 从本轮 tools 中剔除刚在入站末尾连续 tool/function 段执行完的
+// B 平面客户端工具（ServerExecuted == false），防止无状态 CLI 在结果回传轮次重复调用同一工具；
+// A 平面服务端工具（ServerExecuted == true）与未执行的其余客户端工具保留不变。
+func wbFilterExecutedClientTools(tools []WBBridgeTool, executed map[string]bool) []WBBridgeTool {
+	if len(tools) == 0 || len(executed) == 0 {
+		return tools
+	}
+	filtered := make([]WBBridgeTool, 0, len(tools))
+	for _, tool := range tools {
+		if !tool.ServerExecuted && executed[tool.Name] {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
 }
 
 // wbFoldInboundMessage 将单条入站消息折叠为确定性 prompt segment（每条消息

@@ -348,3 +348,57 @@ func TestWBDiscoveryCancellation(t *testing.T) {
 		})
 	}
 }
+
+// TestWBInboundTrailingToolResultSuppressesClientTools：验证方案 A —— 当入站消息末尾为连续
+// role:"tool" / role:"function" 消息段时，自动从本轮 tools 与 req.clientTools 中剔除该段
+// 已执行的 B 平面客户端工具，A 平面服务端工具与未执行的其余客户端工具保留；当后续追加
+// 新 user 消息后，工具自动恢复。
+func TestWBInboundTrailingToolResultSuppressesClientTools(t *testing.T) {
+	t.Run("single trailing tool_call_id suppresses matching client tool to empty", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":"Checking...","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"temp\":\"23C\"}"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+		req, prompt, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Empty(t, tools)
+		require.Empty(t, req.clientTools)
+		require.Contains(t, prompt, `Assistant: Checking...`+"\n"+`[tool_calls: id=call_1 name=get_weather arguments={"city":"Shanghai"}]`)
+		require.Contains(t, prompt, `Tool[call_1]: {"temp":"23C"}`)
+	})
+
+	t.Run("multiple contiguous trailing tool messages suppress all executed client tools while keeping unexecuted and server echo", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"read and weather"},{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}},{"id":"c2","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"BJ\"}"}},{"id":"c3","type":"function","function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]},{"role":"tool","tool_call_id":"c1","content":"file content"},{"role":"tool","tool_call_id":"c2","content":"sunny"},{"role":"tool","tool_call_id":"c3","content":"ECHO: hi"}],"tools":[{"type":"function","function":{"name":"echo","description":"E","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"read","parameters":{"type":"object"}}},{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}},{"type":"function","function":{"name":"write","parameters":{"type":"object"}}}]}`
+		req, _, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Len(t, tools, 2)
+		require.Equal(t, "echo", tools[0].Name)
+		require.True(t, tools[0].ServerExecuted)
+		require.Equal(t, "write", tools[1].Name)
+		require.False(t, tools[1].ServerExecuted)
+		require.Equal(t, map[string]bool{"write": true}, req.clientTools)
+	})
+
+	t.Run("legacy function role or tool with explicit name suppresses by name", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather"},{"role":"function","name":"get_weather","content":"25C"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+		req, _, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Empty(t, tools)
+		require.Empty(t, req.clientTools)
+	})
+
+	t.Run("unmatched tool_call_id without name degrades gracefully without dropping tools", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather"},{"role":"tool","tool_call_id":"orphan_id","content":"25C"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+		req, _, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Len(t, tools, 1)
+		require.Equal(t, "get_weather", tools[0].Name)
+		require.True(t, req.clientTools["get_weather"])
+	})
+
+	t.Run("subsequent user message restores previously executed client tool", func(t *testing.T) {
+		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"23C"},{"role":"assistant","content":"It is 23C."},{"role":"user","content":"Now check Beijing"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
+		req, _, tools, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.Len(t, tools, 1)
+		require.Equal(t, "get_weather", tools[0].Name)
+		require.True(t, req.clientTools["get_weather"])
+	})
+}
