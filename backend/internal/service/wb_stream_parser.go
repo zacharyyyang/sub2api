@@ -236,8 +236,24 @@ func extractWBClientToolCalls(content any, allowlist map[string]bool) []WBToolCa
 			continue
 		}
 		rawName := frameStr(m, "name")
-		if rawName == "" || rawName == "ToolSearch" || rawName == "DeferExecuteTool" {
+		if rawName == "" || rawName == "ToolSearch" {
 			continue
+		}
+		rawInput := m["input"]
+		if rawName == "DeferExecuteTool" {
+			inMap, ok := rawInput.(map[string]any)
+			if !ok {
+				continue
+			}
+			rawName = frameStr(inMap, "toolName")
+			if rawName == "" {
+				rawName = frameStr(inMap, "tool_name")
+			}
+			if params, exists := inMap["params"]; exists {
+				rawInput = params
+			} else {
+				rawInput = inMap["arguments"]
+			}
 		}
 		if !strings.HasPrefix(rawName, "mcp__wb__") {
 			continue
@@ -250,8 +266,12 @@ func extractWBClientToolCalls(content any, allowlist map[string]bool) []WBToolCa
 			continue
 		}
 		args := "{}"
-		if input, exists := m["input"]; exists && input != nil {
-			if b, err := json.Marshal(input); err == nil && len(b) > 0 && string(b) != "null" {
+		if rawInput != nil {
+			if s, ok := rawInput.(string); ok {
+				if strings.TrimSpace(s) != "" {
+					args = s
+				}
+			} else if b, err := json.Marshal(rawInput); err == nil && len(b) > 0 && string(b) != "null" {
 				args = string(b)
 			}
 		}
@@ -342,6 +362,9 @@ func (a *wbStreamAccumulator) OnTextDelta(s string)                { a.delta += 
 func (a *wbStreamAccumulator) OnThinkingDelta(_ string)            {}
 func (a *wbStreamAccumulator) OnAssistant(s string) (string, bool) { return a.Assistant("", s) }
 func (a *wbStreamAccumulator) Assistant(id, full string) (string, bool) {
+	if full == "" {
+		return "", false
+	}
 	if id != "" && a.seen[id] {
 		return "", false
 	}

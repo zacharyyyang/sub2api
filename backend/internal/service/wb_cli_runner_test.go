@@ -64,10 +64,13 @@ func TestMain(m *testing.M) {
 						fmt.Fprintf(os.Stderr, "missing client tool injection: err=%v allowed=%q cfg=%s\n", cfgErr, allowed, string(cfgBytes))
 						os.Exit(2)
 					}
-					fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_tool"}}}`)
-					fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Let me read the file."}}}`)
-					fmt.Println(`{"type":"assistant","message":{"id":"m_tool","usage":{"input_tokens":15,"output_tokens":6},"content":[{"type":"text","text":"Let me read the file."},{"type":"tool_use","id":"call_read_1","name":"mcp__wb__read","input":{"path":"README.md","id_num":9007199254740993}}]}}`)
-					time.Sleep(time.Minute)
+						fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_search"}}}`)
+						fmt.Println(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Let me read the file."}}}`)
+						fmt.Println(`{"type":"assistant","message":{"id":"m_search","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"Let me read the file."}]}}`)
+						fmt.Println(`{"type":"assistant","message":{"id":"m_search","usage":{"input_tokens":10,"output_tokens":4},"content":[{"type":"tool_use","id":"call_search_1","name":"ToolSearch","input":{"tool_names":["mcp__wb__read"]}}]}}`)
+						fmt.Println(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m_tool"}}}`)
+						fmt.Println(`{"type":"assistant","message":{"id":"m_tool","usage":{"input_tokens":15,"output_tokens":6},"content":[{"type":"tool_use","id":"call_read_1","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","params":{"path":"README.md","id_num":9007199254740993}}}]}}`)
+						time.Sleep(time.Minute)
 					fmt.Println(`{"type":"assistant","message":{"id":"m_after","content":[{"type":"text","text":"SHOULD_NOT_APPEAR"}]}}`)
 					os.Exit(0)
 				}
