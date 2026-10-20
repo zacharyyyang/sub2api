@@ -71,6 +71,34 @@ var wbCommonInstallDirs = func() []string {
 }
 var wbDiscoveryCache sync.Map
 
+// wbDiscoveryNow 让负缓存的过期判定可以在测试里确定性地推进，
+// 不必靠真实 sleep 去赌时序窗口。
+var wbDiscoveryNow = time.Now
+
+// wbDiscoveryNegativeTTL：未命中的探测结果只负缓存这么久。候选集固定不变
+// （账号 cli_path / env / 安装位 / PATH），永久负缓存会让「先报 CLI 未安装、
+// 事后装上 CLI」的部署永远无法自愈，只能重启进程。命中结果不设过期——
+// 已发现的路径不会因时间失效，真失效时探测本身会在 spawn 阶段报错。
+var wbDiscoveryNegativeTTL = 30 * time.Second
+
+type wbDiscoveryEntry struct {
+	path      string
+	expiresAt time.Time
+}
+
+// wbDiscoveryLookup 读缓存；负缓存条目过期即作废，重新走探测。
+func wbDiscoveryLookup(key string) (path string, hit bool) {
+	v, ok := wbDiscoveryCache.Load(key)
+	if !ok {
+		return "", false
+	}
+	e := v.(wbDiscoveryEntry)
+	if e.path == "" && !e.expiresAt.IsZero() && wbDiscoveryNow().After(e.expiresAt) {
+		return "", false
+	}
+	return e.path, true
+}
+
 func wbCLICandidates(accountPath string) []string {
 	candidates := []string{accountPath, os.Getenv("WORKBUDDY_CLI_PATH")}
 	for _, dir := range wbCommonInstallDirs() {
@@ -97,8 +125,8 @@ func resolveWBCLIWithProbe(ctx context.Context, accountPath string, probe func(s
 	}
 	candidates := wbCLICandidates(accountPath)
 	key := strings.Join(candidates, "\x00")
-	if v, ok := wbDiscoveryCache.Load(key); ok {
-		if p := v.(string); p != "" {
+	if p, ok := wbDiscoveryLookup(key); ok {
+		if p != "" {
 			return p, nil
 		}
 		return "", fmt.Errorf("%s: CLI 未安装", wbErrCLINotFound)
@@ -117,14 +145,16 @@ func resolveWBCLIWithProbe(ctx context.Context, accountPath string, probe func(s
 			if err != nil {
 				return "", err
 			}
-			wbDiscoveryCache.Store(key, absolute)
+			wbDiscoveryCache.Store(key, wbDiscoveryEntry{path: absolute})
 			return absolute, nil
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	wbDiscoveryCache.Store(key, "")
+	// 未命中只负缓存一段时间：候选集不变时，永久负缓存会让事后安装的 CLI
+	// 永远探测不到，只能重启进程。
+	wbDiscoveryCache.Store(key, wbDiscoveryEntry{expiresAt: wbDiscoveryNow().Add(wbDiscoveryNegativeTTL)})
 	return "", fmt.Errorf("%s: CLI 未安装", wbErrCLINotFound)
 }
 
@@ -175,8 +205,15 @@ func wbReleasePort(port int) {
 	wbPortMu.Unlock()
 }
 
+// wbCLIHomeDir 返回父进程合成会话文件、子进程 --resume 查找共用的配置目录。
+// 自定义的相对路径必须在这里转成绝对路径：子进程的 cwd 是临时工作目录
+// （spawnWBCLIProcess 的 cmd.Dir），父进程的 cwd 是网关进程目录，同一个相对值
+// 在两侧指向不同目录，会话文件就会合成到子进程找不到的地方。
 func wbCLIHomeDir() string {
 	if custom := strings.TrimSpace(os.Getenv(wbCLIEnvConfigDir)); custom != "" {
+		if abs, err := filepath.Abs(custom); err == nil {
+			return abs
+		}
 		return custom
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {

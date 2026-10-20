@@ -272,6 +272,61 @@ func TestWBDiscovery(t *testing.T) {
 	require.True(t, wbDefaultProbe(wbFakeCLI(t)))
 }
 
+// 未命中的探测结果只能负缓存一段有限时间：事后装上 CLI 的部署必须能自愈，
+// 不能靠重启网关进程。
+func TestWBDiscoveryNegativeCacheExpires(t *testing.T) {
+	oldProbe, oldDirs, oldTTL, oldNow := wbProbeCLI, wbCommonInstallDirs, wbDiscoveryNegativeTTL, wbDiscoveryNow
+	t.Cleanup(func() {
+		wbProbeCLI, wbCommonInstallDirs, wbDiscoveryNegativeTTL, wbDiscoveryNow = oldProbe, oldDirs, oldTTL, oldNow
+		wbDiscoveryCache = sync.Map{}
+	})
+	wbDiscoveryCache = sync.Map{}
+	wbCommonInstallDirs = func() []string { return nil }
+	// 必须给一个非空候选，否则探测链根本没东西可探（calls 恒为 0）。
+	t.Setenv("WORKBUDDY_CLI_PATH", filepath.Join(t.TempDir(), "codebuddy"))
+	// 条目过期时间在写入那一刻就按注入时钟算定：基准时刻判「未过期」，拔快后
+	// 判「已过期」——两个方向都不依赖真实耗时，也就没有调度暂停造成的抖动窗口。
+	wbDiscoveryNegativeTTL = 150 * time.Millisecond
+	base := time.Now()
+	wbDiscoveryNow = func() time.Time { return base }
+
+	installed := false
+	calls := 0
+	wbProbeCLI = func(string) bool { calls++; return installed }
+	_, err := resolveWBCLI("")
+	require.ErrorContains(t, err, wbErrCLINotFound)
+	require.GreaterOrEqual(t, calls, 1, "未命中首探必须至少探测一次候选")
+	n := calls
+
+	// TTL 内：命中负缓存，不再探测。
+	_, err = resolveWBCLI("")
+	require.ErrorContains(t, err, wbErrCLINotFound)
+	require.Equal(t, n, calls, "negative caching must suppress probing within TTL")
+
+	// TTL 到期后 CLI 已装好：必须重新探测并命中，不靠重启进程。
+	installed = true
+	wbDiscoveryNow = func() time.Time { return base.Add(time.Second) }
+	_, err = resolveWBCLI("")
+	require.NoError(t, err)
+	require.Greater(t, calls, n, "expired negative entry must re-probe")
+}
+
+// 自定义配置目录是相对路径时，父进程合成会话文件与子进程 --resume 必须落到
+// 同一个绝对目录（子进程 cwd 是临时工作目录，直接传相对值会分叉）。
+func TestWBCLIHomeDirAbsolutizesRelativeConfigDir(t *testing.T) {
+	oldWD, err := os.Getwd()
+	require.NoError(t, err)
+	base := t.TempDir()
+	require.NoError(t, os.Chdir(base))
+	t.Cleanup(func() { require.NoError(t, os.Chdir(oldWD)) })
+
+	t.Setenv("CODEBUDDY_CONFIG_DIR", filepath.Join("nested", "cfg"))
+	got := wbCLIHomeDir()
+	require.True(t, filepath.IsAbs(got), "relative CODEBUDDY_CONFIG_DIR must be absolutized, got %q", got)
+	require.Equal(t, filepath.Join(base, "nested", "cfg"), got)
+	require.Contains(t, wbCLIEnv("", "", "", ""), "CODEBUDDY_CONFIG_DIR="+got)
+}
+
 func TestWBSpawnBoundary(t *testing.T) {
 	t.Setenv("WB_SHOULD_NOT_LEAK", "secret-host-value")
 	p := wbTestSpawn(t, "__FAKE__:echo")
