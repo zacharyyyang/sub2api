@@ -297,17 +297,23 @@ scan:
 			accumulator.StartMessage(frame.messageID)
 		case wbLineTextDelta:
 			accumulator.OnTextDelta(frame.text)
-			emit(buildWbChunkFrame(frame.text, ""))
+			emit(buildWbChunkFrame(frame.text, "", !emitted))
 		case wbLineThinkingDelta:
-			emit(buildWbChunkFrame("", frame.thinking))
+			emit(buildWbChunkFrame("", frame.thinking, !emitted))
 		case wbLineAssistant:
 			if frame.usage.InputTokens > 0 || frame.usage.OutputTokens > 0 || frame.usage.hasCache {
 				lastUsage = frame.usage
 			}
 			if suffix, ok := accumulator.Assistant(frame.messageID, frame.text); ok {
-				emit(buildWbChunkFrame(suffix, ""))
+				emit(buildWbChunkFrame(suffix, "", !emitted))
 			}
 			if len(frame.toolCalls) > 0 {
+				// A 平面调用由 CLI 经桥执行，交接一终止就永远不执行且不返回结果。
+				// 同一事件里 A/B 两平面并存时无法既执行 A 又透出 B（A 的结果模型
+				// 再也看不到），只能显式拒绝，不静默丢弃。
+				if frame.hasServerToolUse {
+					return fail(502, wbErrMixedToolPlanes, "assistant event mixes server-executed and client-executed tool calls")
+				}
 				accumulator.AddClientToolCalls(frame.toolCalls)
 				process.Kill()
 				break scan
@@ -332,31 +338,7 @@ scan:
 			if text := accumulator.RequestText(); text != "" {
 				contentVal = text
 			}
-			items := make([]any, len(calls))
-			for i, call := range calls {
-				items[i] = gin.H{
-					"id":   call.ID,
-					"type": "function",
-					"function": gin.H{
-						"name":      call.Name,
-						"arguments": call.Arguments,
-					},
-				}
-			}
-			c.JSON(http.StatusOK, gin.H{
-				"object": "chat.completion",
-				"model":  req.Model,
-				"choices": []any{gin.H{
-					"index": 0,
-					"message": gin.H{
-						"role":       "assistant",
-						"content":    contentVal,
-						"tool_calls": items,
-					},
-					"finish_reason": "tool_calls",
-				}},
-				"usage": wbUsageToOpenAI(lastUsage),
-			})
+			c.JSON(http.StatusOK, wbToolCallsPayload(req.Model, calls, contentVal, lastUsage))
 		}
 		return &OpenAIForwardResult{
 			Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,
@@ -393,9 +375,7 @@ scan:
 		emit(buildWbTerminalFrame(completion.usage))
 		emit(wbDoneFrame)
 	} else {
-		c.JSON(http.StatusOK, gin.H{"object": "chat.completion", "model": req.Model,
-			"choices": []any{gin.H{"index": 0, "message": gin.H{"role": "assistant", "content": completion.text}, "finish_reason": "stop"}},
-			"usage":   wbUsageToOpenAI(completion.usage)})
+		c.JSON(http.StatusOK, wbTextPayload(req.Model, completion.text, completion.usage))
 	}
 	u := completion.usage
 	return &OpenAIForwardResult{Model: req.Model, Stream: req.Stream, Duration: time.Since(started), FirstTokenMs: firstToken,

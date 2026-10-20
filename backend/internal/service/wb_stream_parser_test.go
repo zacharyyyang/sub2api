@@ -108,10 +108,13 @@ func TestWBFramesAndUsage(t *testing.T) {
 	frame := buildWbTerminalFrame(f.usage)
 	require.Contains(t, frame, `"finish_reason":"stop"`)
 	require.Contains(t, frame, `"total_tokens":12`)
-	require.Contains(t, buildWbChunkFrame("hi", ""), `"content":"hi"`)
-	require.Contains(t, buildWbChunkFrame("", "reason"), `"reasoning_content":"reason"`)
+	require.Contains(t, buildWbChunkFrame("hi", "", false), `"content":"hi"`)
+	require.NotContains(t, buildWbChunkFrame("hi", "", false), `"role"`)
+	// 首帧带 role:"assistant"，后续帧只带内容（OpenAI 兼容契约）。
+	require.Contains(t, buildWbChunkFrame("hi", "", true), `"role":"assistant"`)
+	require.Contains(t, buildWbChunkFrame("", "reason", false), `"reasoning_content":"reason"`)
 	require.True(t, strings.HasSuffix(frame, "\n\n"))
-	require.Equal(t, "", buildWbChunkFrame("", ""))
+	require.Equal(t, "", buildWbChunkFrame("", "", true))
 	require.Contains(t, buildWbTerminalFrame(wbUsage{}), `"prompt_tokens":0`)
 	require.Equal(t, "data: [DONE]\n\n", wbDoneFrame)
 
@@ -124,6 +127,22 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Len(t, af.toolCalls, 2)
 	require.Equal(t, WBToolCall{ID: "c_cli", Name: "read", Arguments: `{"path":"a.go"}`}, af.toolCalls[0])
 	require.Equal(t, WBToolCall{ID: "c_defer_cli", Name: "get_local_weather", Arguments: `{"city":"Shenzhen"}`}, af.toolCalls[1])
+	// 同一事件里还带 A 平面调用（c_srv / c_defer_srv）⇒ 网关必须能识别出混合平面并显式拒绝。
+	require.True(t, af.hasServerToolUse, "event carrying both planes must set hasServerToolUse")
+	// 纯 B 平面事件不置标志，正常交接。
+	bf := classifyWBLine(
+		wbTestObject(t, `{"type":"assistant","message":{"id":"m2","content":[{"type":"tool_use","id":"c_only_cli","name":"mcp__wb__read","input":{"path":"b.go"}}]}}`),
+		map[string]bool{"read": true},
+	)
+	require.Len(t, bf.toolCalls, 1)
+	require.False(t, bf.hasServerToolUse)
+	// 纯 A 平面事件既不透出调用，也不置混合标志。
+	sf := classifyWBLine(
+		wbTestObject(t, `{"type":"assistant","message":{"id":"m3","content":[{"type":"tool_use","id":"c_only_srv","name":"mcp__wb__echo","input":{"text":"x"}}]}}`),
+		map[string]bool{"read": true},
+	)
+	require.Empty(t, sf.toolCalls)
+	require.True(t, sf.hasServerToolUse)
 	acc := newWbStreamAccumulator()
 	acc.AddClientToolCalls(af.toolCalls)
 	acc.AddClientToolCalls(af.toolCalls)
@@ -146,6 +165,62 @@ func TestWBFramesAndUsage(t *testing.T) {
 	require.Equal(t, "call_2", gotCalls[0].ID)
 	require.Equal(t, "call_1", gotCalls[1].ID)
 	require.Equal(t, "call_3", gotCalls[2].ID)
+}
+
+// TestWBToolUseNameAndArgumentsNormalization 钉住 B 平面交接前的归一化：空白工具名
+// 一律不当作可交接调用（否则 " " 这类名字会进到客户端）；参数分两条路径——`input` /
+// `params` 是参数「值」，字符串就编成 JSON 字符串；只有 DeferExecuteTool 的
+// `arguments` 是已编码参数串，要先证明是合法 JSON 再压缩。混用两条路径会把
+// `params:"{}"` 这类字符串值悄悄重解释成对象，改变调用方收到的参数类型。
+func TestWBToolUseNameAndArgumentsNormalization(t *testing.T) {
+	for _, name := range []string{"", " ", "   "} {
+		raw := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"` + name + `","input":{}}]}}`
+		f := classifyWBLine(wbTestObject(t, raw), map[string]bool{"read": true})
+		require.Equal(t, wbLineAssistant, f.kind)
+		require.Empty(t, f.toolCalls, "blank tool name %q must not be handed off", name)
+	}
+
+	// 直呼形态：input 是参数值，对象按对象编码。
+	direct := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1","name":"mcp__wb__read","input":{"path":"a.go"}}]}}`), map[string]bool{"read": true})
+	require.Len(t, direct.toolCalls, 1)
+	require.Equal(t, `{"path":"a.go"}`, direct.toolCalls[0].Arguments)
+
+	// 直呼形态的字符串 input 是字符串值，不得被当成已编码 JSON 重解释。
+	directStr := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c1b","name":"mcp__wb__read","input":" { \"path\" : \"a.go\" } "}]}}`), map[string]bool{"read": true})
+	require.Len(t, directStr.toolCalls, 1)
+	require.Equal(t, `" { \"path\" : \"a.go\" } "`, directStr.toolCalls[0].Arguments)
+
+	// 包装形态：arguments 是已编码参数串，校验后压缩。
+	valid := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c2","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","arguments":" { \"path\" : \"a.go\" } "}}]}}`), map[string]bool{"read": true})
+	require.Len(t, valid.toolCalls, 1)
+	require.Equal(t, `{"path":"a.go"}`, valid.toolCalls[0].Arguments)
+
+	bad := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c3","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","arguments":"not-json"}}]}}`), map[string]bool{"read": true})
+	require.Equal(t, wbLineError, bad.kind)
+	require.Equal(t, wbErrCLIFailed, bad.code)
+
+	// params 是值：null 与缺失都回退空对象；字符串原样编码成 JSON 字符串。
+	missing := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c4","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","params":null}}]}}`), map[string]bool{"read": true})
+	require.Len(t, missing.toolCalls, 1)
+	require.Equal(t, "{}", missing.toolCalls[0].Arguments)
+
+	strParams := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c5","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__read","params":"{}"}}]}}`), map[string]bool{"read": true})
+	require.Len(t, strParams.toolCalls, 1)
+	require.Equal(t, `"{}"`, strParams.toolCalls[0].Arguments)
+
+	// 包装形态的空白主字段必须退回 tool_name，否则合法别名被空白串挡住、调用被静默丢弃。
+	// 制表符用 JSON 转义 `\t` 写入：直接塞字面控制符进字符串是非法的 JSON。
+	for _, blank := range []string{"", " ", `\t`} {
+		raw := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c6","name":"DeferExecuteTool","input":{"toolName":"` + blank + `","tool_name":"mcp__wb__read","params":{"path":"a.go"}}}]}}`
+		f := classifyWBLine(wbTestObject(t, raw), map[string]bool{"read": true})
+		require.Len(t, f.toolCalls, 1, "blank toolName %q must fall back to tool_name", blank)
+		require.Equal(t, "read", f.toolCalls[0].Name)
+	}
+
+	// 有效主字段优先：tool_name 存在也不覆盖非空 toolName。
+	preferMain := classifyWBLine(wbTestObject(t, `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c7","name":"DeferExecuteTool","input":{"toolName":"mcp__wb__bash","tool_name":"mcp__wb__read","params":{}}}]}}`), map[string]bool{"read": true, "bash": true})
+	require.Len(t, preferMain.toolCalls, 1)
+	require.Equal(t, "bash", preferMain.toolCalls[0].Name)
 }
 
 func TestWBConsumeCLI_FulltextMismatchRetainsUsage(t *testing.T) {
