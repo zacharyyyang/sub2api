@@ -474,6 +474,28 @@ func TestWBInboundResumeSessionSynthesisAndFullToolRetention(t *testing.T) {
 		require.Contains(t, lines2[4], `"text":"ok"`)
 	})
 
+	t.Run("history opening with assistant tool_calls and no system prefix still gets a user node", func(t *testing.T) {
+		// 没有 system 前缀时，链首第一条就是 assistant(tool_calls)：其后的 tool 回执
+		// 在配对时已被 consumed 标记，不会走孤立回执分支，所以 user 节点必须由
+		// 工具调用这一侧保证——否则整条链没有 user 节点，CLI 拒绝续接。
+		raw := `{"model":"glm-5.3-flash","messages":[` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"c1","content":"file body"}` +
+			`],"tools":[{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]}`
+		req, _, _, err := wbParseInbound([]byte(raw))
+		require.NoError(t, err)
+		require.NotEmpty(t, req.sessionJSONL)
+		lines := strings.Split(strings.TrimSpace(string(req.sessionJSONL)), "\n")
+		require.Len(t, lines, 5)
+		var first map[string]any
+		require.NoError(t, json.Unmarshal([]byte(lines[0]), &first))
+		require.Equal(t, "message", first["type"])
+		require.Equal(t, "user", first["role"])
+		require.Contains(t, lines[0], `"text":"Continue."`)
+		require.Contains(t, lines[3], `"callId":"c1"`)
+		require.Contains(t, lines[4], `"text":"file body"`)
+	})
+
 	t.Run("trailing user message after tool history becomes stdin resumePrompt and is excluded from jsonl", func(t *testing.T) {
 		raw := `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"weather in Shanghai?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Shanghai\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"23C"},{"role":"assistant","content":"It is 23C."},{"role":"user","content":"Now check Beijing"}],"tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object"}}}]}`
 		req, _, tools, err := wbParseInbound([]byte(raw))

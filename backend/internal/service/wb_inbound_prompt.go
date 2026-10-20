@@ -144,13 +144,155 @@ func wbEmitToolSearchPreload(emitNode func(map[string]any), tools []WBBridgeTool
 	})
 }
 
+// wbResumeWriter 承载会话合成过程中的共享状态：节点原子追加、系统前缀的一次性
+// 注入，以及 ToolSearch 预热的一次性开关。各角色分支只描述自己该写哪些节点。
+type wbResumeWriter struct {
+	emitNode    func(map[string]any)
+	tools       []WBBridgeTool
+	sysPrefix   string
+	sysInjected bool
+	hasUserNode bool
+	preloaded   bool
+}
+
+// flushSysPrefix 在没有 user 节点可承接系统前缀时，把它单独落成一个 user 节点。
+func (w *wbResumeWriter) flushSysPrefix() {
+	if w.sysInjected || w.sysPrefix == "" {
+		return
+	}
+	w.emitNode(map[string]any{
+		"type":    "message",
+		"role":    "user",
+		"content": []map[string]any{{"type": "input_text", "text": strings.TrimSpace(w.sysPrefix)}},
+		"status":  "completed",
+	})
+	w.sysInjected = true
+	w.hasUserNode = true
+}
+
+// writeUser 写一个 user 节点；首个 user 节点承接系统前缀。
+func (w *wbResumeWriter) writeUser(text string) {
+	if !w.sysInjected && w.sysPrefix != "" {
+		text = w.sysPrefix + text
+		w.sysInjected = true
+	}
+	w.hasUserNode = true
+	w.emitNode(map[string]any{
+		"type":    "message",
+		"role":    "user",
+		"content": []map[string]any{{"type": "input_text", "text": text}},
+		"status":  "completed",
+	})
+}
+
+// ensureUserNode 保证链上至少有一个 user 节点——孤立的 tool 回执没有父轮次时，
+// CLI 会拒绝续接该会话。
+func (w *wbResumeWriter) ensureUserNode() {
+	if w.hasUserNode {
+		return
+	}
+	if w.sysPrefix != "" {
+		w.flushSysPrefix()
+		if w.hasUserNode {
+			return
+		}
+	}
+	w.writeUser("Continue.")
+}
+
+// preload 在首个工具节点前注入 ToolSearch 预热对，让后续 DeferExecuteTool 调用
+// 能解析到已声明的工具。
+func (w *wbResumeWriter) preload() { wbEmitToolSearchPreload(w.emitNode, w.tools, &w.preloaded) }
+
+// writeAssistant 写 assistant 文本节点，并把该消息声明的每个 tool_call 与其回执
+// 配成 function_call / function_call_result 对。
+func (w *wbResumeWriter) writeAssistant(messages []wbInboundMessage, idx, limit int, consumed map[int]bool) {
+	msg := messages[idx]
+	w.flushSysPrefix()
+	if len(msg.ToolCalls) > 0 {
+		// 工具调用节点必须挂在 user 轮次之后：历史直接以 assistant(tool_calls)
+		// 开头、且无 system 前缀时，flushSysPrefix 不产生任何节点，紧随的
+		// tool 回执里既有配对记录又会被 consumed 早退，合成链就没有 user 节点。
+		w.ensureUserNode()
+	}
+	text := ""
+	if msg.Content != nil {
+		text = *msg.Content
+	}
+	if text != "" || len(msg.ToolCalls) == 0 {
+		w.emitNode(map[string]any{
+			"type":    "message",
+			"role":    "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": text}},
+			"status":  "completed",
+		})
+	}
+	if len(msg.ToolCalls) == 0 {
+		return
+	}
+	w.preload()
+	for tcIdx, tc := range msg.ToolCalls {
+		callID := strings.TrimSpace(tc.ID)
+		if callID == "" {
+			callID = fmt.Sprintf("call_%d_%d", idx+1, tcIdx+1)
+		}
+		fnName := strings.TrimSpace(tc.Function.Name)
+		if fnName == "" {
+			fnName = "unknown"
+		}
+		w.emitDeferPair(callID, fnName, tc.Function.Arguments, wbMatchToolResult(messages, limit, idx, callID, fnName, consumed))
+	}
+}
+
+// writeToolResult 写一个未被前面 assistant 配走的 tool / function 回执节点。
+func (w *wbResumeWriter) writeToolResult(messages []wbInboundMessage, idx int, consumed map[int]bool) {
+	if consumed[idx] {
+		return
+	}
+	msg := messages[idx]
+	w.ensureUserNode()
+	w.preload()
+	callID := fmt.Sprintf("call_orphan_%d", idx+1)
+	if msg.ToolCallID != nil && strings.TrimSpace(*msg.ToolCallID) != "" {
+		callID = strings.TrimSpace(*msg.ToolCallID)
+	}
+	fnName := "unknown"
+	if msg.Name != nil && strings.TrimSpace(*msg.Name) != "" {
+		fnName = strings.TrimSpace(*msg.Name)
+	}
+	content := ""
+	if msg.Content != nil {
+		content = *msg.Content
+	}
+	w.emitDeferPair(callID, fnName, "", content)
+}
+
+func (w *wbResumeWriter) emitDeferPair(callID, fnName, rawArgs, outText string) {
+	wbEmitDeferToolPair(w.emitNode, callID, fnName, rawArgs, outText)
+}
+
+// wbResumeSysPrefix 把全部 system 消息拼成交接给会话的系统前缀。
+func wbResumeSysPrefix(messages []wbInboundMessage) string {
+	var sysParts []string
+	for _, msg := range messages {
+		if msg.Role == "system" && msg.Content != nil && strings.TrimSpace(*msg.Content) != "" {
+			sysParts = append(sysParts, *msg.Content)
+		}
+	}
+	if len(sysParts) == 0 {
+		return ""
+	}
+	return strings.Join(sysParts, "\n\n") + "\n\n"
+}
+
 func wbBuildResumeSession(messages []wbInboundMessage, tools []WBBridgeTool) (string, []byte, string) {
 	sessionID := uuid.NewString()
 	now := time.Now().UTC()
 	step := 0
 	var buf bytes.Buffer
 	var prevID any
-	emitNode := func(node map[string]any) {
+	w := &wbResumeWriter{tools: tools, sysPrefix: wbResumeSysPrefix(messages)}
+	w.emitNode = func(node map[string]any) {
 		id := uuid.NewString()
 		node["id"] = id
 		node["parentId"] = prevID
@@ -163,17 +305,6 @@ func wbBuildResumeSession(messages []wbInboundMessage, tools []WBBridgeTool) (st
 		buf.WriteByte('\n')
 	}
 
-	var sysParts []string
-	for _, msg := range messages {
-		if msg.Role == "system" && msg.Content != nil && strings.TrimSpace(*msg.Content) != "" {
-			sysParts = append(sysParts, *msg.Content)
-		}
-	}
-	sysPrefix := ""
-	if len(sysParts) > 0 {
-		sysPrefix = strings.Join(sysParts, "\n\n") + "\n\n"
-	}
-
 	limit := len(messages)
 	resumePrompt := wbResumeContinuePrompt
 	if limit > 0 && messages[limit-1].Role == "user" && messages[limit-1].Content != nil {
@@ -181,105 +312,23 @@ func wbBuildResumeSession(messages []wbInboundMessage, tools []WBBridgeTool) (st
 		limit--
 	}
 
-	consumedToolIdx := make(map[int]bool)
-	preloadedTools := false
-	sysInjected := false
-	hasUserNode := false
+	consumed := make(map[int]bool)
 	for idx := 0; idx < limit; idx++ {
-		msg := messages[idx]
-		switch msg.Role {
-		case "system":
-			continue
+		switch messages[idx].Role {
 		case "user":
 			text := ""
-			if msg.Content != nil {
-				text = *msg.Content
+			if messages[idx].Content != nil {
+				text = *messages[idx].Content
 			}
-			if !sysInjected && sysPrefix != "" {
-				text = sysPrefix + text
-				sysInjected = true
-			}
-			hasUserNode = true
-			emitNode(map[string]any{
-				"type":    "message",
-				"role":    "user",
-				"content": []map[string]any{{"type": "input_text", "text": text}},
-				"status":  "completed",
-			})
+			w.writeUser(text)
 		case "assistant":
-			if !sysInjected && sysPrefix != "" {
-				emitNode(map[string]any{
-					"type":    "message",
-					"role":    "user",
-					"content": []map[string]any{{"type": "input_text", "text": strings.TrimSpace(sysPrefix)}},
-					"status":  "completed",
-				})
-				sysInjected = true
-				hasUserNode = true
-			}
-			text := ""
-			if msg.Content != nil {
-				text = *msg.Content
-			}
-			if text != "" || len(msg.ToolCalls) == 0 {
-				emitNode(map[string]any{
-					"type":    "message",
-					"role":    "assistant",
-					"content": []map[string]any{{"type": "output_text", "text": text}},
-					"status":  "completed",
-				})
-			}
-			if len(msg.ToolCalls) > 0 {
-				wbEmitToolSearchPreload(emitNode, tools, &preloadedTools)
-				for tcIdx, tc := range msg.ToolCalls {
-					callID := strings.TrimSpace(tc.ID)
-					if callID == "" {
-						callID = fmt.Sprintf("call_%d_%d", idx+1, tcIdx+1)
-					}
-					fnName := strings.TrimSpace(tc.Function.Name)
-					if fnName == "" {
-						fnName = "unknown"
-					}
-					outText := wbMatchToolResult(messages, limit, idx, callID, fnName, consumedToolIdx)
-					wbEmitDeferToolPair(emitNode, callID, fnName, tc.Function.Arguments, outText)
-				}
-			}
+			w.writeAssistant(messages, idx, limit, consumed)
 		case "tool", "function":
-			if consumedToolIdx[idx] {
-				continue
-			}
-			if !hasUserNode {
-				seed := "Continue."
-				if sysPrefix != "" {
-					seed = strings.TrimSpace(sysPrefix)
-					sysInjected = true
-				}
-				emitNode(map[string]any{
-					"type":    "message",
-					"role":    "user",
-					"content": []map[string]any{{"type": "input_text", "text": seed}},
-					"status":  "completed",
-				})
-				hasUserNode = true
-			}
-			wbEmitToolSearchPreload(emitNode, tools, &preloadedTools)
-			callID := fmt.Sprintf("call_orphan_%d", idx+1)
-			if msg.ToolCallID != nil && strings.TrimSpace(*msg.ToolCallID) != "" {
-				callID = strings.TrimSpace(*msg.ToolCallID)
-			}
-			fnName := "unknown"
-			if msg.Name != nil && strings.TrimSpace(*msg.Name) != "" {
-				fnName = strings.TrimSpace(*msg.Name)
-			}
-			content := ""
-			if msg.Content != nil {
-				content = *msg.Content
-			}
-			wbEmitDeferToolPair(emitNode, callID, fnName, "", content)
+			w.writeToolResult(messages, idx, consumed)
 		}
 	}
-	if !sysInjected && sysPrefix != "" {
-		resumePrompt = sysPrefix + resumePrompt
+	if !w.sysInjected && w.sysPrefix != "" {
+		resumePrompt = w.sysPrefix + resumePrompt
 	}
 	if strings.TrimSpace(resumePrompt) == "" {
 		resumePrompt = wbResumeContinuePrompt
