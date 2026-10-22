@@ -1505,6 +1505,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, groupID int64, model string) (CompositeModelOwnership, error) {
 	model = strings.TrimSpace(model)
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	if s == nil || s.accountRepo == nil || groupID <= 0 || model == "" {
 		return CompositeModelOwnership{}, nil
 	}
@@ -1551,15 +1554,25 @@ func (s *GatewayService) resolveCompositeModelOwnership(ctx context.Context, gro
 }
 
 func explicitModelMappingClaims(account Account, model string) bool {
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	if account.Credentials == nil || model == "" {
 		return false
 	}
 	raw := stringMappingFromRaw(account.Credentials["model_mapping"])
-	if account.Platform == PlatformAntigravity {
-		return antigravityRawMappingClaimsModel(raw, model)
+	if account.Platform == PlatformAntigravity && antigravityRawMappingClaimsModel(raw, model) {
+		return true
 	}
-	mapped, ok := raw[model]
-	return ok && strings.TrimSpace(mapped) != ""
+	if mapped, ok := raw[model]; ok && strings.TrimSpace(mapped) != "" {
+		return true
+	}
+	for k, v := range raw {
+		if kCanonical, _ := NormalizeInboundModelID(k); kCanonical == model && strings.TrimSpace(v) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // GetCompositeRouteModels returns public IDs from enabled exact composite routes.

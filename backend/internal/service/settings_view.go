@@ -647,6 +647,13 @@ func DefaultOpenAIImagesOAuthUnavailableCooldownSettings() *OpenAIImagesOAuthUna
 // 白名单只用后缀通配符（matchModelPattern 语义），因此每个路径都需要显式列出前缀。
 // 精确匹配 "claude-sonnet-5" + 后缀 "-*" 与 "@*"，可覆盖直连/Vertex 场景，同时避免误伤
 // 未来可能出现的 "claude-sonnet-50" 或 "claude-sonnet-5.x" 之类的意外命名。
+// DefaultBetaPolicySettings 返回默认的 Beta 策略配置
+// 默认规则：
+//  1. 过滤 fast-mode-2026-02-01（全账号范围）
+//  2. 过滤 context-1m-2025-08-07，但对支持 1M 上下文的 Claude 模型放行（Fable 5/5.1、
+//     Mythos、Opus 4.6/4.7/4.8/5/5.5、Sonnet 4.6/5/5.5）。白名单同时覆盖三种上游路径的
+//     model ID 形态：直连 Anthropic API、Vertex AI 归一化后的 "@YYYYMMDD" 形式，以及
+//     AWS Bedrock 跨区域推理前缀（us./eu./apac./jp./au./us-gov./global. 或 "anthropic."）。
 func DefaultBetaPolicySettings() *BetaPolicySettings {
 	return &BetaPolicySettings{
 		Rules: []BetaPolicyRule{
@@ -656,30 +663,55 @@ func DefaultBetaPolicySettings() *BetaPolicySettings {
 				Scope:     BetaPolicyScopeAll,
 			},
 			{
-				BetaToken: "context-1m-2025-08-07",
-				Action:    BetaPolicyActionPass,
-				Scope:     BetaPolicyScopeAll,
-				ModelWhitelist: []string{
-					// 直连 Anthropic API（客户端请求 model 原样）
-					"claude-sonnet-5",
-					"claude-sonnet-5-*",
-					// Vertex AI 走 normalizeVertexAnthropicModelID 后 "@YYYYMMDD" 格式
-					"claude-sonnet-5@*",
-					// AWS Bedrock cross-region inference profile
-					"us.anthropic.claude-sonnet-5*",
-					"eu.anthropic.claude-sonnet-5*",
-					"apac.anthropic.claude-sonnet-5*",
-					"jp.anthropic.claude-sonnet-5*",
-					"au.anthropic.claude-sonnet-5*",
-					"us-gov.anthropic.claude-sonnet-5*",
-					"global.anthropic.claude-sonnet-5*",
-					// AWS Bedrock 无 cross-region 前缀
-					"anthropic.claude-sonnet-5*",
-				},
+				BetaToken:      "context-1m-2025-08-07",
+				Action:         BetaPolicyActionPass,
+				Scope:          BetaPolicyScopeAll,
+				ModelWhitelist: defaultContext1MModelWhitelist(),
 				FallbackAction: BetaPolicyActionFilter,
 			},
 		},
 	}
+}
+
+func defaultContext1MModelWhitelist() []string {
+	families := []string{
+		"claude-fable-5",
+		"claude-mythos",
+		"claude-opus-4-6",
+		"claude-opus-4-7",
+		"claude-opus-4-8",
+		"claude-opus-5",
+		"claude-sonnet-4-6",
+		"claude-sonnet-5",
+	}
+	bedrockPrefixes := []string{
+		"us.anthropic.",
+		"eu.anthropic.",
+		"apac.anthropic.",
+		"jp.anthropic.",
+		"au.anthropic.",
+		"us-gov.anthropic.",
+		"global.anthropic.",
+		"anthropic.",
+	}
+	patterns := make([]string, 0, len(families)*(4+len(bedrockPrefixes)*4))
+	for _, family := range families {
+		patterns = append(patterns,
+			family,
+			family+"-*",
+			family+".*",
+			family+"@*",
+		)
+		for _, bp := range bedrockPrefixes {
+			patterns = append(patterns,
+				bp+family,
+				bp+family+"-*",
+				bp+family+".*",
+				bp+family+":*",
+			)
+		}
+	}
+	return patterns
 }
 
 // OpenAI Fast Policy 策略常量

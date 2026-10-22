@@ -137,25 +137,28 @@ func DefaultHeaders() map[string]string {
 
 // Model 表示一个 Claude 模型
 type Model struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	DisplayName string `json:"display_name"`
-	CreatedAt   string `json:"created_at"`
+	ID            string `json:"id"`
+	Type          string `json:"type"`
+	DisplayName   string `json:"display_name"`
+	CreatedAt     string `json:"created_at"`
+	ContextWindow int    `json:"context_window,omitempty"`
 }
 
 // DefaultModels Claude Code 客户端支持的默认模型列表
 var DefaultModels = []Model{
 	{
-		ID:          "claude-fable-5-1",
-		Type:        "model",
-		DisplayName: "Claude Fable 5.1",
-		CreatedAt:   "2026-09-01T00:00:00Z",
+		ID:            "claude-fable-5-1",
+		Type:          "model",
+		DisplayName:   "Claude Fable 5.1",
+		CreatedAt:     "2026-09-01T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-fable-5",
-		Type:        "model",
-		DisplayName: "Claude Fable 5",
-		CreatedAt:   "2026-06-09T00:00:00Z",
+		ID:            "claude-fable-5",
+		Type:          "model",
+		DisplayName:   "Claude Fable 5",
+		CreatedAt:     "2026-06-09T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
 		ID:          "claude-opus-4-5-20251101",
@@ -164,52 +167,60 @@ var DefaultModels = []Model{
 		CreatedAt:   "2025-11-01T00:00:00Z",
 	},
 	{
-		ID:          "claude-opus-4-6",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.6",
-		CreatedAt:   "2026-02-06T00:00:00Z",
+		ID:            "claude-opus-4-6",
+		Type:          "model",
+		DisplayName:   "Claude Opus 4.6",
+		CreatedAt:     "2026-02-06T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-opus-4-7",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.7",
-		CreatedAt:   "2026-04-17T00:00:00Z",
+		ID:            "claude-opus-4-7",
+		Type:          "model",
+		DisplayName:   "Claude Opus 4.7",
+		CreatedAt:     "2026-04-17T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-opus-4-8",
-		Type:        "model",
-		DisplayName: "Claude Opus 4.8",
-		CreatedAt:   "2026-05-29T00:00:00Z",
+		ID:            "claude-opus-4-8",
+		Type:          "model",
+		DisplayName:   "Claude Opus 4.8",
+		CreatedAt:     "2026-05-29T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-opus-5-5",
-		Type:        "model",
-		DisplayName: "Claude Opus 5.5",
-		CreatedAt:   "2026-09-22T00:00:00Z",
+		ID:            "claude-opus-5-5",
+		Type:          "model",
+		DisplayName:   "Claude Opus 5.5",
+		CreatedAt:     "2026-09-22T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-opus-5",
-		Type:        "model",
-		DisplayName: "Claude Opus 5",
-		CreatedAt:   "2026-07-25T00:00:00Z",
+		ID:            "claude-opus-5",
+		Type:          "model",
+		DisplayName:   "Claude Opus 5",
+		CreatedAt:     "2026-07-25T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-sonnet-5-5",
-		Type:        "model",
-		DisplayName: "Claude Sonnet 5.5",
-		CreatedAt:   "2026-09-28T00:00:00Z",
+		ID:            "claude-sonnet-5-5",
+		Type:          "model",
+		DisplayName:   "Claude Sonnet 5.5",
+		CreatedAt:     "2026-09-28T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-sonnet-5",
-		Type:        "model",
-		DisplayName: "Claude Sonnet 5",
-		CreatedAt:   "2026-07-01T00:00:00Z",
+		ID:            "claude-sonnet-5",
+		Type:          "model",
+		DisplayName:   "Claude Sonnet 5",
+		CreatedAt:     "2026-07-01T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
-		ID:          "claude-sonnet-4-6",
-		Type:        "model",
-		DisplayName: "Claude Sonnet 4.6",
-		CreatedAt:   "2026-02-18T00:00:00Z",
+		ID:            "claude-sonnet-4-6",
+		Type:          "model",
+		DisplayName:   "Claude Sonnet 4.6",
+		CreatedAt:     "2026-02-18T00:00:00Z",
+		ContextWindow: 1000000,
 	},
 	{
 		ID:          "claude-sonnet-4-5-20250929",

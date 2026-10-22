@@ -615,6 +615,11 @@ func stringifyCodexContentText(value any) string {
 }
 
 func normalizeCodexModel(model string) string {
+	// 入站 model 可能带 [1m] 尾缀或 CCD 外壳，先归一再走已知模型映射，
+	// 否则带壳名会落到兜底分支被当成未知模型直传上游。
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return "gpt-5.4"

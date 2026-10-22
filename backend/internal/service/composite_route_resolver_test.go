@@ -480,3 +480,85 @@ func TestCompositeRouteResolverExplicitRoutesCoverBucketTwoProviders(t *testing.
 		})
 	}
 }
+
+func TestCompositeRouteResolver_ShellAnd1MDetectorAndExplicitRename(t *testing.T) {
+	detectorCases := []struct {
+		model        string
+		wantPlatform string
+		wantUpstream string
+	}{
+		{"claude-fable-5-_g_pt-5.4[1m]", PlatformOpenAI, "gpt-5.4[1m]"},
+		{"claude-fable-5-_g_rok-4.20[1m]", PlatformGrok, "grok-4.20[1m]"},
+		{"claude-fable-5-_g_emini-3.1-pro-high[1m]", PlatformGemini, "gemini-3.1-pro-high[1m]"},
+	}
+
+	resolver := NewCompositeRouteResolver(compositeRouteRepoStub{
+		routes: []CompositeModelRoute{
+			{
+				ID:             1,
+				GroupID:        7,
+				PublicModel:    "my-sonnet",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformAnthropic,
+				UpstreamModel:  "claude-sonnet-4-6",
+				Endpoint:       CompositeRouteEndpointMessages,
+				Enabled:        true,
+			},
+			{
+				ID:             2,
+				GroupID:        7,
+				PublicModel:    "my-sonnet-pre1m",
+				MatchType:      CompositeRouteMatchExact,
+				TargetPlatform: PlatformAnthropic,
+				UpstreamModel:  "claude-sonnet-4-6[1m]",
+				Endpoint:       CompositeRouteEndpointMessages,
+				Enabled:        true,
+			},
+		},
+	})
+
+	for _, tc := range detectorCases {
+		plat, ok := DetectModelPlatform(tc.model)
+		require.True(t, ok, tc.model)
+		require.Equal(t, tc.wantPlatform, plat)
+
+		decision, err := resolver.Resolve(context.Background(), 7, tc.model, CompositeRouteEndpointMessages)
+		require.NoError(t, err)
+		require.True(t, decision.Matched)
+		require.Equal(t, CompositeRouteSourceDetector, decision.Source)
+		require.Equal(t, tc.wantPlatform, decision.TargetPlatform)
+		require.Equal(t, tc.wantUpstream, decision.UpstreamModel)
+	}
+
+	for _, pub := range []string{"my-sonnet[1m]", "my-sonnet-pre1m[1m]"} {
+		decision, err := resolver.Resolve(context.Background(), 7, pub, CompositeRouteEndpointMessages)
+		require.NoError(t, err)
+		require.True(t, decision.Matched)
+		require.Equal(t, CompositeRouteSourceExplicit, decision.Source)
+		require.Equal(t, PlatformAnthropic, decision.TargetPlatform)
+		require.Equal(t, "claude-sonnet-4-6[1m]", decision.UpstreamModel)
+	}
+}
+
+func TestExplicitModelMappingClaims_ShellAnd1MEquivalence(t *testing.T) {
+	accBare := Account{
+		Platform:    PlatformOpenAI,
+		Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"}},
+	}
+	require.True(t, explicitModelMappingClaims(accBare, "gpt-5.4[1m]"))
+	require.True(t, explicitModelMappingClaims(accBare, "claude-fable-5-_g_pt-5.4[1m]"))
+
+	accShelledKey := Account{
+		Platform:    PlatformOpenAI,
+		Credentials: map[string]any{"model_mapping": map[string]any{"claude-fable-5-gpt-5.4[1m]": "gpt-5.4"}},
+	}
+	require.True(t, explicitModelMappingClaims(accShelledKey, "gpt-5.4"))
+	require.True(t, explicitModelMappingClaims(accShelledKey, "gpt-5.4[1m]"))
+
+	accAntigravityShelledKey := Account{
+		Platform:    PlatformAntigravity,
+		Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4-6[1m]": "claude-opus-4-6"}},
+	}
+	require.True(t, explicitModelMappingClaims(accAntigravityShelledKey, "claude-opus-4-6"))
+	require.True(t, explicitModelMappingClaims(accAntigravityShelledKey, "claude-opus-4-6[1m]"))
+}

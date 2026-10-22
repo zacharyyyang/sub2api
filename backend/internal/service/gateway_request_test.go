@@ -103,7 +103,7 @@ func TestParseGatewayRequest_AnthropicNormalizesClaudeCodeLongContextModelSuffix
 		{name: "uppercase suffix", model: "claude-opus-4-8[1M]", want: "claude-opus-4-8"},
 		{name: "duplicated suffix", model: "claude-opus-4-8[1M][1m]", want: "claude-opus-4-8"},
 		{name: "suffix in middle", model: "claude-opus-4-8[1m]-preview", want: "claude-opus-4-8[1m]-preview"},
-		{name: "suffix only", model: "[1m]", want: "[1m]"},
+		{name: "suffix only", model: "[1m]", want: ""},
 	}
 
 	for _, tt := range tests {
@@ -119,12 +119,13 @@ func TestParseGatewayRequest_AnthropicNormalizesClaudeCodeLongContextModelSuffix
 	}
 }
 
-func TestParseGatewayRequest_NonAnthropicPreservesClaudeCodeLongContextModelSuffix(t *testing.T) {
+func TestParseGatewayRequest_NonAnthropicNormalizesClaudeCodeLongContextModelSuffix(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-4-8[1m]","input":"hi"}`)
 	parsed, err := ParseGatewayRequest(NewRequestBodyRef(body), "responses")
 	require.NoError(t, err)
-	require.Equal(t, "claude-opus-4-8[1m]", parsed.Model)
-	require.Equal(t, "claude-opus-4-8[1m]", gjson.GetBytes(parsed.Body.Bytes(), "model").String())
+	require.Equal(t, "claude-opus-4-8", parsed.Model)
+	require.True(t, parsed.Context1MRequested)
+	require.Equal(t, "claude-opus-4-8", gjson.GetBytes(parsed.Body.Bytes(), "model").String())
 }
 
 func TestParseGatewayRequest_ResponsesInput(t *testing.T) {
@@ -1694,6 +1695,35 @@ func TestNormalizeGLMOpenAIReasoningEffort(t *testing.T) {
 				return
 			}
 			require.Equal(t, tt.wantValue, gjson.GetBytes(got, tt.wantPath).String())
+		})
+	}
+}
+
+func TestParseGatewayRequest_NormalizesInbound1MAndShellModelID(t *testing.T) {
+	tests := []struct {
+		model         string
+		wantCanonical string
+	}{
+		{model: "claude-opus-4-6[1m]", wantCanonical: "claude-opus-4-6"},
+		{model: "gpt-5.4[1m]", wantCanonical: "gpt-5.4"},
+		{model: "claude-fable-gpt-5.4[1m]", wantCanonical: "gpt-5.4"},
+		{model: "claude-fable-gemini-3-pro-high[1m]", wantCanonical: "gemini-3-pro-high"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			raw := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, tt.model)
+			parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(raw)), domain.PlatformAnthropic)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantCanonical, parsed.Model)
+			require.True(t, parsed.Context1MRequested)
+			require.Equal(t, tt.wantCanonical, gjson.GetBytes(parsed.Body.Bytes(), "model").String())
+
+			parsedAgain, err := ParseGatewayRequest(NewRequestBodyRef(parsed.Body.Bytes()), domain.PlatformAnthropic)
+			require.NoError(t, err)
+			require.Equal(t, tt.wantCanonical, parsedAgain.Model)
+			require.False(t, parsedAgain.Context1MRequested)
+			require.Equal(t, tt.wantCanonical, gjson.GetBytes(parsedAgain.Body.Bytes(), "model").String())
 		})
 	}
 }

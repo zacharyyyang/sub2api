@@ -594,6 +594,11 @@ func (s *ChannelService) IsModelRestricted(ctx context.Context, groupID int64, m
 // 返回映射结果。模型限制检查已移至调度阶段（GatewayService.checkChannelPricingRestriction），
 // restricted 始终返回 false，保留签名兼容性。
 func (s *ChannelService) ResolveChannelMappingAndRestrict(ctx context.Context, groupID *int64, model string) (ChannelMappingResult, bool) {
+	// 兜底归一：入站模型可能带 "[1m]" 后缀或 CCD 外壳 ID，渠道映射按 canonical 查表。
+	// 归一是幂等的，已剥离过的请求不受影响；上下文窗口意图已在 ParseGatewayRequest 记录，此处不丢失。
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	if groupID == nil {
 		return ChannelMappingResult{MappedModel: model}, false
 	}
@@ -609,6 +614,9 @@ func (s *ChannelService) ResolveChannelMappingAndRestrict(ctx context.Context, g
 func resolveMapping(lk *channelLookup, groupID int64, model string) ChannelMappingResult {
 	// lk.channel 来自已装填的缓存，BillingModelSource 已在 populateChannelCache 阶段归一化，
 	// 这里无需重复兜底。
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	result := ChannelMappingResult{
 		MappedModel:        model,
 		ChannelID:          lk.channel.ID,

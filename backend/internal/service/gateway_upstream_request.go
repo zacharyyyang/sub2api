@@ -597,6 +597,7 @@ func (s *GatewayService) computeFinalAnthropicBeta(
 				claude.BetaStructuredOutputs,
 				claude.BetaMidConversationToolChanges,
 				claude.BetaInlineTools,
+				claude.BetaContext1M,
 			} {
 				if containsBetaToken(clientBeta, token) {
 					incomingBetas = append(incomingBetas, token)

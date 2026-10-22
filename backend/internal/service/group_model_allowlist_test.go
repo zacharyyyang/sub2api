@@ -303,3 +303,25 @@ func TestGroupModelAllowlistFilterForListing(t *testing.T) {
 		}
 	})
 }
+
+func TestGroupModelAllowlist_Inbound1MAndShellEquivalence(t *testing.T) {
+	bareAllowlist := GroupModelAllowlist{Enabled: true, Models: []string{"gpt-5.4", "claude-opus-4-6"}}
+	for _, v := range []string{"gpt-5.4[1m]", "claude-fable-5-gpt-5.4", "claude-fable-5-_g_pt-5.4[1m]"} {
+		if !bareAllowlist.Allows(v) {
+			t.Fatalf("expected bare allowlist to allow %q", v)
+		}
+		if got := bareAllowlist.FilterForListing([]string{v}); len(got) != 1 || got[0] != "gpt-5.4" {
+			t.Fatalf("FilterForListing with source %q: got %#v, want [\"gpt-5.4\"]", v, got)
+		}
+	}
+	if !bareAllowlist.Allows("claude-opus-4-6[1m]") {
+		t.Fatalf("expected bare allowlist to allow \"claude-opus-4-6[1m]\"")
+	}
+
+	for _, configured := range []string{"gpt-5.4[1m]", "claude-fable-5-gpt-5.4", "claude-fable-5-_g_pt-5.4[1m]"} {
+		cfg := GroupModelAllowlist{Enabled: true, Models: []string{configured}}
+		if got := cfg.FilterForListing([]string{"gpt-5.4"}); len(got) != 1 || got[0] != configured {
+			t.Fatalf("FilterForListing with allowlist %q against bare source: got %#v, want [%q]", configured, got, configured)
+		}
+	}
+}

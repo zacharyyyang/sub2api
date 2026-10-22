@@ -8,6 +8,11 @@ import (
 )
 
 func NormalizeOpenAICompatRequestedModel(model string) string {
+	// 先剥末尾 [1m] 与 CCD 外壳；上游兼容入口收到的模型名常带壳，不先归一
+	// 会让后续档位拆分与映射拿错基名。
+	if canonical, _ := NormalizeInboundModelID(model); canonical != "" {
+		model = canonical
+	}
 	if openai.IsGPT61SolModelSpelling(model) {
 		return "gpt-6.1-sol"
 	}

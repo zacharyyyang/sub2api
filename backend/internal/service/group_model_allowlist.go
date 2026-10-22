@@ -134,9 +134,14 @@ func groupModelAllowlistCandidates(model string) []string {
 	}
 
 	add(model)
+	canonical, _ := NormalizeInboundModelID(model)
+	add(canonical)
 	add(strings.TrimPrefix(model, "models/"))
+	add(strings.TrimPrefix(canonical, "models/"))
 	add(claude.NormalizeModelID(strings.TrimSuffix(model, "-thinking")))
+	add(claude.NormalizeModelID(strings.TrimSuffix(canonical, "-thinking")))
 	add(NormalizeOpenAICompatRequestedModel(model))
+	add(NormalizeOpenAICompatRequestedModel(canonical))
 	if baseModel, _, ok := splitAntigravityThinkingVariantRequest(model); ok {
 		add(baseModel)
 	}
@@ -209,18 +214,30 @@ func (a GroupModelAllowlist) FilterForListing(source []string) []string {
 // 精确相等、source 通配模式的前缀匹配，以及 Claude 归一化（-thinking 后缀）
 // 后的精确匹配。比较与 Allows 一律大小写不敏感，保证「准入允许 ⇒ 列表可见」。
 func allowlistSourcePatternAllowsModel(patterns []string, model string) bool {
+	canonical, _ := NormalizeInboundModelID(model)
+	if canonical == "" {
+		canonical = model
+	}
 	for _, pattern := range patterns {
-		if strings.EqualFold(pattern, model) {
+		patternCanonical, _ := NormalizeInboundModelID(pattern)
+		if patternCanonical == "" {
+			patternCanonical = pattern
+		}
+		if strings.EqualFold(patternCanonical, canonical) {
 			return true
 		}
-		if strings.HasSuffix(pattern, "*") && strings.HasPrefix(strings.ToLower(model), strings.ToLower(strings.TrimSuffix(pattern, "*"))) {
+		if strings.HasSuffix(patternCanonical, "*") && strings.HasPrefix(strings.ToLower(canonical), strings.ToLower(strings.TrimSuffix(patternCanonical, "*"))) {
 			return true
 		}
 	}
-	normalizedClaudeModel := claude.NormalizeModelID(strings.TrimSuffix(model, "-thinking"))
-	if !strings.EqualFold(normalizedClaudeModel, model) {
+	normalizedClaudeModel := claude.NormalizeModelID(strings.TrimSuffix(canonical, "-thinking"))
+	if !strings.EqualFold(normalizedClaudeModel, canonical) {
 		for _, pattern := range patterns {
-			if strings.EqualFold(pattern, normalizedClaudeModel) {
+			patternCanonical, _ := NormalizeInboundModelID(pattern)
+			if patternCanonical == "" {
+				patternCanonical = pattern
+			}
+			if strings.EqualFold(patternCanonical, normalizedClaudeModel) {
 				return true
 			}
 		}

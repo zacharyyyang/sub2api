@@ -30,8 +30,24 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
+
+// normalizeInboundModelBody 归一入站 model，并把归一结果写回转发 body。
+// 兼容入口（Responses / Messages）不经 ParseGatewayRequest，body 里的 model
+// 原本会原样转发；此处剥末尾 [1m] 与 CCD 外壳后回写，保证路由模型与转发体一致。
+func normalizeInboundModelBody(body []byte, model string) ([]byte, string) {
+	canonical, _ := service.NormalizeInboundModelID(model)
+	if canonical == "" || canonical == model {
+		return body, model
+	}
+	updated, err := sjson.SetBytes(body, "model", canonical)
+	if err != nil {
+		return body, canonical
+	}
+	return updated, canonical
+}
 
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
@@ -499,6 +515,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// 兼容入口不走 ParseGatewayRequest，入站 model 未经归一：先剥末尾 [1m] 与
+	// Claude Code Desktop 外壳，并把归一结果写回转发 body，避免上游收到带壳模型名。
+	body, reqModel = normalizeInboundModelBody(body, reqModel)
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")
@@ -1243,6 +1262,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	// 同 Responses：/v1/messages 也是兼容入口，入站 model 未经归一，先把归一
+	// 结果写回 body 再进入路由与渠道映射。
+	body, reqModel = normalizeInboundModelBody(body, reqModel)
 	ensureCompositeTargetPlatform(c, apiKey, reqModel)
 	if !openAICompatibleTextTargetAllowed(c, apiKey, reqModel) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Model is not supported by this OpenAI-compatible endpoint for composite groups")

@@ -62,3 +62,29 @@ func TestSelectAccountWithLoadAwareness_ChannelRestrictedEmptyKeepsOldWarn(t *te
 	require.Equal(t, 0, strings.Count(got, "no schedulable account after all gates"), "渠道限制分支不应触发新增诊断日志")
 	require.Equal(t, 1, strings.Count(got, "channel pricing restriction blocked request"), "既有渠道限制 Warn 应恰好一次")
 }
+
+func TestSelectAccount_SupportsInbound1MAndShellForBareAccountMapping(t *testing.T) {
+	f := newLoadAwareRestrictionFixture(t, false, nil, nil)
+	f.svc.accountRepo.(*mockAccountRepoForPlatform).accounts = []Account{
+		{
+			ID: 1, Platform: PlatformAnthropic, Priority: 1, Status: StatusActive, Schedulable: true, Concurrency: 5,
+			Credentials: map[string]any{
+				"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4-upstream"},
+			},
+		},
+	}
+	acc := &f.svc.accountRepo.(*mockAccountRepoForPlatform).accounts[0]
+	f.svc.accountRepo.(*mockAccountRepoForPlatform).accountsByID[1] = acc
+
+	for _, reqModel := range []string{"gpt-5.4[1m]", "claude-fable-5-_g_pt-5.4[1m]"} {
+		require.True(t, acc.IsModelSupported(reqModel), reqModel)
+		mapped, matched := acc.ResolveMappedModel(reqModel)
+		require.True(t, matched, reqModel)
+		require.Equal(t, "gpt-5.4-upstream", mapped)
+
+		selected, err := f.svc.SelectAccountForModelWithExclusions(f.ctx, &f.groupID, "", reqModel, nil)
+		require.NoError(t, err, reqModel)
+		require.NotNil(t, selected)
+		require.Equal(t, int64(1), selected.ID)
+	}
+}

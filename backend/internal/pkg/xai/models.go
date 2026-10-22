@@ -40,12 +40,13 @@ func RuntimeModelMappingOptions() ModelMappingOptions {
 
 // Model describes an xAI model in OpenAI-compatible /models shape.
 type Model struct {
-	ID          string `json:"id"`
-	Object      string `json:"object"`
-	Type        string `json:"type,omitempty"`
-	Created     int64  `json:"created,omitempty"`
-	OwnedBy     string `json:"owned_by"`
-	DisplayName string `json:"display_name,omitempty"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Type          string `json:"type,omitempty"`
+	Created       int64  `json:"created,omitempty"`
+	OwnedBy       string `json:"owned_by"`
+	DisplayName   string `json:"display_name,omitempty"`
+	ContextWindow int    `json:"context_window,omitempty"`
 }
 
 // DefaultTextModel is the built-in fallback for empty model fields and Grok
@@ -84,15 +85,15 @@ func (o ModelMappingOptions) defaultText() string {
 
 var defaultModels = []Model{
 	// Text
-	{ID: "grok-4.7", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.7"},
-	{ID: "grok-4.6", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.6"},
-	{ID: "grok-4.5", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.5"},
-	{ID: "grok-4.3", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.3"},
+	{ID: "grok-4.7", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.7", ContextWindow: 1000000},
+	{ID: "grok-4.6", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.6", ContextWindow: 1000000},
+	{ID: "grok-4.5", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.5", ContextWindow: 1000000},
+	{ID: "grok-4.3", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.3", ContextWindow: 1000000},
 	{ID: "grok-build-0.1", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok Build 0.1"},
 	{ID: "grok-composer-2.5-fast", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok Composer 2.5 Fast"},
-	{ID: "grok-4.20-0309-reasoning", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Reasoning"},
-	{ID: "grok-4.20-0309-non-reasoning", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Non Reasoning"},
-	{ID: "grok-4.20-multi-agent-0309", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Multi Agent"},
+	{ID: "grok-4.20-0309-reasoning", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Reasoning", ContextWindow: 1000000},
+	{ID: "grok-4.20-0309-non-reasoning", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Non Reasoning", ContextWindow: 1000000},
+	{ID: "grok-4.20-multi-agent-0309", Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok 4.20 Multi Agent", ContextWindow: 1000000},
 	// Imagine
 	{ID: DefaultImagineImageQualityModel, Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Image Quality"},
 	{ID: DefaultImagineImageFastModel, Object: "model", Type: "model", OwnedBy: "xai", DisplayName: "Grok Imagine Image"},

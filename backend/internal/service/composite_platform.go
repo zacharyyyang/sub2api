@@ -89,7 +89,10 @@ func CompositeRouteSourceFromContext(ctx context.Context) (string, bool) {
 // platform used by sub2api. It intentionally returns false for ambiguous model
 // names so composite groups fail closed instead of guessing.
 func DetectModelPlatform(model string) (string, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(model))
+	// 归一先于判定：客户端可能提交 "<model>[1m]" 或 CCD 外壳 ID（如 claude-fable-gpt-5.4），
+	// 不归一会让这些形态被判为无法识别，落到默认平台。
+	canonical, _ := NormalizeInboundModelID(model)
+	normalized := strings.ToLower(strings.TrimSpace(canonical))
 	if normalized == "" {
 		return "", false
 	}

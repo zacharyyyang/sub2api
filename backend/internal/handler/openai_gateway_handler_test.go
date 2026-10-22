@@ -3321,3 +3321,34 @@ func TestOpenAIResponsesWebSocketSimpleModeRechecksKeyWindows(t *testing.T) {
 		})
 	}
 }
+
+// 兼容入口（Responses / Messages）的入站 model 归一：剥末尾 [1m] 与 CCD 外壳，
+// 并把归一结果真正写回转发 body——只改路由模型不改 body 等于没剥壳。
+func TestNormalizeInboundModelBody(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		canonical string
+	}{
+		{name: "strips 1m suffix", model: "gpt-5.4[1m]", canonical: "gpt-5.4"},
+		{name: "strips repeated 1m suffix", model: "gpt-5.4[1m][1m]", canonical: "gpt-5.4"},
+		{name: "unwraps ccd shell", model: "claude-fable-5-gpt-5.4", canonical: "gpt-5.4"},
+		{name: "unwraps ccd shell then strips 1m", model: "claude-fable-5-gemini-3-pro-high[1m]", canonical: "gemini-3-pro-high"},
+		{name: "keeps native fable model", model: "claude-fable-5", canonical: "claude-fable-5"},
+		{name: "bare model untouched", model: "gpt-5.4", canonical: "gpt-5.4"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"model":"` + tc.model + `","input":"hi"}`)
+			gotBody, gotModel := normalizeInboundModelBody(body, tc.model)
+			require.Equal(t, tc.canonical, gotModel)
+			require.Equal(t, tc.canonical, gjson.GetBytes(gotBody, "model").String())
+			require.Equal(t, "hi", gjson.GetBytes(gotBody, "input").String(), "other fields must survive the rewrite")
+
+			// 幂等：归一后的 model 再跑一遍不再改写内容。
+			againBody, againModel := normalizeInboundModelBody(gotBody, gotModel)
+			require.Equal(t, gotModel, againModel)
+			require.Equal(t, string(gotBody), string(againBody))
+		})
+	}
+}

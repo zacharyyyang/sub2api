@@ -4,18 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 type gatewayModelsAccountRepoStub struct {
@@ -61,6 +66,8 @@ type gatewayModelItemForTest struct {
 	Created                 int64                                 `json:"created"`
 	OwnedBy                 string                                `json:"owned_by"`
 	CreatedAt               string                                `json:"created_at"`
+	DisplayName             string                                `json:"display_name"`
+	ContextWindow           int                                   `json:"context_window"`
 	SupportsReasoningEffort bool                                  `json:"supportsReasoningEffort"`
 	ReasoningEffort         string                                `json:"reasoningEffort"`
 	ReasoningEfforts        []gatewayReasoningEffortOptionForTest `json:"reasoningEfforts"`
@@ -95,6 +102,27 @@ func (s *gatewayModelsAccountRepoStub) ListModelAvailabilityCandidates(ctx conte
 
 func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupIDAndPlatform(ctx context.Context, groupID int64, _ string) ([]service.Account, error) {
 	return s.ListSchedulableByGroupID(ctx, groupID)
+}
+
+func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupIDAndPlatforms(ctx context.Context, groupID int64, _ []string) ([]service.Account, error) {
+	return s.ListSchedulableByGroupID(ctx, groupID)
+}
+
+func (s *gatewayModelsAccountRepoStub) ListSchedulableByPlatform(ctx context.Context, _ string) ([]service.Account, error) {
+	out := make([]service.Account, 0)
+	for _, accounts := range s.byGroup {
+		out = append(out, accounts...)
+	}
+	return out, nil
+}
+
+func (s *gatewayModelsAccountRepoStub) ListSchedulableByPlatforms(ctx context.Context, _ []string) ([]service.Account, error) {
+	return s.ListSchedulableByPlatform(ctx, "")
+}
+
+func decorateIDForDiscoveryForTest(modelID, exitPlatform string) string {
+	out, _, _ := service.FormatModelForDiscovery(modelID, modelID, exitPlatform)
+	return out
 }
 
 func newGatewayModelsHandlerForTest(repo service.AccountRepository, routeRepo ...service.CompositeModelRouteRepository) *GatewayHandler {
@@ -154,7 +182,7 @@ func TestGatewayCompositeRouteModelsAppearInBothCatalogs(t *testing.T) {
 					h.Models(c)
 					var got gatewayModelsResponseForTest
 					require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-					require.Equal(t, tc.want, modelIDsForTest(got.Data))
+					require.Equal(t, decorateIDsForDiscoveryForTest(tc.want, "claude"), modelIDsForTest(got.Data))
 				} else {
 					h.CodexModels(c)
 					var got codexModelsResponseForTest
@@ -408,7 +436,7 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 				var got gatewayModelsResponseForTest
 				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 				require.Equal(t, "list", got.Object)
-				require.ElementsMatch(t, tt.want, modelIDsForTest(got.Data))
+				require.ElementsMatch(t, decorateIDsForDiscoveryForTest(tt.want, "openai"), modelIDsForTest(got.Data))
 				for _, model := range got.Data {
 					require.Equal(t, "model", model.Object, model.ID)
 					require.Positive(t, model.Created, model.ID)
@@ -416,7 +444,7 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 					require.Empty(t, model.CreatedAt, model.ID)
 				}
 				if tt.config.Enabled {
-					require.Equal(t, tt.want, modelIDsForTest(got.Data))
+					require.Equal(t, decorateIDsForDiscoveryForTest(tt.want, "openai"), modelIDsForTest(got.Data))
 				}
 			}
 		})
@@ -564,8 +592,9 @@ func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, "list", got.Object)
-	require.Contains(t, modelIDsForTest(got.Data), "gemini-2.5-flash")
+	require.Contains(t, modelIDsForTest(got.Data), decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
 	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6")
+	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6[1m]")
 }
 
 func TestGatewayModels_Grok45AdvertisesReasoningEffortForGrokBuild(t *testing.T) {
@@ -631,7 +660,7 @@ func assertGrokGatewayReasoningEfforts(t *testing.T, groupID int64, modelID stri
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Len(t, got.Data, 1)
 	model := got.Data[0]
-	require.Equal(t, modelID, model.ID)
+	require.Equal(t, modelID+"[1m]", model.ID)
 	require.True(t, model.SupportsReasoningEffort)
 	require.Equal(t, "high", model.ReasoningEffort)
 	require.Equal(t, want, model.ReasoningEfforts)
@@ -681,7 +710,7 @@ func TestGatewayModels_GeminiGroupFiltersMappedModelsByPlatform(t *testing.T) {
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gemini-2.5-flash"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude")}, modelIDsForTest(got.Data))
 }
 
 // Scenario: a Composite group with only Anthropic accounts must not inherit Antigravity Gemini defaults.
@@ -736,8 +765,8 @@ func TestGatewayModels_CompositeAntigravityAdvertisesAntigravityDefaults(t *test
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "claude-opus-4-6")
-	require.Contains(t, ids, "gemini-2.5-flash")
+	require.Contains(t, ids, "claude-opus-4-6[1m]")
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
 }
 
 func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T) {
@@ -783,7 +812,7 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-5.4[1m]", "gpt-5.5[1m]"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
@@ -830,7 +859,7 @@ func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-5.5[1m]", "gpt-5.4[1m]"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t *testing.T) {
@@ -922,7 +951,7 @@ func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gemini-2.5-flash", "ag-custom-model", "gpt-5.5", "kimi-custom", "glm-custom", "deepseek-custom", "minimax-custom"}, modelIDsForTest(got.Data))
+	require.Equal(t, decorateIDsForDiscoveryForTest([]string{"gemini-2.5-flash", "ag-custom-model", "gpt-5.5", "kimi-custom", "glm-custom", "deepseek-custom", "minimax-custom"}, "claude"), modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CompositeGrokImplicitMappingBlocksOpenAIDefaultFallback(t *testing.T) {
@@ -957,10 +986,10 @@ func TestGatewayModels_CompositeGrokImplicitMappingBlocksOpenAIDefaultFallback(t
 	ids := modelIDsForTest(got.Data)
 	// grok 无映射账号按隐式映射（account.go:636-637）贡献非空模型集，allEmpty=false，
 	// openai 默认模型不再注入。
-	require.NotContains(t, ids, "gpt-5.5")
-	require.Contains(t, ids, "grok-4.3")
-	require.NotContains(t, ids, "claude-sonnet-4-6")
-	require.NotContains(t, ids, "gemini-2.5-flash")
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gpt-5.5", "claude"))
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("grok-4.3", "claude"))
+	require.NotContains(t, ids, "claude-sonnet-4-6[1m]")
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
 }
 
 // CN 供应商没有静态默认模型列表：composite 下无映射的可调度 CN 账号不得把
@@ -998,8 +1027,8 @@ func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testin
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gpt-5.5")
-	require.NotContains(t, ids, "claude-sonnet-4-6")
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gpt-5.5", "claude"))
+	require.NotContains(t, ids, "claude-sonnet-4-6[1m]")
 }
 
 // 独立 CN 分组沿用 default 分支的 Claude 默认列表（Claude Code 客户端请求的
@@ -1144,7 +1173,7 @@ func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-sonnet-4-6"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"claude-sonnet-4-6[1m]"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicCustomModelsListKeepsMappedModelsOnly(t *testing.T) {
@@ -1195,7 +1224,7 @@ func TestGatewayModels_AnthropicCustomModelsListKeepsMappedModelsOnly(t *testing
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{decorateIDForDiscoveryForTest("deepseek-v4-pro", "claude")}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *testing.T) {
@@ -1246,7 +1275,7 @@ func TestGatewayModels_AnthropicCustomModelsListDisabledKeepsMappedModelList(t *
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"deepseek-v4-pro"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{decorateIDForDiscoveryForTest("deepseek-v4-pro", "claude")}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicAllowlistWithoutMappingsStaysEmpty(t *testing.T) {
@@ -1400,9 +1429,10 @@ func TestGatewayModels_WBUnmappedAccountsListsWhitelist(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 		require.Equal(t, "list", got.Object)
 		ids := modelIDsForTest(got.Data)
-		require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+		require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.WbModelWhitelist, "claude"), ids)
 		for _, id := range ids {
-			require.NotContains(t, id, "claude-")
+			canonical, _ := service.NormalizeInboundModelID(id)
+			require.NotContains(t, canonical, "claude-")
 		}
 	}
 
@@ -1426,7 +1456,7 @@ func TestGatewayModels_WBExplicitMappingIntersectWhitelist(t *testing.T) {
 		{"mixed mapping keeps whitelist keys only", map[string]any{
 			"gpt-5.5":           "gpt-5.5",
 			"claude-sonnet-4-5": "claude-sonnet-4-5",
-		}, []string{"gpt-5.5"}},
+		}, []string{decorateIDForDiscoveryForTest("gpt-5.5", "claude")}},
 		{"all-invalid mapping returns empty list", map[string]any{
 			"claude-sonnet-4-5": "claude-sonnet-4-5",
 		}, []string{}},
@@ -1477,9 +1507,10 @@ func TestGatewayModels_WBNoAccountsFallsBackToWhitelist(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.WbModelWhitelist, "claude"), ids)
 	for _, id := range ids {
-		require.NotContains(t, id, "claude-")
+		canonical, _ := service.NormalizeInboundModelID(id)
+		require.NotContains(t, canonical, "claude-")
 	}
 }
 
@@ -1518,7 +1549,7 @@ func TestGatewayModels_WBAllowlistFiltersWithinWhitelist(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{decorateIDForDiscoveryForTest("gpt-5.5", "claude")}, modelIDsForTest(got.Data))
 }
 
 // Scenario: a WB group with a model allowlist that intersects nothing returns
@@ -1589,7 +1620,7 @@ func TestGatewayModels_WBAccountCredentialsNoMapping(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.ElementsMatch(t, domain.WbModelWhitelist, modelIDsForTest(got.Data))
+	require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.WbModelWhitelist, "claude"), modelIDsForTest(got.Data))
 
 	mapping := account.GetModelMapping()
 	require.Len(t, mapping, len(domain.WbModelWhitelist))
@@ -1682,6 +1713,14 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 	return ids
 }
 
+func decorateIDsForDiscoveryForTest(modelIDs []string, exitPlatform string) []string {
+	out := make([]string, len(modelIDs))
+	for i, id := range modelIDs {
+		out[i], _, _ = service.FormatModelForDiscovery(id, id, exitPlatform)
+	}
+	return out
+}
+
 func TestGatewayModels_AntigravityExplicitMappingAppearsInBothCatalogs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 93
@@ -1727,9 +1766,14 @@ func TestGatewayModels_AntigravityExplicitMappingAppearsInBothCatalogs(t *testin
 				}
 				require.Equal(t, http.StatusOK, rec.Code)
 				// 显式条目必须同时出现在两种目录；默认透传补齐的条目不锁定。
-				require.Subset(t, ids, want, "codex=%t", codex)
+				expected := want
+				if !codex {
+					expected = decorateIDsForDiscoveryForTest(want, "claude")
+				}
+				require.Subset(t, ids, expected, "codex=%t", codex)
 				if platform == service.PlatformGemini {
 					require.NotContains(t, ids, "claude-opus-4-6-thinking", "codex=%t", codex)
+					require.NotContains(t, ids, "claude-opus-4-6-thinking[1m]", "codex=%t", codex)
 				}
 			}
 		})
@@ -1797,20 +1841,21 @@ func TestGatewayModels_GeminiGroupIncludesAntigravityGeminiMappings(t *testing.T
 	ids := modelIDsForTest(got.Data)
 	// 账号显式配置的 gemini-* 映射必须出现（resolveModelMapping 还会补一组 antigravity
 	// 默认透传别名，这里只断言显式条目与排除项，不锁定补齐后的完整集合）。
-	require.Contains(t, ids, "gemini-3.8-flash-high")
-	require.Contains(t, ids, "gemini-synced-custom")
-	require.Contains(t, ids, "gemini-3.8-flash-low")
-	require.Contains(t, ids, "gemini-native-only")
-	require.NotContains(t, ids, "gemini-disabled-only")
-	require.NotContains(t, ids, "gemini-unset-only")
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-3.8-flash-high", "claude"))
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-synced-custom", "claude"))
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-3.8-flash-low", "claude"))
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-native-only", "claude"))
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gemini-disabled-only", "claude"))
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gemini-unset-only", "claude"))
 	// antigravity 账号的 claude-* 映射与 anthropic 账号的映射都不应出现在 gemini 分组。
-	require.NotContains(t, ids, "claude-sonnet-4-6")
-	require.NotContains(t, ids, "claude-opus-4-6")
+	require.NotContains(t, ids, "claude-sonnet-4-6[1m]")
+	require.NotContains(t, ids, "claude-opus-4-6[1m]")
 	for _, id := range ids {
-		require.True(t, strings.HasPrefix(id, "gemini-"), "unexpected non-gemini model on gemini group: %s", id)
+		canonical, _ := service.NormalizeInboundModelID(id)
+		require.True(t, strings.HasPrefix(canonical, "gemini-"), "unexpected non-gemini model on gemini group: %s", id)
 	}
 	// 没有回落到 geminicli 静态表。
-	require.NotContains(t, ids, "gemini-2.0-flash")
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gemini-2.0-flash", "claude"))
 }
 
 // antigravity 账号未配置 model_mapping 时使用 DefaultAntigravityModelMapping：
@@ -1843,12 +1888,13 @@ func TestGatewayModels_GeminiGroupUsesAntigravityDefaultMappingWhenUnset(t *test
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gemini-3.8-flash-high")
+	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-3.8-flash-high", "claude"))
 	for _, id := range ids {
-		require.True(t, strings.HasPrefix(id, "gemini-"), "unexpected non-gemini model on gemini group: %s", id)
+		canonical, _ := service.NormalizeInboundModelID(id)
+		require.True(t, strings.HasPrefix(canonical, "gemini-"), "unexpected non-gemini model on gemini group: %s", id)
 	}
 	// geminicli 静态表独有条目不应出现（说明没有回落到默认列表）。
-	require.NotContains(t, ids, "gemini-2.0-flash")
+	require.NotContains(t, ids, decorateIDForDiscoveryForTest("gemini-2.0-flash", "claude"))
 }
 
 // Codex 通过 /models?client_version= 走 CodexModels，同样应看到混合调度账号的 gemini-* 映射。
@@ -1908,7 +1954,7 @@ func TestGatewayModels_GPT6SolLunaDiscoveryRespectsGroupAndAccountRestrictions(t
 	}{
 		{"allowlist over empty source stays empty", []string{"gpt-6.1-sol", "gpt-6-luna", "gpt-6-sol"}, false, []string{}},
 		{"unmapped account offers nothing to select", []string{"gpt-5.6-sol"}, false, []string{}},
-		{"account restricts new models", []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"}, true, []string{"gpt-5.6-sol"}},
+		{"account restricts new models", []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"}, true, []string{"gpt-5.6-sol[1m]"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			groupID := int64(25)
@@ -1956,8 +2002,8 @@ func TestGatewayModels_CompositeTypeSafeListingScope(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var models gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &models))
-	require.Contains(t, modelIDsForTest(models.Data), "jev-latest")
-	require.Contains(t, modelIDsForTest(models.Data), "claude-opus-4-6")
+	require.Contains(t, modelIDsForTest(models.Data), "claude-fable-5-jev-latest")
+	require.Contains(t, modelIDsForTest(models.Data), "claude-opus-4-6[1m]")
 
 	c, rec = newContext("/models?client_version=0.147.0")
 	h.CodexModels(c)
@@ -2016,7 +2062,7 @@ func TestGatewayModels_CompositeExactRoutesRespectTypeSafeIsolation(t *testing.T
 					h.Models(ctx)
 					var models gatewayModelsResponseForTest
 					require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &models))
-					require.ElementsMatch(t, wantModels, modelIDsForTest(models.Data))
+					require.ElementsMatch(t, decorateIDsForDiscoveryForTest(wantModels, "claude"), modelIDsForTest(models.Data))
 				}
 				require.Equal(t, http.StatusOK, rec.Code)
 			}
@@ -2121,7 +2167,8 @@ func TestGatewayModels_CompositeCodexFiltersEffectiveResponsesRoutes(t *testing.
 							if scenario.name == "fallback default override" && allowlisted {
 								require.Empty(t, modelIDsForTest(models.Data))
 							} else {
-								require.Contains(t, modelIDsForTest(models.Data), scenario.model)
+								expectedModel, _, _ := service.FormatModelForDiscovery(scenario.model, scenario.model, "claude")
+								require.Contains(t, modelIDsForTest(models.Data), expectedModel)
 							}
 						}
 						require.Equal(t, http.StatusOK, recorder.Code)
@@ -2185,7 +2232,8 @@ func newCompositeModelsRequestForTest(group *service.Group, path string) (*gin.C
 func requireNoClaudeForTest(t *testing.T, ids []string) {
 	t.Helper()
 	for _, id := range ids {
-		require.False(t, strings.HasPrefix(id, "claude-"), "unexpected claude model leaked: %s", id)
+		canonical, _ := service.NormalizeInboundModelID(id)
+		require.False(t, strings.HasPrefix(canonical, "claude-"), "unexpected claude model leaked: %s", id)
 	}
 }
 
@@ -2205,7 +2253,7 @@ func TestGatewayModels_CompositeWBOnlyListsWhitelistNoClaude(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
 	// 集合相等（顺序不构成契约）：恰好 21 白名单键，不多不少。
-	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.WbModelWhitelist, "claude"), ids)
 	requireNoClaudeForTest(t, ids)
 }
 
@@ -2231,7 +2279,7 @@ func TestGatewayModels_CompositeWBMixedWithPrecedencePlatform(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
 	// 精确并集断言：openai 默认 ∪ 21 白名单，无额外模型。
-	want := unionModelIDsForTest(defaultModelIDsForPlatform(service.PlatformOpenAI), domain.WbModelWhitelist)
+	want := decorateIDsForDiscoveryForTest(unionModelIDsForTest(defaultModelIDsForPlatform(service.PlatformOpenAI), domain.WbModelWhitelist), "claude")
 	require.ElementsMatch(t, want, ids)
 	require.NotContains(t, ids, "claude-sonnet-4-5")
 }
@@ -2258,7 +2306,7 @@ func TestGatewayModels_CompositeWBAllowlistFiltersWithinWhitelist(t *testing.T) 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	// 候选源 = 21 白名单键：gpt-5.5 命中保留；claude-sonnet-4-5 不是白名单键 → 恰好一个键。
-	require.ElementsMatch(t, []string{"gpt-5.5"}, modelIDsForTest(got.Data))
+	require.ElementsMatch(t, []string{decorateIDForDiscoveryForTest("gpt-5.5", "claude")}, modelIDsForTest(got.Data))
 }
 
 // AC-27-01 白名单不命中：空列表 []，不回退任何默认模型（#24 空交集契约）。
@@ -2311,7 +2359,7 @@ func TestGatewayModels_CompositeWBExplicitMappingKeepsLegalKeys(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
 	// 混合键 mapping：gpt-5.5 ∈ 白名单保留；claude-sonnet-4-5 ∉ 白名单剔除。
-	require.ElementsMatch(t, []string{"gpt-5.5"}, ids)
+	require.ElementsMatch(t, []string{decorateIDForDiscoveryForTest("gpt-5.5", "claude")}, ids)
 	require.NotContains(t, ids, "claude-sonnet-4-5")
 }
 
@@ -2341,7 +2389,7 @@ func TestGatewayModels_CompositeWBExplicitMappingAllIllegalFallsBackToWhitelist(
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
 	// wbRaw 非空（外键）但求交为空 → 键控保守注入：恰好 21 白名单，无默认泄漏。
-	require.ElementsMatch(t, domain.WbModelWhitelist, ids)
+	require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.WbModelWhitelist, "claude"), ids)
 	require.NotContains(t, ids, "claude-sonnet-4-5")
 	requireNoClaudeForTest(t, ids)
 }
@@ -2566,7 +2614,7 @@ func TestGatewayModels_CompositeWBAllowlistLegalKeyWithVariantKeepsLegalKey(t *t
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	// 合法键保留、变体原文键剔除：恰好 gpt-5.6-sol 一项。
-	require.ElementsMatch(t, []string{"gpt-5.6-sol"}, modelIDsForTest(got.Data))
+	require.ElementsMatch(t, []string{decorateIDForDiscoveryForTest("gpt-5.6-sol", "claude")}, modelIDsForTest(got.Data))
 	require.NotContains(t, modelIDsForTest(got.Data), "gpt-5.6-sol-thinking")
 }
 
@@ -2624,7 +2672,7 @@ func TestQoderGatewayModelsAndCompositeLists14Whitelist(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		var got gatewayModelsResponseForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-		require.ElementsMatch(t, domain.QoderModelWhitelist, modelIDsForTest(got.Data))
+		require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.QoderModelWhitelist, "claude"), modelIDsForTest(got.Data))
 	}
 	c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite, ModelAllowlist: service.GroupModelAllowlist{Enabled: true, Models: []string{"sonus-fable5.1", "sonus-fable5.1-thinking"}}}, "/models?client_version=0.147.0")
 	h.CodexModels(c)
@@ -2679,7 +2727,7 @@ func TestMimoGatewayModelsAndMessagesRoute(t *testing.T) {
 		require.Equal(t, http.StatusOK, rec.Code)
 		var got gatewayModelsResponseForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-		require.ElementsMatch(t, domain.MimoModelWhitelist, modelIDsForTest(got.Data))
+		require.ElementsMatch(t, decorateIDsForDiscoveryForTest(domain.MimoModelWhitelist, "claude"), modelIDsForTest(got.Data))
 	}
 	c, rec := newCompositeModelsRequestForTest(&service.Group{
 		ID:             groupID,
@@ -2740,5 +2788,496 @@ func TestMimoGatewayModelsAndMessagesRoute(t *testing.T) {
 		}
 		require.Equal(t, tc.code, w.Code, "path=%s model=%s", tc.path, tc.model)
 		require.Contains(t, w.Body.String(), tc.msg, "path=%s model=%s", tc.path, tc.model)
+	}
+}
+
+// TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone 覆盖 AC-65-01：
+// ① 调用点级映射矩阵 5 行（落点 1/3/4/5/6）与落点 8（Claude 回落）、落点 9（Antigravity）；
+// ② 1M 模型带 [1m]、display_name 含 1M、context_window=1000000；反例 claude-haiku-4-5-20251001 / gpt-5.2 不标 1M；
+// ③ JSON 严禁输出 supports_1m / max_input_tokens；
+// ④ 落点 5/6/8 连续两次调用 /v1/models 逐字节幂等（slices.Clone 防全局污染，不派生 x[1m][1m]）。
+func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	findItem := func(t *testing.T, items []gatewayModelItemForTest, id string) gatewayModelItemForTest {
+		t.Helper()
+		for _, item := range items {
+			if item.ID == id {
+				return item
+			}
+		}
+		t.Fatalf("model %q not found in %v", id, modelIDsForTest(items))
+		return gatewayModelItemForTest{}
+	}
+
+	assertNoForbidden1MFields := func(t *testing.T, raw []byte) {
+		t.Helper()
+		bodyStr := string(raw)
+		require.NotContains(t, bodyStr, "supports_1m")
+		require.NotContains(t, bodyStr, "max_input_tokens")
+		require.NotContains(t, bodyStr, "[1m][1m]")
+	}
+
+	// 落点 1：writeModelsList（WB / Qoder / Mimo / TypeSafe / Composite），exitPlatform = "claude"
+	t.Run("site 1 writeModelsList claude exit wraps non-claude and marks 1M", func(t *testing.T) {
+		const groupID int64 = 8501
+		h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID: 1, Platform: service.PlatformOpenAI,
+						Credentials: map[string]any{"model_mapping": map[string]any{
+							"gpt-5.4": "gpt-5.4",
+							"gpt-5.2": "gpt-5.2",
+						}},
+					},
+					{
+						ID: 2, Platform: service.PlatformAnthropic,
+						Credentials: map[string]any{"model_mapping": map[string]any{
+							"claude-opus-4-6":           "claude-opus-4-6",
+							"claude-haiku-4-5-20251001": "claude-haiku-4-5-20251001",
+						}},
+					},
+				},
+			},
+		})
+		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assertNoForbidden1MFields(t, rec.Body.Bytes())
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+		gpt54 := findItem(t, got.Data, decorateIDForDiscoveryForTest("gpt-5.4", "claude"))
+		require.True(t, strings.HasPrefix(gpt54.ID, "claude-fable-5-"))
+		require.Equal(t, 1000000, gpt54.ContextWindow)
+		require.Contains(t, gpt54.DisplayName, "1M")
+
+		opus46 := findItem(t, got.Data, "claude-opus-4-6[1m]")
+		require.Equal(t, 1000000, opus46.ContextWindow)
+		require.Contains(t, opus46.DisplayName, "1M")
+
+		gpt52 := findItem(t, got.Data, decorateIDForDiscoveryForTest("gpt-5.2", "claude"))
+		require.True(t, strings.HasPrefix(gpt52.ID, "claude-fable-5-"))
+		require.Zero(t, gpt52.ContextWindow)
+		require.NotContains(t, gpt52.ID, "[1m]")
+
+		haiku := findItem(t, got.Data, "claude-haiku-4-5-20251001")
+		require.Zero(t, haiku.ContextWindow)
+		require.NotContains(t, haiku.ID, "[1m]")
+	})
+
+	// 落点 3：writeGrokModelsList（Grok 专用出口），exitPlatform = "xai"，不套外壳
+	t.Run("site 3 writeGrokModelsList xai exit no shell and marks 1M", func(t *testing.T) {
+		const groupID int64 = 8503
+		h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {{
+					ID: 1, Platform: service.PlatformGrok,
+					Credentials: map[string]any{"model_mapping": map[string]any{
+						"grok-4.6":         "grok-4.6",
+						"grok-imagine-1.0": "grok-imagine-1.0",
+					}},
+				}},
+			},
+		})
+		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformGrok}, "/v1/models")
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assertNoForbidden1MFields(t, rec.Body.Bytes())
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+		grok46 := findItem(t, got.Data, "grok-4.6[1m]")
+		require.False(t, strings.HasPrefix(grok46.ID, "claude-fable-5-"))
+		require.Equal(t, 1000000, grok46.ContextWindow)
+		require.Contains(t, grok46.DisplayName, "1M")
+
+		imagine := findItem(t, got.Data, "grok-imagine-1.0")
+		require.Zero(t, imagine.ContextWindow)
+	})
+
+	// 落点 4：writeOpenAIModelsList（OpenAI 专用出口），exitPlatform = "openai"，不套外壳且保住内置友好名与 Created
+	t.Run("site 4 writeOpenAIModelsList openai exit no shell and preserves builtin metadata", func(t *testing.T) {
+		const groupID int64 = 8504
+		h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {{
+					ID: 1, Platform: service.PlatformOpenAI,
+					Credentials: map[string]any{"model_mapping": map[string]any{
+						"gpt-5.4": "gpt-5.4",
+						"gpt-5.2": "gpt-5.2",
+					}},
+				}},
+			},
+		})
+		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformOpenAI}, "/v1/models")
+		h.Models(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assertNoForbidden1MFields(t, rec.Body.Bytes())
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+
+		gpt54 := findItem(t, got.Data, "gpt-5.4[1m]")
+		require.False(t, strings.HasPrefix(gpt54.ID, "claude-fable-5-"))
+		require.Equal(t, 1000000, gpt54.ContextWindow)
+		require.Contains(t, gpt54.DisplayName, "1M")
+		require.Equal(t, "openai", gpt54.OwnedBy)
+
+		gpt52 := findItem(t, got.Data, "gpt-5.2")
+		require.Zero(t, gpt52.ContextWindow)
+	})
+
+	// 落点 5 / 6 / 8 默认回落：连续调用两次逐字节相等（slices.Clone 防污染）+ 外壳与 1M 判定
+	for _, tc := range []struct {
+		name        string
+		platform    string
+		want1MID    string
+		wantNon1MID string
+		expectShell bool
+	}{
+		{
+			name:        "site 5 OpenAI default fallback",
+			platform:    service.PlatformOpenAI,
+			want1MID:    "gpt-5.4[1m]",
+			wantNon1MID: "gpt-5.2",
+			expectShell: false,
+		},
+		{
+			name:        "site 6 Gemini default fallback",
+			platform:    service.PlatformGemini,
+			want1MID:    decorateIDForDiscoveryForTest("gemini-2.5-pro", "claude"),
+			wantNon1MID: decorateIDForDiscoveryForTest("gemini-2.0-flash", "claude"),
+			expectShell: true,
+		},
+		{
+			name:        "site 8 Claude default fallback",
+			platform:    service.PlatformAnthropic,
+			want1MID:    "claude-opus-4-6[1m]",
+			wantNon1MID: "claude-haiku-4-5-20251001",
+			expectShell: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{}})
+			group := &service.Group{ID: 8505, Platform: tc.platform}
+
+			c1, rec1 := newCompositeModelsRequestForTest(group, "/v1/models")
+			h.Models(c1)
+			require.Equal(t, http.StatusOK, rec1.Code)
+
+			c2, rec2 := newCompositeModelsRequestForTest(group, "/v1/models")
+			h.Models(c2)
+			require.Equal(t, http.StatusOK, rec2.Code)
+			require.Equal(t, rec1.Body.Bytes(), rec2.Body.Bytes(), "second call must be byte-identical to first call")
+			assertNoForbidden1MFields(t, rec1.Body.Bytes())
+
+			var got gatewayModelsResponseForTest
+			require.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &got))
+			item1M := findItem(t, got.Data, tc.want1MID)
+			require.Equal(t, 1000000, item1M.ContextWindow)
+			require.Contains(t, item1M.DisplayName, "1M")
+			require.Equal(t, tc.expectShell, strings.HasPrefix(item1M.ID, "claude-fable-5-"))
+
+			itemNon1M := findItem(t, got.Data, tc.wantNon1MID)
+			require.Zero(t, itemNon1M.ContextWindow)
+		})
+	}
+
+	// 落点 9：AntigravityModels，exitPlatform = "claude"
+	t.Run("site 9 AntigravityModels claude exit wraps gemini and sets 1M context window", func(t *testing.T) {
+		h := &GatewayHandler{}
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/antigravity/models", nil)
+		h.AntigravityModels(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assertNoForbidden1MFields(t, rec.Body.Bytes())
+
+		var got gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		gem := findItem(t, got.Data, decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
+		require.True(t, strings.HasPrefix(gem.ID, "claude-fable-5-"))
+		require.Equal(t, 1000000, gem.ContextWindow)
+		require.Contains(t, gem.DisplayName, "1M")
+
+		opus46 := findItem(t, got.Data, "claude-opus-4-6-thinking[1m]")
+		require.Equal(t, 1000000, opus46.ContextWindow)
+
+		sonnet45 := findItem(t, got.Data, "claude-sonnet-4-5")
+		require.Zero(t, sonnet45.ContextWindow)
+	})
+}
+
+// TestGatewayModels_AC6502RetrieveModelNormalizedBothSides 覆盖 AC-65-02：
+// GET /v1/models/:model 两侧 NormalizeInboundModelID 归一，使 x、x[1m]、claude-fable-5-x[1m]
+// 命中同一条目并返回装饰后的 id 与 context_window: 1000000，未命中返回 404。
+func TestGatewayModels_AC6502RetrieveModelNormalizedBothSides(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 8520
+	h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{
+			groupID: {
+				{
+					ID: 1, Platform: service.PlatformOpenAI,
+					Credentials: map[string]any{"model_mapping": map[string]any{"gpt-5.4": "gpt-5.4"}},
+				},
+				{
+					ID: 2, Platform: service.PlatformAnthropic,
+					Credentials: map[string]any{"model_mapping": map[string]any{"claude-opus-4-6": "claude-opus-4-6"}},
+				},
+			},
+		},
+	})
+	group := &service.Group{ID: groupID, Platform: service.PlatformComposite}
+
+	for _, queryID := range []string{
+		"claude-opus-4-6",
+		"claude-opus-4-6[1m]",
+		"gpt-5.4",
+		"gpt-5.4[1m]",
+		"claude-fable-gpt-5.4[1m]",
+		"claude-fable-5-gpt-5.4[1m]",
+	} {
+		rec := requestModelForTest(h, group, queryID, "")
+		require.Equal(t, http.StatusOK, rec.Code, "query=%s body=%s", queryID, rec.Body.String())
+		var item gatewayModelItemForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &item))
+		require.Equal(t, 1000000, item.ContextWindow, "query=%s", queryID)
+		require.True(t, strings.HasSuffix(item.ID, "[1m]"), "query=%s id=%s", queryID, item.ID)
+	}
+
+	// OpenAI 组查询 gpt-5.4[1m] / gpt-5.4 / claude-fable-gpt-5.4[1m] 同样命中同一装饰条目 gpt-5.4[1m]
+	openAIGroup := &service.Group{ID: groupID, Platform: service.PlatformOpenAI}
+	for _, queryID := range []string{"gpt-5.4", "gpt-5.4[1m]", "claude-fable-gpt-5.4[1m]"} {
+		rec := requestModelForTest(h, openAIGroup, queryID, "")
+		require.Equal(t, http.StatusOK, rec.Code, "openai query=%s", queryID)
+		var item gatewayModelItemForTest
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &item))
+		require.Equal(t, "gpt-5.4[1m]", item.ID)
+		require.Equal(t, 1000000, item.ContextWindow)
+	}
+
+	notFound := requestModelForTest(h, group, "non-existent-model[1m]", "")
+	require.Equal(t, http.StatusNotFound, notFound.Code)
+}
+
+type gateway1MTestUpstream struct {
+	service.HTTPUpstream
+	lastReq  *http.Request
+	lastBody []byte
+}
+
+func getRawHeaderForTest(h http.Header, key string) string {
+	for k, vals := range h {
+		if strings.EqualFold(k, key) && len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	return ""
+}
+
+func (u *gateway1MTestUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, _ *tlsfingerprint.Profile) (*http.Response, error) {
+	u.lastReq = req
+	if req.Body != nil {
+		u.lastBody, _ = io.ReadAll(req.Body)
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"msg_01","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-opus-4-6","stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":1}}`)),
+	}, nil
+}
+
+type gateway1MSettingRepoStub struct {
+	service.SettingRepository
+}
+
+func (gateway1MSettingRepoStub) GetValue(_ context.Context, _ string) (string, error) {
+	return "", service.ErrSettingNotFound
+}
+
+func (gateway1MSettingRepoStub) GetMultiple(_ context.Context, _ []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
+
+// TestGatewayHandler_AC6506AndAC6508Context1MBetaHeaderEndToEnd 覆盖 AC-65-06 与 AC-65-08 handler 出站头判据：
+// ① Anthropic 直连组：claude-opus-4-6[1m]、claude-fable-5-1[1m]、apac.anthropic.claude-opus-4-6-v1[1m]
+//
+//	以及仅显式携带 context-1m-2025-08-07 header 的裸 claude-opus-4-6，
+//	在 OAuth 与 API Key 账号下跑 GatewayHandler.Messages 与 GatewayHandler.CountTokens（启用真实 SettingService 以执行 DefaultBetaPolicySettings 评估），
+//	上游请求 model 均为剥离 [1m]/外壳后的裸名，且 anthropic-beta 含 context-1m-2025-08-07 恰好一次；
+//
+// ② Composite 复合分组串联：路径 A（自动识别）与路径 B（显式规则改名 UpstreamModel != 公开名）× OAuth / API Key
+//
+//	× Messages / CountTokens，验证路由写回保留 [1m] 意图、ParseGatewayRequest 剥离还原裸名且 Context1MRequested==true、上游头含 context-1m-2025-08-07 恰好一次。
+func TestGatewayHandler_AC6506AndAC6508Context1MBetaHeaderEndToEnd(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	runHandler := func(t *testing.T, group *service.Group, account *service.Account, routes []service.CompositeModelRoute, isCountTokens bool, reqModel string, clientBeta string) (*http.Request, []byte, bool) {
+		t.Helper()
+		upstream := &gateway1MTestUpstream{}
+		acctCopy := *account
+		acctCopy.AccountGroups = []service.AccountGroup{{AccountID: acctCopy.ID, GroupID: group.ID}}
+		repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{group.ID: {acctCopy}}}
+		resolver := service.NewCompositeRouteResolver(&gatewayModelsRouteRepoStub{routes: routes})
+
+		cfg := &config.Config{
+			RunMode: config.RunModeSimple,
+			Gateway: config.GatewayConfig{MaxBodySize: 1 << 20, MaxLineSize: 1 << 20},
+		}
+		billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+		t.Cleanup(billingCacheSvc.Stop)
+		settingSvc := service.NewSettingService(gateway1MSettingRepoStub{}, cfg)
+
+		gwSvc := service.NewGatewayService(
+			repo, nil, nil, nil, nil, nil, nil, nil, cfg,
+			nil, nil, nil, &service.RateLimitService{}, billingCacheSvc, nil,
+			upstream, nil, nil, nil, nil, nil, settingSvc, nil, nil, nil, resolver, nil, nil,
+		)
+		h := &GatewayHandler{
+			gatewayService:      gwSvc,
+			billingCacheService: billingCacheSvc,
+			concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(&helperConcurrencyCacheStub{userSeq: []bool{true}, accountSeq: []bool{true}}), SSEPingFormatClaude, 0),
+			maxAccountSwitches:  1,
+			cfg:                 cfg,
+		}
+
+		path := "/v1/messages"
+		if isCountTokens {
+			path = "/v1/messages/count_tokens"
+		}
+		bodyBytes := []byte(`{"model":"` + reqModel + `","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+
+		// 模拟複合分组前置路由中间件：调用 resolver.Resolve 并按 decision.UpstreamModel 改写请求体 model
+		var routeDecision *service.CompositeRouteDecision
+		if group.Platform == service.PlatformComposite {
+			endpoint := service.CompositeRouteEndpointMessages
+			if isCountTokens {
+				endpoint = service.CompositeRouteEndpointCountTokens
+			}
+			dec, err := resolver.Resolve(context.Background(), group.ID, reqModel, endpoint)
+			require.NoError(t, err)
+			require.True(t, dec.Matched, "composite route must match for %s", reqModel)
+			routeDecision = &dec
+			if dec.UpstreamModel != "" && dec.UpstreamModel != reqModel {
+				bodyBytes = []byte(`{"model":"` + dec.UpstreamModel + `","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+			}
+		}
+
+		parsedCheck, parseErr := service.ParseGatewayRequest(service.NewRequestBodyRef(bodyBytes), domain.PlatformAnthropic)
+		require.NoError(t, parseErr)
+
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(bodyBytes)))
+		req.Header.Set("Content-Type", "application/json")
+		if clientBeta != "" {
+			req.Header.Set("anthropic-beta", clientBeta)
+		}
+		ctx := context.WithValue(req.Context(), ctxkey.Group, group)
+		if routeDecision != nil {
+			ctx = service.WithCompositeRouteDecision(ctx, *routeDecision)
+		}
+		c.Request = req.WithContext(ctx)
+
+		groupID := group.ID
+		apiKey := &service.APIKey{
+			ID: 901, UserID: 902, GroupID: &groupID, Group: group, Status: service.StatusActive,
+			User: &service.User{ID: 902, Concurrency: 10, Balance: 100, Status: service.StatusActive},
+		}
+		c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+		c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 902, Concurrency: 10})
+
+		if isCountTokens {
+			h.CountTokens(c)
+		} else {
+			h.Messages(c)
+		}
+		require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+		require.NotNil(t, upstream.lastReq)
+		return upstream.lastReq, upstream.lastBody, parsedCheck.Context1MRequested
+	}
+
+	accounts := []*service.Account{
+		{
+			ID: 101, Name: "oauth-acc", Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth,
+			Credentials: map[string]any{"access_token": "oauth-tok"}, Concurrency: 5, Status: service.StatusActive, Schedulable: true,
+		},
+		{
+			ID: 102, Name: "apikey-acc", Platform: service.PlatformAnthropic, Type: service.AccountTypeAPIKey,
+			Credentials: map[string]any{"api_key": "sk-ant-key"}, Concurrency: 5, Status: service.StatusActive, Schedulable: true,
+		},
+	}
+
+	// AC-65-06：Anthropic 直连组（含 Bedrock 变体、显式 header 单独透传与去重）
+	anthropicGroup := &service.Group{ID: 8601, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive}
+	for _, tc := range []struct {
+		reqModel      string
+		wantCanonical string
+		clientBeta    string
+		want1MIntent  bool
+	}{
+		{"claude-opus-4-6[1m]", "claude-opus-4-6", "", true},
+		{"claude-fable-5-1[1m]", "claude-fable-5-1", "", true},
+		{"apac.anthropic.claude-opus-4-6-v1[1m]", "apac.anthropic.claude-opus-4-6-v1", "", true},
+		{"claude-opus-4-6[1m]", "claude-opus-4-6", claude.BetaContext1M, true},
+		{"claude-opus-4-6", "claude-opus-4-6", claude.BetaContext1M, false},
+	} {
+		for _, acc := range accounts {
+			for _, isCT := range []bool{false, true} {
+				upReq, upBody, context1MRequested := runHandler(t, anthropicGroup, acc, nil, isCT, tc.reqModel, tc.clientBeta)
+				require.Equal(t, tc.want1MIntent, context1MRequested, "model=%s", tc.reqModel)
+				sentModel := gjson.GetBytes(upBody, "model").String()
+				require.NotContains(t, sentModel, "[1m]")
+				require.False(t, strings.HasPrefix(sentModel, "claude-fable-5-_"))
+				if acc.Type == service.AccountTypeAPIKey {
+					require.Equal(t, tc.wantCanonical, sentModel)
+				} else {
+					require.Equal(t, claude.NormalizeModelID(tc.wantCanonical), sentModel)
+				}
+				betaHeader := getRawHeaderForTest(upReq.Header, "anthropic-beta")
+				require.Equal(t, 1, strings.Count(betaHeader, claude.BetaContext1M),
+					"model=%s account=%s count_tokens=%v beta=%q", tc.reqModel, acc.Type, isCT, betaHeader)
+			}
+		}
+	}
+
+	// AC-65-08：Composite 分组（自动识别 vs 显式规则改名 × OAuth / API Key × Messages / CountTokens）
+	compositeGroup := &service.Group{ID: 8602, Hydrated: true, Platform: service.PlatformComposite, Status: service.StatusActive}
+	explicitRoutes := []service.CompositeModelRoute{
+		{
+			GroupID:        compositeGroup.ID,
+			PublicModel:    "custom-1m-alias",
+			MatchType:      service.CompositeRouteMatchExact,
+			TargetPlatform: service.PlatformAnthropic,
+			UpstreamModel:  "claude-opus-4-6",
+			Endpoint:       service.CompositeRouteEndpointAny,
+			Enabled:        true,
+		},
+	}
+	for _, routeCase := range []struct {
+		name     string
+		reqModel string
+		routes   []service.CompositeModelRoute
+	}{
+		{"auto detector route", "claude-opus-4-6[1m]", nil},
+		{"explicit rename route", "claude-fable-5-custom-1m-alias[1m]", explicitRoutes},
+	} {
+		t.Run(routeCase.name, func(t *testing.T) {
+			for _, acc := range accounts {
+				for _, isCT := range []bool{false, true} {
+					upReq, upBody, context1MRequested := runHandler(t, compositeGroup, acc, routeCase.routes, isCT, routeCase.reqModel, "")
+					require.True(t, context1MRequested, "route=%s must preserve Context1MRequested", routeCase.name)
+					sentModel := gjson.GetBytes(upBody, "model").String()
+					require.Equal(t, "claude-opus-4-6", sentModel)
+					require.NotContains(t, sentModel, "[1m]")
+					require.NotContains(t, sentModel, "claude-fable-5-")
+					betaHeader := getRawHeaderForTest(upReq.Header, "anthropic-beta")
+					require.Equal(t, 1, strings.Count(betaHeader, claude.BetaContext1M),
+						"route=%s account=%s count_tokens=%v beta=%q", routeCase.name, acc.Type, isCT, betaHeader)
+				}
+			}
+		})
 	}
 }

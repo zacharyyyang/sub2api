@@ -171,6 +171,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	body = parsedReq.Body.Bytes()
+	service.EnsureRequestContext1MBetaHeader(c, parsedReq.Model, parsedReq.Context1MRequested)
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 	bindRequestedReasoningEffort(c, body, reqModel)
@@ -1236,12 +1237,26 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	// Fallback to default models
 	if platform == service.PlatformOpenAI {
-		writeModelsListResponse(c, openai.DefaultModels)
+		models := slices.Clone(openai.DefaultModels)
+		for i := range models {
+			id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "openai")
+			models[i].ID = id
+			models[i].DisplayName = displayName
+			models[i].ContextWindow = contextWindow
+		}
+		writeModelsListResponse(c, models)
 		return
 	}
 
 	if platform == service.PlatformGemini {
-		writeModelsListResponse(c, geminicli.DefaultModels)
+		models := slices.Clone(geminicli.DefaultModels)
+		for i := range models {
+			id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "claude")
+			models[i].ID = id
+			models[i].DisplayName = displayName
+			models[i].ContextWindow = contextWindow
+		}
+		writeModelsListResponse(c, models)
 		return
 	}
 	if platform == service.PlatformGrok {
@@ -1266,7 +1281,14 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		return
 	}
 
-	writeModelsListResponse(c, claude.DefaultModels)
+	defaults := slices.Clone(claude.DefaultModels)
+	for i := range defaults {
+		id, displayName, contextWindow := service.FormatModelForDiscovery(defaults[i].ID, defaults[i].DisplayName, "claude")
+		defaults[i].ID = id
+		defaults[i].DisplayName = displayName
+		defaults[i].ContextWindow = contextWindow
+	}
+	writeModelsListResponse(c, defaults)
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1540,11 +1562,13 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 	}
 	models := make([]claude.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
+		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, modelID, "claude")
 		models = append(models, claude.Model{
-			ID:          modelID,
-			Type:        "model",
-			DisplayName: modelID,
-			CreatedAt:   "2024-01-01T00:00:00Z",
+			ID:            id,
+			Type:          "model",
+			DisplayName:   displayName,
+			CreatedAt:     "2024-01-01T00:00:00Z",
+			ContextWindow: contextWindow,
 		})
 	}
 	writeModelsListResponse(c, models)
@@ -1589,6 +1613,10 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 				DisplayName: modelID,
 			}
 		}
+		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, model.DisplayName, "xai")
+		model.ID = id
+		model.DisplayName = displayName
+		model.ContextWindow = contextWindow
 		item := grokModelListItem{Model: model}
 		if grokModelSupportsConfigurableReasoning(modelID) {
 			item.SupportsReasoningEffort = true
@@ -1626,18 +1654,22 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 
 	models := make([]openai.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		if model, ok := defaultsByID[modelID]; ok {
-			models = append(models, model)
-			continue
+		model, ok := defaultsByID[modelID]
+		if !ok {
+			model = openai.Model{
+				ID:          modelID,
+				Object:      "model",
+				Created:     1704067200,
+				OwnedBy:     "openai",
+				Type:        "model",
+				DisplayName: modelID,
+			}
 		}
-		models = append(models, openai.Model{
-			ID:          modelID,
-			Object:      "model",
-			Created:     1704067200,
-			OwnedBy:     "openai",
-			Type:        "model",
-			DisplayName: modelID,
-		})
+		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, model.DisplayName, "openai")
+		model.ID = id
+		model.DisplayName = displayName
+		model.ContextWindow = contextWindow
+		models = append(models, model)
 	}
 	writeModelsListResponse(c, models)
 }
@@ -1923,6 +1955,14 @@ func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
 			}
 		}
 		models = filtered
+	}
+	for i := range models {
+		id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "claude")
+		models[i].ID = id
+		models[i].DisplayName = displayName
+		if contextWindow > 0 {
+			models[i].ContextWindow = contextWindow
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"object": "list",
@@ -2541,6 +2581,7 @@ func (h *GatewayHandler) CountTokens(c *gin.Context) {
 		return
 	}
 	body = parsedReq.Body.Bytes()
+	service.EnsureRequestContext1MBetaHeader(c, parsedReq.Model, parsedReq.Context1MRequested)
 	// count_tokens 走 messages 严格校验时，复用已解析请求，避免二次反序列化。
 	SetClaudeCodeClientContext(c, body, parsedReq)
 	ensureCompositeTargetPlatform(c, apiKey, parsedReq.Model)

@@ -1009,25 +1009,34 @@ func (a *Account) isModelMappingSupported(requestedModel string) bool {
 	if mappingSupportsRequestedModel(mapping, requestedModel) {
 		return true
 	}
-	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
+	// 入站模型可能带 "[1m]" 后缀或 CCD 外壳 ID。先按原样查，保住「账号配带后缀键」这一向；
+	// 再用归一后的 canonical 查一次，使只配裸名的账号也能被带后缀的请求命中。
+	canonical, _ := NormalizeInboundModelID(requestedModel)
+	if canonical == "" {
+		canonical = requestedModel
+	}
+	if canonical != requestedModel && mappingSupportsRequestedModel(mapping, canonical) {
+		return true
+	}
+	normalized := normalizeRequestedModelForLookup(a.Platform, canonical)
 	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
 		return true
 	}
 	if a.Platform == PlatformQoder {
-		if _, ok := domain.ResolveQoderModel(requestedModel); ok && mappingSupportsRequestedModel(qoderDefaultModelMapping(), normalized) {
+		if _, ok := domain.ResolveQoderModel(canonical); ok && mappingSupportsRequestedModel(qoderDefaultModelMapping(), normalized) {
 			return true
 		}
 	}
 	if a.Platform == PlatformMimo {
-		if _, ok := domain.ResolveMimoModel(requestedModel); ok && mappingSupportsRequestedModel(mimoDefaultModelMapping(), normalized) {
+		if _, ok := domain.ResolveMimoModel(canonical); ok && mappingSupportsRequestedModel(mimoDefaultModelMapping(), normalized) {
 			return true
 		}
 	}
 	if a.Platform == PlatformAntigravity {
-		if _, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, requestedModel); ok {
+		if _, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, canonical); ok {
 			return true
 		}
-		if _, ok := resolveGeminiThinkingVariantForLevel(a, requestedModel, "high"); ok {
+		if _, ok := resolveGeminiThinkingVariantForLevel(a, canonical, "high"); ok {
 			return true
 		}
 	}
@@ -1051,17 +1060,28 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
 		return mappedModel, true
 	}
-	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
+	// 与 isModelMappingSupported 同一判据：先原样、再 canonical、再平台归一，
+	// 使带 "[1m]" / 外壳的请求与只配裸名的账号互相命中。
+	canonical, _ := NormalizeInboundModelID(requestedModel)
+	if canonical == "" {
+		canonical = requestedModel
+	}
+	if canonical != requestedModel {
+		if mappedModel, matched := resolveRequestedModelInMapping(mapping, canonical); matched {
+			return mappedModel, true
+		}
+	}
+	normalized := normalizeRequestedModelForLookup(a.Platform, canonical)
 	if normalized != requestedModel {
 		if mappedModel, matched := resolveRequestedModelInMapping(mapping, normalized); matched {
 			return mappedModel, true
 		}
 	}
 	if a.Platform == PlatformAntigravity {
-		if mappedModel, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, requestedModel); ok {
+		if mappedModel, ok := resolveAntigravitySuffixedVariantFromBaseMapping(mapping, canonical); ok {
 			return mappedModel, true
 		}
-		if mappedModel, ok := resolveGeminiThinkingVariantForLevel(a, requestedModel, "high"); ok {
+		if mappedModel, ok := resolveGeminiThinkingVariantForLevel(a, canonical, "high"); ok {
 			return mappedModel, true
 		}
 	}

@@ -86,6 +86,7 @@ func writeRetrievedModel(c *gin.Context, body []byte) {
 		return
 	}
 	modelID := c.Param("model")
+	reqID, _ := service.NormalizeInboundModelID(modelID)
 	for _, raw := range catalog.Data {
 		var model map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &model); err != nil {
@@ -97,7 +98,8 @@ func writeRetrievedModel(c *gin.Context, body []byte) {
 			writeOpenAIModelsError(c, http.StatusBadGateway, "upstream_error", "Invalid model catalogue ID")
 			return
 		}
-		if id == modelID {
+		itemID, _ := service.NormalizeInboundModelID(id)
+		if itemID == reqID {
 			c.Data(http.StatusOK, "application/json", raw)
 			return
 		}

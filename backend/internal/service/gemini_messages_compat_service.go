@@ -30,6 +30,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const geminiStickySessionTTL = time.Hour
@@ -543,6 +544,17 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	}
 	if strings.TrimSpace(req.Model) == "" {
 		return nil, fmt.Errorf("missing model")
+	}
+
+	// 兼容入口不经 ParseGatewayRequest，入站 model 未经归一：先剥末尾 [1m] 与
+	// CCD 外壳，并把归一结果写回 body——后续 convertClaudeMessagesToGeminiGenerateContent
+	// 与 claudeRequestEnablesThinking 直接读 body，只改结构体不会影响转发内容。
+	canonicalModel, _ := NormalizeInboundModelID(req.Model)
+	if canonicalModel != "" && canonicalModel != req.Model {
+		req.Model = canonicalModel
+		if rewritten, err := sjson.SetBytes(body, "model", canonicalModel); err == nil {
+			body = rewritten
+		}
 	}
 
 	originalModel := req.Model

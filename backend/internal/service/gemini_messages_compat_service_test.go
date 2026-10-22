@@ -1291,3 +1291,49 @@ func parseAnthropicContentBlockEvents(t *testing.T, raw string) []anthropicConte
 	}
 	return events
 }
+
+// Forward 是 Gemini 兼容入口：入站 model 未经 ParseGatewayRequest 归一，
+// 带 [1m] 或 CCD 外壳的名字会原样进上游 URL，因此必须在上游请求前剥壳。
+func TestGeminiMessagesCompatServiceForward_NormalizesInboundModelID(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		canonical string
+	}{
+		{name: "strips 1m suffix", model: "gemini-3-pro-high[1m]", canonical: "gemini-3-pro-high"},
+		{name: "unwraps ccd shell", model: "claude-fable-5-gemini-3-pro-high", canonical: "gemini-3-pro-high"},
+		{name: "bare model untouched", model: "gemini-3-pro-high", canonical: "gemini-3-pro-high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+			httpStub := &geminiCompatHTTPUpstreamStub{
+				response: &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"x-request-id": []string{"gemini-req-1m"}},
+					Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5}}`)),
+				},
+			}
+			svc := &GeminiMessagesCompatService{httpUpstream: httpStub, cfg: &config.Config{}}
+			account := &Account{
+				ID:          1,
+				Type:        AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "test-key"},
+			}
+			body := []byte(`{"model":"` + tc.model + `","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+
+			result, err := svc.Forward(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, tc.canonical, result.Model)
+			require.Equal(t, tc.canonical, result.UpstreamModel)
+			require.NotNil(t, httpStub.lastReq)
+			require.Contains(t, httpStub.lastReq.URL.String(), "/models/"+tc.canonical+":")
+			require.NotContains(t, httpStub.lastReq.URL.String(), "[1m]")
+		})
+	}
+}

@@ -117,6 +117,7 @@ func clearGatewayRequestDerivedState(parsed *ParsedRequest) {
 	parsed.MetadataUserID = ""
 	parsed.HasSystem = false
 	parsed.ThinkingEnabled = false
+	parsed.Context1MRequested = false
 	parsed.OutputEffort = ""
 	parsed.Speed = ""
 	parsed.MaxTokens = 0
@@ -197,18 +198,19 @@ func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) erro
 			return fmt.Errorf("invalid model field type")
 		}
 		parsed.Model = modelResult.String()
-		if protocol == domain.PlatformAnthropic {
-			normalizedModel := normalizeClaudeCodeLongContextModel(parsed.Model)
-			if normalizedModel != parsed.Model {
-				normalizedBody, err := sjson.SetBytes(bodyBytes, "model", normalizedModel)
-				if err != nil {
-					return fmt.Errorf("normalize model field: %w", err)
-				}
-				parsed.Body.Replace(normalizedBody)
-				bodyBytes = normalizedBody
-				jsonStr = *(*string)(unsafe.Pointer(&bodyBytes))
-				parsed.Model = normalizedModel
+		// 全协议统一剥离末尾 [1m] 并还原 Claude Code Desktop 外壳 ID，使下游
+		// 路由、选号、白名单与上游转发只看到真实模型名。
+		normalizedModel, context1MRequested := NormalizeInboundModelID(parsed.Model)
+		parsed.Context1MRequested = context1MRequested
+		if normalizedModel != parsed.Model {
+			normalizedBody, err := sjson.SetBytes(bodyBytes, "model", normalizedModel)
+			if err != nil {
+				return fmt.Errorf("normalize model field: %w", err)
 			}
+			parsed.Body.Replace(normalizedBody)
+			bodyBytes = normalizedBody
+			jsonStr = *(*string)(unsafe.Pointer(&bodyBytes))
+			parsed.Model = normalizedModel
 		}
 	}
 
@@ -281,16 +283,17 @@ func DescribeInvalidJSON(body []byte) error {
 // 2. 将解析结果 ParsedRequest 传递给 Service 层
 // 3. 避免重复 json.Unmarshal，减少 CPU 和内存开销
 type ParsedRequest struct {
-	Body            *RequestBodyRef // 原始请求体引用（保留用于转发）；替换内容请走 ReplaceBody
-	Model           string          // 请求的模型名称
-	Stream          bool            // 是否为流式请求
-	MetadataUserID  string          // metadata.user_id（用于会话亲和）
-	HasSystem       bool            // 是否包含 system 字段（包含 null 也视为显式传入）
-	ThinkingEnabled bool            // 是否开启 thinking（部分平台会影响最终模型名）
-	OutputEffort    string          // output_config.effort（Claude API 的推理强度控制）
-	Speed           string          // Anthropic speed（当前可计费值为 "fast"）
-	MaxTokens       int             // max_tokens 值（用于探测请求拦截）
-	SessionContext  *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
+	Body               *RequestBodyRef // 原始请求体引用（保留用于转发）；替换内容请走 ReplaceBody
+	Model              string          // 请求的模型名称
+	Stream             bool            // 是否为流式请求
+	MetadataUserID     string          // metadata.user_id（用于会话亲和）
+	HasSystem          bool            // 是否包含 system 字段（包含 null 也视为显式传入）
+	ThinkingEnabled    bool            // 是否开启 thinking（部分平台会影响最终模型名）
+	Context1MRequested bool            // 客户端是否通过 "<model>[1m]" 显式请求 1M 上下文窗口
+	OutputEffort       string          // output_config.effort（Claude API 的推理强度控制）
+	Speed              string          // Anthropic speed（当前可计费值为 "fast"）
+	MaxTokens          int             // max_tokens 值（用于探测请求拦截）
+	SessionContext     *SessionContext // 可选：请求上下文区分因子（nil 时行为不变）
 
 	protocol      string    // 当前 Body 的协议格式，用于 Body 替换后刷新 raw range
 	systemRange   jsonRange // system/systemInstruction.parts 的 raw JSON 范围，绑定 Body 当前内容

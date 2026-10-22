@@ -96,13 +96,19 @@ func filterSystemOneRouteModels(routes []CompositeModelRoute, models []string, e
 
 func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, model, endpoint string) (CompositeRouteDecision, error) {
 	model = strings.TrimSpace(model)
+	// 入参先归一：客户端可能带 "[1m]" 后缀或 CCD 外壳 ID，路由匹配基于 canonical；
+	// 原请求的 1M 意图记在 context1MRequested，写回时按意图拼回后缀。
+	canonical, context1MRequested := NormalizeInboundModelID(model)
+	if canonical == "" {
+		canonical = model
+	}
 	endpoint = normalizeCompositeRouteEndpoint(endpoint)
 	decision := CompositeRouteDecision{
 		GroupID:     groupID,
 		PublicModel: model,
 		Endpoint:    endpoint,
 	}
-	if model == "" {
+	if canonical == "" {
 		decision.Reason = "model is required"
 		return decision, nil
 	}
@@ -112,10 +118,10 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 		if err != nil {
 			return decision, fmt.Errorf("list composite routes: %w", err)
 		}
-		if route, ok := matchCompositeRoute(routes, model, endpoint); ok {
-			upstreamModel := strings.TrimSpace(route.UpstreamModel)
-			if upstreamModel == "" {
-				upstreamModel = model
+		if route, ok := matchCompositeRoute(routes, canonical, endpoint); ok {
+			upstreamCanonical := canonical
+			if configured, _ := NormalizeInboundModelID(route.UpstreamModel); configured != "" {
+				upstreamCanonical = configured
 			}
 			return CompositeRouteDecision{
 				Matched:        true,
@@ -123,7 +129,7 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 				GroupID:        groupID,
 				PublicModel:    model,
 				TargetPlatform: route.TargetPlatform,
-				UpstreamModel:  upstreamModel,
+				UpstreamModel:  compositeRouteUpstreamModel(upstreamCanonical, context1MRequested),
 				Endpoint:       endpoint,
 				Route:          &route,
 			}, nil
@@ -131,18 +137,18 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 	}
 
 	if r != nil && r.modelOwnershipResolver != nil && groupID > 0 {
-		ownership, err := r.modelOwnershipResolver(ctx, groupID, model)
+		ownership, err := r.modelOwnershipResolver(ctx, groupID, canonical)
 		if err != nil {
 			// A recognizable model can still use the existing detector when the
 			// account catalog is temporarily unavailable. Unknown aliases cannot.
-			if _, detectable := DetectModelPlatform(model); !detectable {
+			if _, detectable := DetectModelPlatform(canonical); !detectable {
 				return decision, fmt.Errorf("resolve account model ownership: %w", err)
 			}
 		} else if ownership.Ambiguous {
 			decision.Reason = CompositeRouteReasonAmbiguous
 			// 未解析的请求由下游 handler 按模型名前缀兜底选平台；只有兜底落在
 			// OpenAI 网关族时，OpenAI 网关 OAuth 声明方才会被误送进 Anthropic 管线。
-			if guessed, ok := DetectModelPlatform(model); ok && ownership.OpenAIGatewayOAuthClaimed && domain.UsesOpenAIGateway(guessed) {
+			if guessed, ok := DetectModelPlatform(canonical); ok && ownership.OpenAIGatewayOAuthClaimed && domain.UsesOpenAIGateway(guessed) {
 				decision.Reason = CompositeRouteReasonOAuthAmbiguous
 			}
 			return decision, nil
@@ -158,25 +164,39 @@ func (r *CompositeRouteResolver) Resolve(ctx context.Context, groupID int64, mod
 				GroupID:        groupID,
 				PublicModel:    model,
 				TargetPlatform: platform,
-				UpstreamModel:  model,
+				UpstreamModel:  compositeRouteUpstreamModel(canonical, context1MRequested),
 				Endpoint:       endpoint,
 			}, nil
 		}
 	}
 
-	if platform, ok := DetectModelPlatform(model); ok {
+	if platform, ok := DetectModelPlatform(canonical); ok {
 		return CompositeRouteDecision{
 			Matched:        true,
 			Source:         CompositeRouteSourceDetector,
 			GroupID:        groupID,
 			PublicModel:    model,
 			TargetPlatform: platform,
-			UpstreamModel:  model,
+			UpstreamModel:  compositeRouteUpstreamModel(canonical, context1MRequested),
 			Endpoint:       endpoint,
 		}, nil
 	}
 	decision.Reason = "no explicit route or built-in detector match"
 	return decision, nil
+}
+
+// compositeRouteUpstreamModel 按原请求的 1M 意图把 canonical 拼回 "[1m]" 后缀。
+// 写回名必须是 canonical（可带后缀），不能原样透出裸名：body 一旦被改成裸名，
+// ParseGatewayRequest 就再也看不到后缀，Context1MRequested 恒为 false。已带后缀时不重复追加。
+func compositeRouteUpstreamModel(canonical string, context1MRequested bool) string {
+	canonical = strings.TrimSpace(canonical)
+	if canonical == "" || !context1MRequested {
+		return canonical
+	}
+	if strings.HasSuffix(strings.ToLower(canonical), ContextWindow1MSuffix) {
+		return canonical
+	}
+	return canonical + ContextWindow1MSuffix
 }
 
 func matchCompositeRoute(routes []CompositeModelRoute, model, endpoint string) (CompositeModelRoute, bool) {

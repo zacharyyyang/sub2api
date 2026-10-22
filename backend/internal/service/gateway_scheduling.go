@@ -32,6 +32,13 @@ func (s *GatewayService) SelectAccountForModel(ctx context.Context, groupID *int
 
 // SelectAccountForModelWithExclusions selects an account supporting the requested model while excluding specified accounts.
 func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context, groupID *int64, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}) (*Account, error) {
+	// 入站模型可能带 "[1m]" 后缀或 CCD 外壳 ID：候选匹配一律按归一后的 canonical 进行，
+	// 使只配裸名 model_mapping 的账号也能被带后缀的请求选中。
+	// 原值另存一份只给复合路由分支：Resolve 要靠它还原 1M 意图并把后缀拼回写回名。
+	requestedModelRaw := requestedModel
+	if canonical, _ := NormalizeInboundModelID(requestedModel); canonical != "" {
+		requestedModel = canonical
+	}
 	// 优先检查 context 中的强制平台（/antigravity 路由）
 	var platform string
 	forcePlatform, hasForcePlatform := ctx.Value(ctxkey.ForcePlatform).(string)
@@ -49,7 +56,7 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 		ctx = s.withGroupContext(ctx, group)
 		platform = group.Platform
 		if group.Platform == PlatformComposite {
-			decision, ok, err := s.resolveCompositeRouteDecision(ctx, group, requestedModel, CompositeRouteEndpointAny)
+			decision, ok, err := s.resolveCompositeRouteDecision(ctx, group, requestedModelRaw, CompositeRouteEndpointAny)
 			if err != nil {
 				return nil, err
 			}
