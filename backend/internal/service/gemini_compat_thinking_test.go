@@ -62,6 +62,7 @@ func TestApplyGeminiCompatThinkingConfig(t *testing.T) {
 		{name: "2.5 adaptive keeps dynamic budget", model: "gemini-2.5-flash", claudeBody: `{"thinking":{"type":"adaptive"}}`, wantNoConfig: true},
 		{name: "2.0 untouched", model: "gemini-2.0-flash", claudeBody: `{"output_config":{"effort":"high"}}`, includeThoughts: true, wantNoConfig: true},
 		{name: "image model untouched", model: "gemini-3-pro-image-preview", claudeBody: `{"output_config":{"effort":"high"}}`, includeThoughts: true, wantNoConfig: true},
+		{name: "pro agent alias streams thoughts without level", model: "gemini-pro-agent", claudeBody: `{"output_config":{"effort":"high"}}`, includeThoughts: true, wantThoughts: true},
 		{name: "unparsable model untouched", model: "gemini-flash-latest", claudeBody: `{"output_config":{"effort":"high"}}`, includeThoughts: true, wantNoConfig: true},
 		{name: "non gemini model untouched", model: "custom-model", claudeBody: `{"output_config":{"effort":"high"}}`, includeThoughts: true, wantNoConfig: true},
 		{name: "models prefix", model: "models/gemini-3.8-flash", claudeBody: `{"output_config":{"effort":"low"}}`, wantLevel: "low"},
@@ -177,6 +178,10 @@ func TestGeminiMessagesForward_IncludeThoughtsFollowsClientThinking(t *testing.T
 		wantLevel    string
 	}{
 		{name: "stream with adaptive thinking", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"},"messages":[{"role":"user","content":"hi"}]}`, wantThoughts: true, wantLevel: "medium"},
+		{name: "stream with output_config effort only", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"output_config":{"effort":"low"},"messages":[{"role":"user","content":"hi"}]}`, wantThoughts: true, wantLevel: "low"},
+		{name: "stream with output_config effort none", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"output_config":{"effort":"none"},"messages":[{"role":"user","content":"hi"}]}`, wantThoughts: false, wantLevel: "minimal"},
+		{name: "stream with enabled thinking and effort none disables thoughts", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"thinking":{"type":"enabled","budget_tokens":10240},"output_config":{"effort":"none"},"messages":[{"role":"user","content":"hi"}]}`, wantThoughts: false, wantLevel: "minimal"},
+		{name: "stream with disabled thinking and effort high disables thoughts", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"thinking":{"type":"disabled"},"output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"}]}`, wantThoughts: false, wantLevel: "minimal"},
 		{name: "stream without thinking", body: `{"model":"gemini-3.7-flash","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`},
 		{name: "non stream with thinking", body: `{"model":"gemini-3.7-flash","max_tokens":1024,"thinking":{"type":"enabled","budget_tokens":31999},"messages":[{"role":"user","content":"hi"}]}`, wantLevel: "high"},
 	}
@@ -243,11 +248,40 @@ func TestGeminiMessagesHandleStreamingResponse_EmitsThinkingBlockBeforeText(t *t
 	require.Equal(t, -1, open)
 	require.Equal(t, []string{"thinking", "text"}, started)
 
-	out := rec.Body.String()
-	require.Contains(t, out, `"content_block":{"signature":"","thinking":"","type":"thinking"}`)
-	require.Contains(t, out, `"type":"thinking_delta"`)
-	require.Contains(t, out, `"thinking":"Plan the reply"`)
-	require.NotContains(t, out, `"text":"Plan the reply"`)
+	var sawThinkingStart, sawThinkingDelta, sawTextDelta bool
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		payload, ok := strings.CutPrefix(line, "data: ")
+		if !ok || strings.TrimSpace(payload) == "" {
+			continue
+		}
+		switch gjson.Get(payload, "type").String() {
+		case "content_block_start":
+			cb := gjson.Get(payload, "content_block")
+			if cb.Get("type").String() == "thinking" {
+				sawThinkingStart = true
+				require.True(t, cb.Get("thinking").Exists())
+				require.Equal(t, "", cb.Get("thinking").String())
+				require.True(t, cb.Get("signature").Exists())
+				require.Equal(t, "", cb.Get("signature").String())
+			}
+		case "content_block_delta":
+			delta := gjson.Get(payload, "delta")
+			switch delta.Get("type").String() {
+			case "thinking_delta":
+				if delta.Get("thinking").String() == "Plan the reply" {
+					sawThinkingDelta = true
+				}
+			case "text_delta":
+				require.NotEqual(t, "Plan the reply", delta.Get("text").String())
+				if delta.Get("text").String() == "Hello" {
+					sawTextDelta = true
+				}
+			}
+		}
+	}
+	require.True(t, sawThinkingStart, "expected thinking content_block_start")
+	require.True(t, sawThinkingDelta, "expected thinking_delta with 'Plan the reply'")
+	require.True(t, sawTextDelta, "expected text_delta with 'Hello'")
 }
 
 func TestConvertClaudeMessagesToGemini_DropsHistoryThinkingBlocks(t *testing.T) {

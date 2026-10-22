@@ -282,6 +282,9 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 		if cleaned, cleanErr := cleanGeminiRequest(body); cleanErr == nil {
 			body = cleaned
 		}
+		includeThoughts := claudeRequest != nil && claudeRequest.Stream &&
+			claudeStreamIncludesThoughts(claudeBody, mappedModel)
+		body = applyGeminiCompatThinkingConfig(body, claudeBody, mappedModel, includeThoughts)
 		return s.wrapV1InternalRequest(projectID, mappedModel, body)
 	}
 

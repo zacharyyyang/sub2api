@@ -55,7 +55,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			toolIDToName := make(map[string]string)
-			parts, _, err := buildParts(json.RawMessage(tt.content), toolIDToName, tt.allowDummyThought)
+			parts, strippedThinking, err := buildParts(json.RawMessage(tt.content), toolIDToName, tt.allowDummyThought)
 
 			if err != nil {
 				t.Fatalf("buildParts() error = %v", err)
@@ -67,6 +67,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 
 			switch tt.name {
 			case "Claude model - preserve thinking block with signature":
+				require.False(t, strippedThinking)
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
@@ -75,6 +76,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 						parts[1].Thought, parts[1].ThoughtSignature)
 				}
 			case "Claude model - downgrade thinking to text without signature":
+				require.True(t, strippedThinking)
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
@@ -86,6 +88,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 					t.Fatalf("expected downgraded text %q, got %q", "Let me think...", parts[1].Text)
 				}
 			case "Gemini model - use dummy signature":
+				require.False(t, strippedThinking)
 				if len(parts) != 3 {
 					t.Fatalf("expected 3 parts, got %d", len(parts))
 				}
@@ -302,11 +305,14 @@ func TestBuildTools_KeepsWebSearchWhenNoClientFunctions(t *testing.T) {
 
 func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 	tests := []struct {
-		name        string
-		model       string
-		thinking    *ThinkingConfig
-		wantBudget  int
-		wantPresent bool
+		name          string
+		model         string
+		maxTokens     int
+		thinking      *ThinkingConfig
+		output        *OutputConfig
+		wantBudget    int
+		wantMaxTokens int
+		wantPresent   bool
 	}{
 		{
 			name:        "enabled without budget defaults to dynamic (-1)",
@@ -337,6 +343,13 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 			wantPresent: true,
 		},
 		{
+			name:        "adaptive with whitespace and uppercase type on opus4.6 maps to high budget (24576)",
+			model:       "claude-opus-4-6-thinking",
+			thinking:    &ThinkingConfig{Type: " Adaptive ", BudgetTokens: 20000},
+			wantBudget:  ClaudeAdaptiveHighThinkingBudgetTokens,
+			wantPresent: true,
+		},
+		{
 			name:        "adaptive on non-opus model keeps default dynamic (-1)",
 			model:       "claude-sonnet-4-5-thinking",
 			thinking:    &ThinkingConfig{Type: "adaptive"},
@@ -351,23 +364,81 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 			wantPresent: false,
 		},
 		{
+			name:        "disabled with output_config effort high does not emit thinkingConfig",
+			model:       "claude-opus-4-6-thinking",
+			thinking:    &ThinkingConfig{Type: "disabled"},
+			output:      &OutputConfig{Effort: "high"},
+			wantBudget:  0,
+			wantPresent: false,
+		},
+		{
+			name:        "enabled with output_config effort none does not emit thinkingConfig",
+			model:       "claude-opus-4-6-thinking",
+			thinking:    &ThinkingConfig{Type: "enabled", BudgetTokens: 10240},
+			output:      &OutputConfig{Effort: "none"},
+			wantBudget:  0,
+			wantPresent: false,
+		},
+		{
+			name:        "adaptive with output_config effort none does not emit thinkingConfig",
+			model:       "claude-opus-4-6-thinking",
+			thinking:    &ThinkingConfig{Type: "adaptive"},
+			output:      &OutputConfig{Effort: "none"},
+			wantBudget:  0,
+			wantPresent: false,
+		},
+		{
 			name:        "nil thinking does not emit thinkingConfig",
 			model:       "claude-opus-4-6-thinking",
 			thinking:    nil,
 			wantBudget:  0,
 			wantPresent: false,
 		},
+		{
+			name:        "output_config effort emits thinkingConfig with dynamic budget",
+			model:       "claude-opus-4-6",
+			output:      &OutputConfig{Effort: "high"},
+			wantBudget:  -1,
+			wantPresent: true,
+		},
+		{
+			name:        "output_config effort none does not emit thinkingConfig",
+			model:       "gemini-4-argon-high",
+			output:      &OutputConfig{Effort: "none"},
+			wantBudget:  0,
+			wantPresent: false,
+		},
+		{
+			name:        "gemini reasoning model without thinking or output emits thinkingConfig by default",
+			model:       "gemini-4-argon-high",
+			wantBudget:  -1,
+			wantPresent: true,
+		},
+		{
+			name:          "budget hitting model max_tokens limit is capped below clamped maxOutputTokens",
+			model:         "claude-opus-4-6-thinking",
+			maxTokens:     65000,
+			thinking:      &ThinkingConfig{Type: "enabled", BudgetTokens: 64000},
+			wantBudget:    maxOutputTokensClaude - MaxTokensBudgetPadding,
+			wantMaxTokens: maxOutputTokensClaude,
+			wantPresent:   true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &ClaudeRequest{
-				Model:    tt.model,
-				Thinking: tt.thinking,
+				Model:     tt.model,
+				MaxTokens: tt.maxTokens,
+				Thinking:  tt.thinking,
+				Output:    tt.output,
 			}
 			cfg := buildGenerationConfig(req)
 			if cfg == nil {
 				t.Fatalf("expected non-nil generationConfig")
+			}
+			if tt.wantMaxTokens > 0 && cfg.MaxOutputTokens != tt.wantMaxTokens {
+				t.Fatalf("expected maxOutputTokens=%d, got %d", tt.wantMaxTokens, cfg.MaxOutputTokens)
 			}
 
 			if tt.wantPresent {
@@ -380,6 +451,9 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 				if cfg.ThinkingConfig.ThinkingBudget != tt.wantBudget {
 					t.Fatalf("expected thinkingBudget=%d, got %d", tt.wantBudget, cfg.ThinkingConfig.ThinkingBudget)
 				}
+				if cfg.ThinkingConfig.ThinkingBudget > 0 && cfg.MaxOutputTokens <= cfg.ThinkingConfig.ThinkingBudget {
+					t.Fatalf("expected maxOutputTokens (%d) > thinkingBudget (%d)", cfg.MaxOutputTokens, cfg.ThinkingConfig.ThinkingBudget)
+				}
 				return
 			}
 
@@ -388,6 +462,49 @@ func TestBuildGenerationConfig_ThinkingDynamicBudget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTransformClaudeToGeminiWithOptions_StrippedThinkingDisablesEffortAndPreservesInput(t *testing.T) {
+	origThinking := &ThinkingConfig{Type: "adaptive"}
+	origOutput := &OutputConfig{Effort: "high"}
+	claudeReq := &ClaudeRequest{
+		Model:    "claude-opus-4-6",
+		Thinking: origThinking,
+		Output:   origOutput,
+		Messages: []ClaudeMessage{
+			{
+				Role:    "user",
+				Content: json.RawMessage(`"hello"`),
+			},
+			{
+				Role: "assistant",
+				Content: json.RawMessage(`[
+					{"type":"thinking","thinking":"unsigned thought","signature":""},
+					{"type":"text","text":"prior answer"}
+				]`),
+			},
+			{
+				Role:    "user",
+				Content: json.RawMessage(`"follow up"`),
+			},
+		},
+	}
+
+	body, err := TransformClaudeToGeminiWithOptions(claudeReq, "project-1", "claude-opus-4-6-thinking", DefaultTransformOptions())
+	require.NoError(t, err)
+
+	var req V1InternalRequest
+	require.NoError(t, json.Unmarshal(body, &req))
+	require.Equal(t, "claude-opus-4-6-thinking", req.Model)
+	require.NotNil(t, req.Request.GenerationConfig)
+	require.Nil(t, req.Request.GenerationConfig.ThinkingConfig, "unsigned history thinking downgrade must disable upstream thinkingConfig even when output_config.effort is set")
+
+	// Verify caller input was not mutated.
+	require.Equal(t, "claude-opus-4-6", claudeReq.Model)
+	require.Same(t, origThinking, claudeReq.Thinking)
+	require.Equal(t, "adaptive", claudeReq.Thinking.Type)
+	require.Same(t, origOutput, claudeReq.Output)
+	require.Equal(t, "high", claudeReq.Output.Effort)
 }
 
 func TestTransformClaudeToGeminiWithOptions_PreservesBillingHeaderSystemBlock(t *testing.T) {

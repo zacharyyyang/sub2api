@@ -1027,3 +1027,76 @@ func TestAntigravityCompatEmptyAfterKeepaliveReportsStreamError(t *testing.T) {
 		})
 	}
 }
+
+func TestAntigravityCompatChatGeminiModelAppliesThinkingConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name          string
+		body          string
+		wantModel     string
+		wantThoughts  bool
+		wantBudget    int64
+		wantHasBudget bool
+	}{
+		{
+			name:         "gemini-pro-agent stream with reasoning_effort high enables includeThoughts",
+			body:         `{"model":"gemini-pro-agent","stream":true,"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:    "gemini-pro-agent",
+			wantThoughts: true,
+		},
+		{
+			name:         "gemini-4-argon-high stream without effort enables includeThoughts by default",
+			body:         `{"model":"gemini-4-argon-high","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:    "gemini-4-argon-high",
+			wantThoughts: true,
+		},
+		{
+			name:          "gemini-2.5-flash stream with reasoning_effort low sets budget and includeThoughts",
+			body:          `{"model":"gemini-2.5-flash","stream":true,"reasoning_effort":"low","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:     "gemini-2.5-flash",
+			wantThoughts:  true,
+			wantBudget:    1024,
+			wantHasBudget: true,
+		},
+		{
+			name:         "gemini-4-argon-high stream with reasoning_effort none disables includeThoughts",
+			body:         `{"model":"gemini-4-argon-high","stream":true,"reasoning_effort":"none","messages":[{"role":"user","content":"hi"}]}`,
+			wantModel:    "gemini-4-argon-high",
+			wantThoughts: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &queuedHTTPUpstreamStub{responses: []*http.Response{antigravityCompatSuccessResponse()}}
+			svc := newAntigravityCompatService(config.GatewayConfig{MaxLineSize: defaultMaxLineSize}, upstream)
+			account := newAntigravityCompatAccount(AccountTypeOAuth)
+			mapping := account.Credentials["model_mapping"].(map[string]any)
+			mapping["gemini-pro-agent"] = "gemini-pro-agent"
+			mapping["gemini-4-argon"] = "gemini-4-argon-high"
+			mapping["gemini-2.5-flash"] = "gemini-2.5-flash"
+
+			body := []byte(tt.body)
+			c, _ := newAntigravityCompatContext(http.MethodPost, "/v1/chat/completions", body)
+
+			result, err := svc.ForwardAsChatCompletions(
+				context.Background(),
+				c,
+				account,
+				body,
+				nil,
+			)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, upstream.requestBodies, 1)
+
+			require.Equal(t, tt.wantModel, gjson.GetBytes(upstream.requestBodies[0], "model").String())
+			cfg := gjson.GetBytes(upstream.requestBodies[0], "request.generationConfig.thinkingConfig")
+			require.Equal(t, tt.wantThoughts, cfg.Get("includeThoughts").Bool(), string(upstream.requestBodies[0]))
+			require.Equal(t, tt.wantHasBudget, cfg.Get("thinkingBudget").Exists(), string(upstream.requestBodies[0]))
+			if tt.wantHasBudget {
+				require.Equal(t, tt.wantBudget, cfg.Get("thinkingBudget").Int(), string(upstream.requestBodies[0]))
+			}
+		})
+	}
+}

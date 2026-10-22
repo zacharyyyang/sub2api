@@ -104,7 +104,7 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 	}
 
 	// 检测是否启用 thinking
-	isThinkingEnabled := claudeReq.Thinking != nil && (claudeReq.Thinking.Type == "enabled" || claudeReq.Thinking.Type == "adaptive")
+	isThinkingEnabled := isClaudeThinkingRequested(claudeReq, targetModel)
 
 	// 只有 Gemini 模型支持 dummy thought workaround
 	// Claude 模型通过 Vertex/Google API 需要有效的 thought signatures
@@ -131,7 +131,8 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 		// If we had to downgrade thinking blocks to plain text due to missing/invalid signatures,
 		// disable upstream thinking mode to avoid signature/structure validation errors.
 		reqCopy := *claudeReq
-		reqCopy.Thinking = nil
+		reqCopy.Thinking = &ThinkingConfig{Type: "disabled"}
+		reqCopy.Output = nil
 		reqForConfig = &reqCopy
 	}
 	if targetModel != "" && targetModel != reqForConfig.Model {
@@ -687,6 +688,43 @@ func isAntigravityOpusHighTierModel(model string) bool {
 		strings.HasPrefix(lower, "claude-opus-4-8")
 }
 
+// isClaudeThinkingRequested 判断 Claude 请求是否需要开启上游思考输出（IncludeThoughts: true）。
+// 优先级：
+// 1. 显式关闭优先：thinking.type == "disabled" 或 output_config.effort == "none" → false；
+// 2. 显式开启：thinking.type == "enabled" / "adaptive"，或 output_config.effort 为 minimal / low / medium / high / xhigh / max → true；
+// 3. 默认开启：当 thinking.type 与 output_config.effort 均未指定时，对 Gemini 原生推理模型（如 gemini-4-argon*、gemini-pro-agent）返回 true。
+func isClaudeThinkingRequested(req *ClaudeRequest, targetModel string) bool {
+	if req == nil {
+		return false
+	}
+	var thinkingType, effort string
+	if req.Thinking != nil {
+		thinkingType = strings.ToLower(strings.TrimSpace(req.Thinking.Type))
+	}
+	if req.Output != nil {
+		effort = strings.ToLower(strings.TrimSpace(req.Output.Effort))
+	}
+	if thinkingType == "disabled" || effort == "none" {
+		return false
+	}
+	switch thinkingType {
+	case "enabled", "adaptive":
+		return true
+	}
+	switch effort {
+	case "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	}
+	if thinkingType != "" || effort != "" {
+		return false
+	}
+	model := targetModel
+	if model == "" {
+		model = req.Model
+	}
+	return IsGeminiReasoningModel(model)
+}
+
 func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	maxLimit := maxOutputTokensLimit(req.Model)
 	config := &GeminiGenerationConfig{
@@ -704,19 +742,23 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	}
 
 	// Thinking 配置
-	if req.Thinking != nil && (req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive") {
+	if isClaudeThinkingRequested(req, req.Model) {
 		config.ThinkingConfig = &GeminiThinkingConfig{
 			IncludeThoughts: true,
 		}
 
 		// - thinking.type=enabled：budget_tokens>0 用显式预算
 		// - thinking.type=adaptive：在 Antigravity 的高阶 Opus（4.6+）上覆写为 （24576）
+		// - 仅通过 output_config.effort 或 Gemini 推理模型默认开启时：使用动态预算（-1）
 		budget := -1
-		if req.Thinking.BudgetTokens > 0 {
-			budget = req.Thinking.BudgetTokens
-		}
-		if req.Thinking.Type == "adaptive" && isAntigravityOpusHighTierModel(req.Model) {
-			budget = ClaudeAdaptiveHighThinkingBudgetTokens
+		if req.Thinking != nil {
+			thinkingType := strings.ToLower(strings.TrimSpace(req.Thinking.Type))
+			if req.Thinking.BudgetTokens > 0 {
+				budget = req.Thinking.BudgetTokens
+			}
+			if thinkingType == "adaptive" && isAntigravityOpusHighTierModel(req.Model) {
+				budget = ClaudeAdaptiveHighThinkingBudgetTokens
+			}
 		}
 
 		// 正预算需要做上限与 max_tokens 约束；动态预算（-1）直接透传给上游。
@@ -739,7 +781,15 @@ func buildGenerationConfig(req *ClaudeRequest) *GeminiGenerationConfig {
 	if config.MaxOutputTokens > maxLimit {
 		config.MaxOutputTokens = maxLimit
 	}
-
+	if config.ThinkingConfig != nil && config.ThinkingConfig.ThinkingBudget > 0 && config.ThinkingConfig.ThinkingBudget >= config.MaxOutputTokens {
+		cappedBudget := config.MaxOutputTokens - MaxTokensBudgetPadding
+		if cappedBudget < 1 {
+			cappedBudget = config.MaxOutputTokens - 1
+		}
+		log.Printf("[Antigravity] Auto-capped thinking budget from %d to %d (must be < max_tokens=%d)",
+			config.ThinkingConfig.ThinkingBudget, cappedBudget, config.MaxOutputTokens)
+		config.ThinkingConfig.ThinkingBudget = cappedBudget
+	}
 	// 其他参数
 	if !isReasoning {
 		if req.Temperature != nil {

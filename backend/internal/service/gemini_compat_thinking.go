@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -107,14 +108,42 @@ func parseClaudeThinkingIntent(claudeBody []byte) claudeThinkingIntent {
 	return intent
 }
 
-// claudeRequestEnablesThinking 判断 Anthropic 请求是否开启了思考输出。
+// claudeRequestEnablesThinking 判断 Anthropic 请求是否显式开启了思考输出。
+// 优先级：thinking.type == "disabled" 或 output_config.effort == "none" 优先关闭（返回 false）；
+// 其余情况下 thinking.type 为 enabled/adaptive 或 output_config.effort 为有效档位时返回 true。
 func claudeRequestEnablesThinking(claudeBody []byte) bool {
-	switch parseClaudeThinkingIntent(claudeBody).thinkingType {
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(claudeBody, "thinking.type").String()))
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(claudeBody, "output_config.effort").String()))
+	if thinkingType == "disabled" || effort == "none" {
+		return false
+	}
+	switch thinkingType {
 	case "enabled", "adaptive":
+		return true
+	}
+	switch effort {
+	case "minimal", "low", "medium", "high", "xhigh", "max":
 		return true
 	default:
 		return false
 	}
+}
+
+// claudeStreamIncludesThoughts 判断流式兼容请求是否应向上游请求返回思考摘要（includeThoughts=true）。
+// 除显式开启外，当未传任何 thinking / output_config.effort 参数且目标模型为 Gemini 推理模型时默认开启。
+func claudeStreamIncludesThoughts(claudeBody []byte, upstreamModel string) bool {
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(claudeBody, "thinking.type").String()))
+	effort := strings.ToLower(strings.TrimSpace(gjson.GetBytes(claudeBody, "output_config.effort").String()))
+	if thinkingType == "disabled" || effort == "none" {
+		return false
+	}
+	if claudeRequestEnablesThinking(claudeBody) {
+		return true
+	}
+	if thinkingType == "" && effort == "" {
+		return antigravity.IsGeminiReasoningModel(upstreamModel)
+	}
+	return false
 }
 
 // geminiThinkingLevelFor 把思考意图映射为 thinkingLevel；返回空串表示交给模型默认档位。
@@ -178,18 +207,38 @@ func geminiThinkingBudgetFor(model string, intent claudeThinkingIntent) (budget 
 	return budget, true
 }
 
+// geminiModelSupportsIncludeThoughts 判断上游 Gemini 模型是否支持写入 includeThoughts。
+// 除可解析出 budget/level 参数的模型外，Antigravity 支持的无数字版本号推理模型别名（如 gemini-pro-agent）
+// 同样允许写入 includeThoughts；图像/语音/向量等非文本推理模型仍排除。
+func geminiModelSupportsIncludeThoughts(model string, param geminiThinkingParam) bool {
+	if param != geminiThinkingParamNone {
+		return true
+	}
+	name := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/")
+	rest, ok := strings.CutPrefix(name, "gemini-")
+	if !ok {
+		return false
+	}
+	for _, kind := range []string{"image", "tts", "embedding", "live", "audio"} {
+		if strings.Contains(rest, kind) {
+			return false
+		}
+	}
+	return antigravity.IsGeminiReasoningModel(name)
+}
+
 // applyGeminiCompatThinkingConfig 把兼容入口（Anthropic 形态请求体）的思考意图写进转换后的
 // Gemini 请求 generationConfig.thinkingConfig。includeThoughts 为 true 时要求上游返回
 // 思考摘要（thought=true 的 part）；思考被关闭（预算为 0）时不要求。
 func applyGeminiCompatThinkingConfig(geminiReq, claudeBody []byte, upstreamModel string, includeThoughts bool) []byte {
 	param := geminiThinkingParamForModel(upstreamModel)
-	if param == geminiThinkingParamNone {
+	if !geminiModelSupportsIncludeThoughts(upstreamModel, param) {
 		return geminiReq
 	}
 	intent := parseClaudeThinkingIntent(claudeBody)
 	out := geminiReq
 	thinkingOff := false
-	if !geminiModelNameCarriesThinkingTier(upstreamModel) {
+	if param != geminiThinkingParamNone && !geminiModelNameCarriesThinkingTier(upstreamModel) {
 		switch param {
 		case geminiThinkingParamLevel:
 			if level := geminiThinkingLevelFor(upstreamModel, intent); level != "" {
