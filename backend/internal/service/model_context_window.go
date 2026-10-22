@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net/http"
 	"regexp"
 	"strings"
 
@@ -400,29 +401,68 @@ func IsContext1MCapableModel(modelID string) bool {
 	return false
 }
 
+// IsClaudeCodeDiscoveryClient returns true when the HTTP request originates from
+// Claude Code CLI or Claude Code Desktop (which starts a local claude-cli child
+// process for API calls). Non-Claude clients (such as ThinCoder, Cursor, or
+// generic OpenAI/Anthropic SDK callers) receive false so discovery endpoints
+// return raw canonical model IDs without CCD shell wrapping or "[1m]" suffixes.
+func IsClaudeCodeDiscoveryClient(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	ua := strings.ToLower(strings.TrimSpace(getHeaderRaw(r.Header, "user-agent")))
+	if strings.Contains(ua, "claude-cli/") || strings.Contains(ua, "claude-code/") || strings.Contains(ua, "claude-desktop") {
+		return true
+	}
+	platform := strings.ToLower(strings.TrimSpace(getHeaderRaw(r.Header, "anthropic-client-platform")))
+	if platform == "desktop_app" || platform == "claude_code" {
+		return true
+	}
+	xApp := strings.ToLower(strings.TrimSpace(getHeaderRaw(r.Header, "x-app")))
+	if xApp == "cli" || xApp == "cli-bg" || xApp == "claude-code" {
+		return true
+	}
+	return false
+}
+
 // FormatModelForDiscovery transforms a canonical model ID and display name into
-// the Claude Code Desktop discovery representation:
-//   - Non-Claude models are wrapped with WrapModelWithCCDShell so CCD's fail-all
-//     and yCe filters accept them and both CCD and CLI enable the 5-level
-//     effort picker. The shell is applied only when exitPlatform is "claude";
-//     any other value, including empty or unknown, leaves the ID unwrapped.
-//   - Models with >=1M context window receive the "[1m]" suffix on their ID,
-//     " 1M" on their display name (if non-empty and not already suffixed), and
-//     context_window = 1000000.
+// the Claude Code Desktop discovery representation (equivalent to calling
+// FormatModelForDiscoveryWithClient with isClaudeCodeClient = true).
 func FormatModelForDiscovery(modelID, displayName, exitPlatform string) (outID, outDisplayName string, contextWindow int) {
+	return FormatModelForDiscoveryWithClient(modelID, displayName, exitPlatform, true)
+}
+
+// FormatModelForDiscoveryWithClient transforms a canonical model ID and display
+// name into the discovery representation appropriate for the caller:
+//   - When isClaudeCodeClient is true: non-Claude models are wrapped with
+//     WrapModelWithCCDShell when exitPlatform is "claude", and >=1M models
+//     receive the "[1m]" ID suffix, " 1M" display name suffix, and
+//     context_window = 1000000.
+//   - When isClaudeCodeClient is false (e.g. ThinCoder): raw canonical IDs and
+//     original display names are preserved without shell wrapping or "[1m]"
+//     suffixes, while >=1M models still report context_window = 1000000.
+func FormatModelForDiscoveryWithClient(modelID, displayName, exitPlatform string, isClaudeCodeClient bool) (outID, outDisplayName string, contextWindow int) {
 	canonical, _ := NormalizeInboundModelID(modelID)
 	if canonical == "" {
 		return modelID, displayName, 0
+	}
+
+	outDisplayName = strings.TrimSpace(displayName)
+	if outDisplayName == "" {
+		outDisplayName = canonical
+	}
+	if !isClaudeCodeClient {
+		outID = canonical
+		if IsContext1MCapableModel(canonical) {
+			contextWindow = ContextWindow1MTokens
+		}
+		return outID, outDisplayName, contextWindow
 	}
 
 	if exitPlatform == "claude" {
 		outID = WrapModelWithCCDShell(canonical)
 	} else {
 		outID = canonical
-	}
-	outDisplayName = strings.TrimSpace(displayName)
-	if outDisplayName == "" {
-		outDisplayName = canonical
 	}
 	if IsContext1MCapableModel(canonical) {
 		outID += ContextWindow1MSuffix

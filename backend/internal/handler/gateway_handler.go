@@ -1236,10 +1236,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	// Fallback to default models
+	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
 	if platform == service.PlatformOpenAI {
 		models := slices.Clone(openai.DefaultModels)
 		for i := range models {
-			id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "openai")
+			id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(models[i].ID, models[i].DisplayName, "openai", isCCClient)
 			models[i].ID = id
 			models[i].DisplayName = displayName
 			models[i].ContextWindow = contextWindow
@@ -1251,7 +1252,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	if platform == service.PlatformGemini {
 		models := slices.Clone(geminicli.DefaultModels)
 		for i := range models {
-			id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "claude")
+			id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(models[i].ID, models[i].DisplayName, "claude", isCCClient)
 			models[i].ID = id
 			models[i].DisplayName = displayName
 			models[i].ContextWindow = contextWindow
@@ -1283,7 +1284,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	defaults := slices.Clone(claude.DefaultModels)
 	for i := range defaults {
-		id, displayName, contextWindow := service.FormatModelForDiscovery(defaults[i].ID, defaults[i].DisplayName, "claude")
+		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(defaults[i].ID, defaults[i].DisplayName, "claude", isCCClient)
 		defaults[i].ID = id
 		defaults[i].DisplayName = displayName
 		defaults[i].ContextWindow = contextWindow
@@ -1560,9 +1561,10 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 		writeGrokModelsList(c, modelIDs)
 		return
 	}
+	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
 	models := make([]claude.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, modelID, "claude")
+		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(modelID, modelID, "claude", isCCClient)
 		models = append(models, claude.Model{
 			ID:            id,
 			Type:          "model",
@@ -1602,6 +1604,7 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 		defaultsByID[model.ID] = model
 	}
 
+	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
 	models := make([]grokModelListItem, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		model, ok := defaultsByID[modelID]
@@ -1613,7 +1616,7 @@ func writeGrokModelsList(c *gin.Context, modelIDs []string) {
 				DisplayName: modelID,
 			}
 		}
-		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, model.DisplayName, "xai")
+		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(modelID, model.DisplayName, "xai", isCCClient)
 		model.ID = id
 		model.DisplayName = displayName
 		model.ContextWindow = contextWindow
@@ -1652,6 +1655,7 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 		defaultsByID[model.ID] = model
 	}
 
+	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
 	models := make([]openai.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
 		model, ok := defaultsByID[modelID]
@@ -1665,7 +1669,7 @@ func writeOpenAIModelsList(c *gin.Context, modelIDs []string) {
 				DisplayName: modelID,
 			}
 		}
-		id, displayName, contextWindow := service.FormatModelForDiscovery(modelID, model.DisplayName, "openai")
+		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(modelID, model.DisplayName, "openai", isCCClient)
 		model.ID = id
 		model.DisplayName = displayName
 		model.ContextWindow = contextWindow
@@ -1956,8 +1960,9 @@ func (h *GatewayHandler) AntigravityModels(c *gin.Context) {
 		}
 		models = filtered
 	}
+	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
 	for i := range models {
-		id, displayName, contextWindow := service.FormatModelForDiscovery(models[i].ID, models[i].DisplayName, "claude")
+		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(models[i].ID, models[i].DisplayName, "claude", isCCClient)
 		models[i].ID = id
 		models[i].DisplayName = displayName
 		if contextWindow > 0 {

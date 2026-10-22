@@ -60,7 +60,7 @@ func TestGatewayModels_ModelAllowlistWildcardExpandsAgainstSource(t *testing.T) 
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5-codex[1m]", "gpt-5.5-mini[1m]", "gpt-5.4[1m]"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-5.5-codex", "gpt-5.5-mini", "gpt-5.4"}, modelIDsForTest(got.Data))
 }
 
 // geminiAllowlistAccountRepoStub 在 gatewayModelsAccountRepoStub 之上补充

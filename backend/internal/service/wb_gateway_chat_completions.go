@@ -48,14 +48,77 @@ type wbInboundToolCall struct {
 }
 
 // wbInboundMessage 是入站 messages 数组元素的具名结构体。Content 保持 *string
-// （与现有解码行为一致）；ToolCallID / Name / ToolCalls 为可选字段，仅用于
-// 工具历史折叠与临时会话合成，零值 = 缺省。
+// （与现有解码行为一致），在 UnmarshalJSON 中同时兼容 string、null 与 OpenAI
+// Content Parts 文本块数组（type = "text" | "input_text" | "output_text"），
+// 将多个文本块拼接为 *string；含非文本块（如 image_url/audio）或其他非字符串类型时
+// 仍返回反序列化错误并映射为 400 WB_UNSUPPORTED_INBOUND。
+// ToolCallID / Name / ToolCalls 为可选字段，仅用于工具历史折叠与临时会话合成，零值 = 缺省。
 type wbInboundMessage struct {
 	Role       string              `json:"role"`
 	Content    *string             `json:"content"`
 	ToolCallID *string             `json:"tool_call_id,omitempty"`
 	Name       *string             `json:"name,omitempty"`
 	ToolCalls  []wbInboundToolCall `json:"tool_calls,omitempty"`
+}
+
+type wbInboundContentPart struct {
+	Type string  `json:"type"`
+	Text *string `json:"text"`
+}
+
+func (m *wbInboundMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role       string              `json:"role"`
+		Content    json.RawMessage     `json:"content"`
+		ToolCallID *string             `json:"tool_call_id,omitempty"`
+		Name       *string             `json:"name,omitempty"`
+		ToolCalls  []wbInboundToolCall `json:"tool_calls,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.Role = raw.Role
+	m.ToolCallID = raw.ToolCallID
+	m.Name = raw.Name
+	m.ToolCalls = raw.ToolCalls
+
+	trimmed := bytes.TrimSpace(raw.Content)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		m.Content = nil
+		return nil
+	}
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		m.Content = &s
+		return nil
+	}
+	if trimmed[0] == '[' {
+		var parts []wbInboundContentPart
+		if err := json.Unmarshal(trimmed, &parts); err != nil {
+			return fmt.Errorf("cannot unmarshal message content array: %w", err)
+		}
+		var sb strings.Builder
+		for idx, part := range parts {
+			partType := strings.ToLower(strings.TrimSpace(part.Type))
+			switch partType {
+			case "text", "input_text", "output_text":
+				if part.Text == nil {
+					return fmt.Errorf("message content part[%d] of type %q is missing text string", idx, part.Type)
+				}
+				sb.WriteString(*part.Text)
+			default:
+				return fmt.Errorf("unsupported message content part[%d] type %q; only text content parts are supported", idx, part.Type)
+			}
+		}
+		joined := sb.String()
+		m.Content = &joined
+		return nil
+	}
+	var s string
+	return json.Unmarshal(trimmed, &s)
 }
 
 type wbInbound struct {

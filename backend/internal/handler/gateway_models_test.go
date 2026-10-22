@@ -121,7 +121,7 @@ func (s *gatewayModelsAccountRepoStub) ListSchedulableByPlatforms(ctx context.Co
 }
 
 func decorateIDForDiscoveryForTest(modelID, exitPlatform string) string {
-	out, _, _ := service.FormatModelForDiscovery(modelID, modelID, exitPlatform)
+	out, _, _ := service.FormatModelForDiscoveryWithClient(modelID, modelID, exitPlatform, false)
 	return out
 }
 
@@ -660,7 +660,7 @@ func assertGrokGatewayReasoningEfforts(t *testing.T, groupID int64, modelID stri
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Len(t, got.Data, 1)
 	model := got.Data[0]
-	require.Equal(t, modelID+"[1m]", model.ID)
+	require.Equal(t, modelID, model.ID)
 	require.True(t, model.SupportsReasoningEffort)
 	require.Equal(t, "high", model.ReasoningEffort)
 	require.Equal(t, want, model.ReasoningEfforts)
@@ -765,7 +765,7 @@ func TestGatewayModels_CompositeAntigravityAdvertisesAntigravityDefaults(t *test
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "claude-opus-4-6[1m]")
+	require.Contains(t, ids, "claude-opus-4-6")
 	require.Contains(t, ids, decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
 }
 
@@ -812,7 +812,7 @@ func TestGatewayModels_CustomModelsListDisabledKeepsOriginalModels(t *testing.T)
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.4[1m]", "gpt-5.5[1m]"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-5.4", "gpt-5.5"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T) {
@@ -859,7 +859,7 @@ func TestGatewayModels_CustomModelsListFiltersAndOrdersMappedModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5[1m]", "gpt-5.4[1m]"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_CompositeCustomModelsListFiltersAcrossConcretePlatforms(t *testing.T) {
@@ -1173,7 +1173,7 @@ func TestGatewayModels_CustomModelsListKeepsConcreteModelAllowedByWildcardMappin
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"claude-sonnet-4-6[1m]"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"claude-sonnet-4-6"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_AnthropicCustomModelsListKeepsMappedModelsOnly(t *testing.T) {
@@ -1716,7 +1716,7 @@ func modelIDsForTest(models []gatewayModelItemForTest) []string {
 func decorateIDsForDiscoveryForTest(modelIDs []string, exitPlatform string) []string {
 	out := make([]string, len(modelIDs))
 	for i, id := range modelIDs {
-		out[i], _, _ = service.FormatModelForDiscovery(id, id, exitPlatform)
+		out[i], _, _ = service.FormatModelForDiscoveryWithClient(id, id, exitPlatform, false)
 	}
 	return out
 }
@@ -1954,7 +1954,7 @@ func TestGatewayModels_GPT6SolLunaDiscoveryRespectsGroupAndAccountRestrictions(t
 	}{
 		{"allowlist over empty source stays empty", []string{"gpt-6.1-sol", "gpt-6-luna", "gpt-6-sol"}, false, []string{}},
 		{"unmapped account offers nothing to select", []string{"gpt-5.6-sol"}, false, []string{}},
-		{"account restricts new models", []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"}, true, []string{"gpt-5.6-sol[1m]"}},
+		{"account restricts new models", []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"}, true, []string{"gpt-5.6-sol"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			groupID := int64(25)
@@ -2002,8 +2002,8 @@ func TestGatewayModels_CompositeTypeSafeListingScope(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	var models gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &models))
-	require.Contains(t, modelIDsForTest(models.Data), "claude-fable-5-jev-latest")
-	require.Contains(t, modelIDsForTest(models.Data), "claude-opus-4-6[1m]")
+	require.Contains(t, modelIDsForTest(models.Data), "jev-latest")
+	require.Contains(t, modelIDsForTest(models.Data), "claude-opus-4-6")
 
 	c, rec = newContext("/models?client_version=0.147.0")
 	h.CodexModels(c)
@@ -2167,7 +2167,7 @@ func TestGatewayModels_CompositeCodexFiltersEffectiveResponsesRoutes(t *testing.
 							if scenario.name == "fallback default override" && allowlisted {
 								require.Empty(t, modelIDsForTest(models.Data))
 							} else {
-								expectedModel, _, _ := service.FormatModelForDiscovery(scenario.model, scenario.model, "claude")
+								expectedModel := decorateIDForDiscoveryForTest(scenario.model, "claude")
 								require.Contains(t, modelIDsForTest(models.Data), expectedModel)
 							}
 						}
@@ -2818,8 +2818,18 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		require.NotContains(t, bodyStr, "[1m][1m]")
 	}
 
+	newCCModelsRequestForTest := func(group *service.Group, path string) (*gin.Context, *httptest.ResponseRecorder) {
+		c, rec := newCompositeModelsRequestForTest(group, path)
+		c.Request.Header.Set("User-Agent", "claude-cli/2.1.112 (external, cli)")
+		return c, rec
+	}
+	decorateCCForTest := func(modelID, exitPlatform string) string {
+		out, _, _ := service.FormatModelForDiscovery(modelID, modelID, exitPlatform)
+		return out
+	}
+
 	// 落点 1：writeModelsList（WB / Qoder / Mimo / TypeSafe / Composite），exitPlatform = "claude"
-	t.Run("site 1 writeModelsList claude exit wraps non-claude and marks 1M", func(t *testing.T) {
+	t.Run("site 1 writeModelsList claude exit wraps non-claude and marks 1M for CC client while preserving raw IDs for non-CC client", func(t *testing.T) {
 		const groupID int64 = 8501
 		h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{
 			byGroup: map[int64][]service.Account{
@@ -2841,14 +2851,14 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 				},
 			},
 		})
-		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+		c, rec := newCCModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
 		h.Models(c)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assertNoForbidden1MFields(t, rec.Body.Bytes())
 		var got gatewayModelsResponseForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
-		gpt54 := findItem(t, got.Data, decorateIDForDiscoveryForTest("gpt-5.4", "claude"))
+		gpt54 := findItem(t, got.Data, decorateCCForTest("gpt-5.4", "claude"))
 		require.True(t, strings.HasPrefix(gpt54.ID, "claude-fable-5-"))
 		require.Equal(t, 1000000, gpt54.ContextWindow)
 		require.Contains(t, gpt54.DisplayName, "1M")
@@ -2857,7 +2867,7 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		require.Equal(t, 1000000, opus46.ContextWindow)
 		require.Contains(t, opus46.DisplayName, "1M")
 
-		gpt52 := findItem(t, got.Data, decorateIDForDiscoveryForTest("gpt-5.2", "claude"))
+		gpt52 := findItem(t, got.Data, decorateCCForTest("gpt-5.2", "claude"))
 		require.True(t, strings.HasPrefix(gpt52.ID, "claude-fable-5-"))
 		require.Zero(t, gpt52.ContextWindow)
 		require.NotContains(t, gpt52.ID, "[1m]")
@@ -2865,6 +2875,18 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		haiku := findItem(t, got.Data, "claude-haiku-4-5-20251001")
 		require.Zero(t, haiku.ContextWindow)
 		require.NotContains(t, haiku.ID, "[1m]")
+
+		// 非 Claude Code 客户端（如 ThinCoder）：返回原始 ID，不套外壳、不加 [1m]，但保留 context_window=1000000
+		cRaw, recRaw := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformComposite}, "/v1/models")
+		h.Models(cRaw)
+		require.Equal(t, http.StatusOK, recRaw.Code)
+		var gotRaw gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(recRaw.Body.Bytes(), &gotRaw))
+		rawGpt54 := findItem(t, gotRaw.Data, "gpt-5.4")
+		require.Equal(t, 1000000, rawGpt54.ContextWindow)
+		require.Equal(t, "gpt-5.4", rawGpt54.DisplayName)
+		rawOpus46 := findItem(t, gotRaw.Data, "claude-opus-4-6")
+		require.Equal(t, 1000000, rawOpus46.ContextWindow)
 	})
 
 	// 落点 3：writeGrokModelsList（Grok 专用出口），exitPlatform = "xai"，不套外壳
@@ -2881,7 +2903,7 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 				}},
 			},
 		})
-		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformGrok}, "/v1/models")
+		c, rec := newCCModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformGrok}, "/v1/models")
 		h.Models(c)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assertNoForbidden1MFields(t, rec.Body.Bytes())
@@ -2911,7 +2933,7 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 				}},
 			},
 		})
-		c, rec := newCompositeModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformOpenAI}, "/v1/models")
+		c, rec := newCCModelsRequestForTest(&service.Group{ID: groupID, Platform: service.PlatformOpenAI}, "/v1/models")
 		h.Models(c)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assertNoForbidden1MFields(t, rec.Body.Bytes())
@@ -2946,8 +2968,8 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		{
 			name:        "site 6 Gemini default fallback",
 			platform:    service.PlatformGemini,
-			want1MID:    decorateIDForDiscoveryForTest("gemini-2.5-pro", "claude"),
-			wantNon1MID: decorateIDForDiscoveryForTest("gemini-2.0-flash", "claude"),
+			want1MID:    decorateCCForTest("gemini-2.5-pro", "claude"),
+			wantNon1MID: decorateCCForTest("gemini-2.0-flash", "claude"),
 			expectShell: true,
 		},
 		{
@@ -2962,11 +2984,11 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 			h := newGatewayModelsHandlerForTest(&gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{}})
 			group := &service.Group{ID: 8505, Platform: tc.platform}
 
-			c1, rec1 := newCompositeModelsRequestForTest(group, "/v1/models")
+			c1, rec1 := newCCModelsRequestForTest(group, "/v1/models")
 			h.Models(c1)
 			require.Equal(t, http.StatusOK, rec1.Code)
 
-			c2, rec2 := newCompositeModelsRequestForTest(group, "/v1/models")
+			c2, rec2 := newCCModelsRequestForTest(group, "/v1/models")
 			h.Models(c2)
 			require.Equal(t, http.StatusOK, rec2.Code)
 			require.Equal(t, rec1.Body.Bytes(), rec2.Body.Bytes(), "second call must be byte-identical to first call")
@@ -2990,13 +3012,14 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		rec := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(rec)
 		c.Request = httptest.NewRequest(http.MethodGet, "/antigravity/models", nil)
+		c.Request.Header.Set("User-Agent", "claude-cli/2.1.112 (external, cli)")
 		h.AntigravityModels(c)
 		require.Equal(t, http.StatusOK, rec.Code)
 		assertNoForbidden1MFields(t, rec.Body.Bytes())
 
 		var got gatewayModelsResponseForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-		gem := findItem(t, got.Data, decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
+		gem := findItem(t, got.Data, decorateCCForTest("gemini-2.5-flash", "claude"))
 		require.True(t, strings.HasPrefix(gem.ID, "claude-fable-5-"))
 		require.Equal(t, 1000000, gem.ContextWindow)
 		require.Contains(t, gem.DisplayName, "1M")
@@ -3031,6 +3054,21 @@ func TestGatewayModels_AC6502RetrieveModelNormalizedBothSides(t *testing.T) {
 	})
 	group := &service.Group{ID: groupID, Platform: service.PlatformComposite}
 
+	requestModelWithUA := func(grp *service.Group, modelID, ua string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		if ua != "" {
+			c.Request.Header.Set("User-Agent", ua)
+		}
+		if modelID != "" {
+			c.Params = gin.Params{{Key: "model", Value: modelID}}
+		}
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{GroupID: &grp.ID, Group: grp})
+		h.Models(c)
+		return rec
+	}
+
 	for _, queryID := range []string{
 		"claude-opus-4-6",
 		"claude-opus-4-6[1m]",
@@ -3039,23 +3077,40 @@ func TestGatewayModels_AC6502RetrieveModelNormalizedBothSides(t *testing.T) {
 		"claude-fable-gpt-5.4[1m]",
 		"claude-fable-5-gpt-5.4[1m]",
 	} {
-		rec := requestModelForTest(h, group, queryID, "")
+		// Claude Code CLI 客户端：返回带 [1m] 的装饰 ID
+		rec := requestModelWithUA(group, queryID, "claude-cli/2.1.112")
 		require.Equal(t, http.StatusOK, rec.Code, "query=%s body=%s", queryID, rec.Body.String())
 		var item gatewayModelItemForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &item))
 		require.Equal(t, 1000000, item.ContextWindow, "query=%s", queryID)
 		require.True(t, strings.HasSuffix(item.ID, "[1m]"), "query=%s id=%s", queryID, item.ID)
+
+		// 普通客户端（ThinCoder）：同样命中，但返回不带外壳和 [1m] 的原始 ID，保留 context_window=1000000
+		recRaw := requestModelWithUA(group, queryID, "ThinCoder/0.10.8")
+		require.Equal(t, http.StatusOK, recRaw.Code, "raw query=%s body=%s", queryID, recRaw.Body.String())
+		var itemRaw gatewayModelItemForTest
+		require.NoError(t, json.Unmarshal(recRaw.Body.Bytes(), &itemRaw))
+		require.Equal(t, 1000000, itemRaw.ContextWindow, "raw query=%s", queryID)
+		require.False(t, strings.HasSuffix(itemRaw.ID, "[1m]"), "raw query=%s id=%s", queryID, itemRaw.ID)
+		require.False(t, strings.HasPrefix(itemRaw.ID, "claude-fable-5-"), "raw query=%s id=%s", queryID, itemRaw.ID)
 	}
 
-	// OpenAI 组查询 gpt-5.4[1m] / gpt-5.4 / claude-fable-gpt-5.4[1m] 同样命中同一装饰条目 gpt-5.4[1m]
+	// OpenAI 组查询 gpt-5.4[1m] / gpt-5.4 / claude-fable-gpt-5.4[1m] 同样命中同一装饰条目 gpt-5.4[1m]（CC 客户端）与 gpt-5.4（普通客户端）
 	openAIGroup := &service.Group{ID: groupID, Platform: service.PlatformOpenAI}
 	for _, queryID := range []string{"gpt-5.4", "gpt-5.4[1m]", "claude-fable-gpt-5.4[1m]"} {
-		rec := requestModelForTest(h, openAIGroup, queryID, "")
+		rec := requestModelWithUA(openAIGroup, queryID, "claude-cli/2.1.112")
 		require.Equal(t, http.StatusOK, rec.Code, "openai query=%s", queryID)
 		var item gatewayModelItemForTest
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &item))
 		require.Equal(t, "gpt-5.4[1m]", item.ID)
 		require.Equal(t, 1000000, item.ContextWindow)
+
+		recRaw := requestModelForTest(h, openAIGroup, queryID, "")
+		require.Equal(t, http.StatusOK, recRaw.Code, "openai raw query=%s", queryID)
+		var itemRaw gatewayModelItemForTest
+		require.NoError(t, json.Unmarshal(recRaw.Body.Bytes(), &itemRaw))
+		require.Equal(t, "gpt-5.4", itemRaw.ID)
+		require.Equal(t, 1000000, itemRaw.ContextWindow)
 	}
 
 	notFound := requestModelForTest(h, group, "non-existent-model[1m]", "")

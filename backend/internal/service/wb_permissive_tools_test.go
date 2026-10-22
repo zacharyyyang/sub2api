@@ -327,6 +327,24 @@ func TestWBForwardPermissive(t *testing.T) {
 		require.NoError(t, globErr)
 		require.Empty(t, matches, "temporary session .jsonl file must be removed after round 2 forward completes")
 	})
+
+	t.Run("inbound message content array of text parts is concatenated while non-text part is rejected", func(t *testing.T) {
+		body := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"system","content":[{"type":"text","text":"You are "},{"type":"input_text","text":"helpful."}]},{"role":"user","content":[{"type":"text","text":"Hello "},{"type":"output_text","text":"world"}]}]}`)
+		req, prompt, _, err := wbParseInbound(body)
+		require.NoError(t, err)
+		require.Len(t, req.Messages, 2)
+		require.NotNil(t, req.Messages[0].Content)
+		require.Equal(t, "You are helpful.", *req.Messages[0].Content)
+		require.NotNil(t, req.Messages[1].Content)
+		require.Equal(t, "Hello world", *req.Messages[1].Content)
+		require.Contains(t, prompt, "You are helpful.")
+		require.Contains(t, prompt, "Hello world")
+
+		badBody := []byte(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`)
+		_, _, _, badErr := wbParseInbound(badBody)
+		require.Error(t, badErr)
+		require.Contains(t, badErr.Error(), "unsupported message content part")
+	})
 }
 
 type wbRound2ToolResultTokenSource struct{}

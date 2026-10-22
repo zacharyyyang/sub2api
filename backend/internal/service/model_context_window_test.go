@@ -289,3 +289,22 @@ func TestModelContextWindowEnsure1MBetaHeaderAndUpstreamBeta(t *testing.T) {
 		}
 	}
 }
+
+func TestModelContextWindowClientIsolation(t *testing.T) {
+	reqCC := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqCC.Header.Set("User-Agent", "claude-cli/2.1.112 (external, cli)")
+	if !IsClaudeCodeDiscoveryClient(reqCC) {
+		t.Fatal("expected claude-cli UA to be recognized as Claude Code client")
+	}
+
+	reqThin := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqThin.Header.Set("User-Agent", "ThinCoder/0.10.8")
+	if IsClaudeCodeDiscoveryClient(reqThin) {
+		t.Fatal("expected ThinCoder UA to not be recognized as Claude Code client")
+	}
+
+	id, name, window := FormatModelForDiscoveryWithClient("qwen3.6-plus", "Qwen 3.6 Plus", "claude", false)
+	if id != "qwen3.6-plus" || name != "Qwen 3.6 Plus" || window != ContextWindow1MTokens {
+		t.Fatalf("non-CC client 1M model: got (%q, %q, %d)", id, name, window)
+	}
+}
