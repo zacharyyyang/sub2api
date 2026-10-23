@@ -49,21 +49,88 @@ type wbInboundToolCall struct {
 
 // wbInboundMessage 是入站 messages 数组元素的具名结构体。Content 保持 *string
 // （与现有解码行为一致），在 UnmarshalJSON 中同时兼容 string、null 与 OpenAI
-// Content Parts 文本块数组（type = "text" | "input_text" | "output_text"），
-// 将多个文本块拼接为 *string；含非文本块（如 image_url/audio）或其他非字符串类型时
-// 仍返回反序列化错误并映射为 400 WB_UNSUPPORTED_INBOUND。
+// Content Parts 数组：文本块（type = "text" | "input_text" | "output_text"）
+// 按序拼接进 Content；图像块（type = "image_url" | "input_image"）按序收进
+// Images，交给会话合成写成 input_image 节点。其余块类型（如 input_audio）仍返回
+// 反序列化错误并映射为 400 WB_UNSUPPORTED_INBOUND——会话节点没有音频承载形态，
+// 静默丢弃会让模型在不知情的前提下丢掉输入。
 // ToolCallID / Name / ToolCalls 为可选字段，仅用于工具历史折叠与临时会话合成，零值 = 缺省。
 type wbInboundMessage struct {
 	Role       string              `json:"role"`
 	Content    *string             `json:"content"`
+	Images     []string            `json:"-"`
 	ToolCallID *string             `json:"tool_call_id,omitempty"`
 	Name       *string             `json:"name,omitempty"`
 	ToolCalls  []wbInboundToolCall `json:"tool_calls,omitempty"`
 }
 
 type wbInboundContentPart struct {
-	Type string  `json:"type"`
-	Text *string `json:"text"`
+	Type     string          `json:"type"`
+	Text     *string         `json:"text"`
+	ImageURL json.RawMessage `json:"image_url"`
+	Image    *string         `json:"image"`
+}
+
+// wbInboundImageURL 解出图像块的 url：兼容 OpenAI 的 {url: "..."} 对象形态、
+// 部分客户端直发的字符串形态，以及内部 input_image 块的 image 字段（data URL）。
+func wbInboundImageURL(part wbInboundContentPart) (string, error) {
+	trimmed := bytes.TrimSpace(part.ImageURL)
+	if len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
+		if trimmed[0] == '"' {
+			var s string
+			if err := json.Unmarshal(trimmed, &s); err != nil {
+				return "", err
+			}
+			return strings.TrimSpace(s), nil
+		}
+		var obj struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(trimmed, &obj); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(obj.URL), nil
+	}
+	if part.Image != nil {
+		return strings.TrimSpace(*part.Image), nil
+	}
+	return "", nil
+}
+
+// wbValidateImageURL 对图像 url 做 scheme 白名单 + 基础结构校验：只接受 data URL
+// （CLI 原生载体）与 http(s) URL（OpenAI 兼容客户端常用形态），其余 scheme 一律拒绝——
+// 未知 scheme 透传下去只会让 CLI 在无法诊断的位置失败，错误必须在这里明确。
+// data URL 要求媒体类型非空（`data:image/png;base64,...` 通过，`data:;base64,...` 与
+// `data:,` 拒绝）；http(s) URL 要求 scheme 之后有非空主体（裸 `https://` 拒绝）。
+// 这里不做完整 URL 语法校验，也不验图片字节有效性——职责边界是「明显畸形值不进下游」。
+func wbValidateImageURL(rawURL string) error {
+	lower := strings.ToLower(rawURL)
+	switch {
+	case strings.HasPrefix(lower, "data:"):
+		rest := rawURL[len("data:"):]
+		comma := strings.IndexByte(rest, ',')
+		if comma < 0 {
+			return fmt.Errorf("malformed data URL: missing ',' separator")
+		}
+		// 媒体类型到第一个 ';' 为止（如 image/png;base64），必须非空。
+		mediaType := rest[:comma]
+		if semi := strings.IndexByte(mediaType, ';'); semi >= 0 {
+			mediaType = mediaType[:semi]
+		}
+		if strings.TrimSpace(mediaType) == "" {
+			return fmt.Errorf("malformed data URL: empty media type")
+		}
+		return nil
+	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
+		// scheme 之后必须还有主体，裸 `https://` 不可能是可用图片地址。
+		rest := lower[strings.Index(lower, "://")+len("://"):]
+		if strings.TrimSpace(rest) == "" {
+			return fmt.Errorf("malformed image url: missing host after scheme")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported image url scheme; only data: and http(s) are supported")
+	}
 }
 
 func (m *wbInboundMessage) UnmarshalJSON(data []byte) error {
@@ -83,6 +150,9 @@ func (m *wbInboundMessage) UnmarshalJSON(data []byte) error {
 	m.ToolCalls = raw.ToolCalls
 
 	trimmed := bytes.TrimSpace(raw.Content)
+	// Images 必须在每个成功分支里重置：UnmarshalJSON 可能被复用在同一个接收者上，
+	// 残留的旧图片会让纯文本消息被 wbHasImageContent 误判为带图。
+	m.Images = nil
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		m.Content = nil
 		return nil
@@ -101,6 +171,7 @@ func (m *wbInboundMessage) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("cannot unmarshal message content array: %w", err)
 		}
 		var sb strings.Builder
+		var images []string
 		for idx, part := range parts {
 			partType := strings.ToLower(strings.TrimSpace(part.Type))
 			switch partType {
@@ -109,9 +180,29 @@ func (m *wbInboundMessage) UnmarshalJSON(data []byte) error {
 					return fmt.Errorf("message content part[%d] of type %q is missing text string", idx, part.Type)
 				}
 				sb.WriteString(*part.Text)
+			case "image_url", "input_image":
+				url, err := wbInboundImageURL(part)
+				if err != nil {
+					return fmt.Errorf("message content part[%d] of type %q has malformed image_url: %w", idx, part.Type, err)
+				}
+				if url == "" {
+					return fmt.Errorf("message content part[%d] of type %q is missing image url", idx, part.Type)
+				}
+				if err := wbValidateImageURL(url); err != nil {
+					return fmt.Errorf("message content part[%d] of type %q has invalid image url: %w", idx, part.Type, err)
+				}
+				images = append(images, url)
 			default:
-				return fmt.Errorf("unsupported message content part[%d] type %q; only text content parts are supported", idx, part.Type)
+				return fmt.Errorf("unsupported message content part[%d] type %q; only text and image content parts are supported", idx, part.Type)
 			}
+		}
+		if len(images) > 0 {
+			// 带图像但无文本时 Content 仍需非 nil 空串：角色校验与折叠都以「Content 非 nil」
+			// 判定 user 合法，置 nil 会让纯图片轮次被当成 content 缺失而 400。
+			joined := sb.String()
+			m.Content = &joined
+			m.Images = images
+			return nil
 		}
 		joined := sb.String()
 		m.Content = &joined
@@ -198,6 +289,14 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 	if len(req.Messages) == 0 {
 		return req, "", nil, fmt.Errorf("messages must not be empty")
 	}
+	// 图像块只能落在 user 节点上：会话合成只为 user 角色写 content 数组，
+	// system 走文本前缀、assistant 走 output_text、tool 走纯文本回执。放行
+	// 非 user 的图像块等于静默吞掉用户输入，故在解码后按角色 fail-closed。
+	for i, message := range req.Messages {
+		if len(message.Images) > 0 && message.Role != "user" {
+			return req, "", nil, fmt.Errorf("messages[%d].content: image content parts are only supported on user messages, got role %q", i, message.Role)
+		}
+	}
 	parts := make([]string, len(req.Messages))
 	for i, message := range req.Messages {
 		segment, err := wbFoldInboundMessage(i, message)
@@ -217,7 +316,7 @@ func wbParseInbound(body []byte) (wbInbound, string, []WBBridgeTool, error) {
 		}
 	}
 	prompt := strings.Join(parts, "\n\n")
-	if wbHasToolHistory(req.Messages) {
+	if wbNeedsResumeSession(req.Messages) {
 		sessionID, jsonlData, resumePrompt := wbBuildResumeSession(req.Messages, tools)
 		req.resumeSessionID = sessionID
 		req.sessionJSONL = jsonlData

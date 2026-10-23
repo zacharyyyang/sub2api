@@ -32,7 +32,7 @@ func TestWBInbound(t *testing.T) {
 	}{
 		{"trailing JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "unexpected trailing JSON"},
 		{"malformed JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}`, ""},
-		{"non-string content", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, ""},
+		{"non-text content part", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA"}}]}]}`, "unsupported message content part"},
 		// 业务校验级拒绝：硬约束全部保留。
 		{"unsupported model", `{"model":"unsupported-model","messages":[{"role":"user","content":"hi"}]}`, "unsupported model"},
 		{"empty messages", `{"model":"glm-5.3-flash","messages":[]}`, "messages must not be empty"},
@@ -102,8 +102,8 @@ func TestWBInboundToolHistory(t *testing.T) {
 		{"10 未知角色", `{"model":"glm-5.3-flash","messages":[{"role":"developer","content":"x"}]}`, "", `unsupported role "developer"`},
 		// 11 user content 缺失仍 400
 		{"11 user content 缺失", `{"model":"glm-5.3-flash","messages":[{"role":"user"}]}`, "", "messages[0].content must be a string"},
-		// 12 content 数组 → 解码层类型错误 400（无稳定错误文本断言）
-		{"12 content 数组", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"image_url"}]}]}`, "", ""},
+		// 12 非文本、非图像块（音频）→ 解码层拒绝
+		{"12 content 数组音频块", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA"}}]}]}`, "", "unsupported message content part"},
 		// 13 尾部多余 JSON → 解码层拒绝（行为不变）
 		{"13 尾部多余 JSON", `{"model":"glm-5.3-flash","messages":[{"role":"user","content":"hi"}]}{"trailing":true}`, "", "unexpected trailing JSON"},
 		// 14 tool_calls name 与 ID 均空 → call_1 + unknown + {} 兜底

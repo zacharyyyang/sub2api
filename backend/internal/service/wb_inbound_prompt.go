@@ -12,6 +12,12 @@ import (
 
 const wbResumeContinuePrompt = "Please continue based on the tool execution results above."
 
+// wbResumeImagePrompt 是末条 user 带图像时的 stdin 续写指令。
+// 这一轮的内容（文本 + 图像）已经落成会话节点，stdin 只需要一个触发词；
+// 不能复用 wbResumeContinuePrompt——该句指向「上方的工具执行结果」，而纯图
+// 像轮次往往没有任何工具调用，指向不存在的东西会误导模型。
+const wbResumeImagePrompt = "Please answer my latest message."
+
 func wbHasToolHistory(messages []wbInboundMessage) bool {
 	for _, msg := range messages {
 		if msg.Role == "tool" || msg.Role == "function" {
@@ -22,6 +28,23 @@ func wbHasToolHistory(messages []wbInboundMessage) bool {
 		}
 	}
 	return false
+}
+
+// wbHasImageContent 判定入站是否携带图像块。
+func wbHasImageContent(messages []wbInboundMessage) bool {
+	for _, msg := range messages {
+		if len(msg.Images) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// wbNeedsResumeSession 判定是否需要合成原生会话链。图像块只能活在会话节点里
+// ——stdin 是纯文本通道，承载不了图像——因此含图像的请求必须走会话合成；
+// 只按工具历史判定会让图片在纯文本折叠路径里被静默丢弃。
+func wbNeedsResumeSession(messages []wbInboundMessage) bool {
+	return wbHasImageContent(messages) || wbHasToolHistory(messages)
 }
 
 // wbMatchToolResult 在紧随当前 assistant 消息之后的连续 tool/function 段内优先按
@@ -171,16 +194,29 @@ func (w *wbResumeWriter) flushSysPrefix() {
 }
 
 // writeUser 写一个 user 节点；首个 user 节点承接系统前缀。
-func (w *wbResumeWriter) writeUser(text string) {
+func (w *wbResumeWriter) writeUser(text string) { w.writeUserContent(text, nil) }
+
+// writeUserContent 写一个 user 节点，content 按「文本块 + 图像块」顺序落节点。
+// 图像块用 CLI 原生形态 {type:"input_image", image:"data:<mime>;base64,..."}：
+// 原生内部形态就是 image 字段持 data URL，出站时由 CLI 自己转成 image_url。
+// 首个 user 节点承接系统前缀；无图像时保持单文本块的既有形态（空串也落块）。
+func (w *wbResumeWriter) writeUserContent(text string, images []string) {
 	if !w.sysInjected && w.sysPrefix != "" {
 		text = w.sysPrefix + text
 		w.sysInjected = true
 	}
 	w.hasUserNode = true
+	content := make([]map[string]any, 0, len(images)+1)
+	if text != "" || len(images) == 0 {
+		content = append(content, map[string]any{"type": "input_text", "text": text})
+	}
+	for _, image := range images {
+		content = append(content, map[string]any{"type": "input_image", "image": image})
+	}
 	w.emitNode(map[string]any{
 		"type":    "message",
 		"role":    "user",
-		"content": []map[string]any{{"type": "input_text", "text": text}},
+		"content": content,
 		"status":  "completed",
 	})
 }
@@ -306,10 +342,26 @@ func wbBuildResumeSession(messages []wbInboundMessage, tools []WBBridgeTool) (st
 	}
 
 	limit := len(messages)
+	// 默认续写句取决于本轮是否存在工具执行结果：「基于上方的工具执行结果继续」
+	// 只有在确实有工具历史时才成立。仅因图像而合成会话时（无工具历史），该句
+	// 指向不存在的东西，改用图像轮次的续写句。
 	resumePrompt := wbResumeContinuePrompt
+	if !wbHasToolHistory(messages) {
+		resumePrompt = wbResumeImagePrompt
+	}
+	// 空白末条 user 被当成 prompt 后会被清空，兜底必须回到同一判据选出的默认句——
+	// 否则「历史带图 + 无工具 + 末条空白 user」会拿到指向不存在工具结果的续写句。
+	defaultResumePrompt := resumePrompt
 	if limit > 0 && messages[limit-1].Role == "user" && messages[limit-1].Content != nil {
-		resumePrompt = *messages[limit-1].Content
-		limit--
+		// 末条 user 默认不入链，直接当 resumePrompt 走 stdin 纯文本——这是唯一
+		// 能承载「当前轮」的通道，但 stdin 只吃文本。带图像的末条 user 因此必须
+		// 落成节点（图像块只能活在会话节点里），stdin 只留续写指令。
+		if len(messages[limit-1].Images) == 0 {
+			resumePrompt = *messages[limit-1].Content
+			limit--
+		} else {
+			resumePrompt = wbResumeImagePrompt
+		}
 	}
 
 	consumed := make(map[int]bool)
@@ -320,18 +372,20 @@ func wbBuildResumeSession(messages []wbInboundMessage, tools []WBBridgeTool) (st
 			if messages[idx].Content != nil {
 				text = *messages[idx].Content
 			}
-			w.writeUser(text)
+			w.writeUserContent(text, messages[idx].Images)
 		case "assistant":
 			w.writeAssistant(messages, idx, limit, consumed)
 		case "tool", "function":
 			w.writeToolResult(messages, idx, consumed)
 		}
 	}
+	// 空白末条 user 不能充当 prompt：先回退到按工具历史选出的默认句，再拼接系统前缀，
+	// 否则前缀会让空白判定失效（前缀 + 空白串非空），而空白直接下传会让 CLI 收到空输入。
+	if strings.TrimSpace(resumePrompt) == "" {
+		resumePrompt = defaultResumePrompt
+	}
 	if !w.sysInjected && w.sysPrefix != "" {
 		resumePrompt = w.sysPrefix + resumePrompt
-	}
-	if strings.TrimSpace(resumePrompt) == "" {
-		resumePrompt = wbResumeContinuePrompt
 	}
 	return sessionID, buf.Bytes(), resumePrompt
 }
