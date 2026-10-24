@@ -36,7 +36,8 @@ FRONTEND_CRITICAL_VITEST := \
 build: build-backend build-frontend
 
 # 编译后端（复用 backend/Makefile）
-build-backend:
+# 依赖前端产物：backend -tags=embed 需 backend/internal/web/dist 已生成
+build-backend: build-frontend
 	@$(MAKE) -C backend build
 
 # 编译前端（需要已安装依赖）
