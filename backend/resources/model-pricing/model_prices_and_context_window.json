@@ -6814,13 +6814,6 @@
         "litellm_provider": "dashscope",
         "mode": "chat"
     },
-    "qwen-max": {
-        "input_cost_per_token": 0.368509e-6,
-        "output_cost_per_token": 1.474035e-6,
-        "cache_read_input_token_cost": 0.073702e-6,
-        "litellm_provider": "dashscope",
-        "mode": "chat"
-    },
     "qwen3-max": {
         "input_cost_per_token": 0.368509e-6,
         "output_cost_per_token": 1.474035e-6,

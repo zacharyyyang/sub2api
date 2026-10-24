@@ -37,7 +37,6 @@ var GoogleOneModels = []Model{
 	{ID: "gemini-3-pro-preview", Type: "model", DisplayName: "Gemini 3 Pro Preview", CreatedAt: "", ContextWindow: 1000000},
 	{ID: "gemini-3.1-pro-preview", Type: "model", DisplayName: "Gemini 3.1 Pro Preview", CreatedAt: "", ContextWindow: 1000000},
 	{ID: "gemini-3.1-pro-preview-customtools", Type: "model", DisplayName: "Gemini 3.1 Pro Preview CustomTools", CreatedAt: "", ContextWindow: 1000000},
-	{ID: "gemini-3.5-flash", Type: "model", DisplayName: "Gemini 3.5 Flash", CreatedAt: "", ContextWindow: 1000000},
 }
 
 // GoogleOneModelMapping returns a new whitelist map for each account so callers

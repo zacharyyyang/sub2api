@@ -169,10 +169,10 @@ func TestAntigravityModels_FiltersByAllowlist(t *testing.T) {
 	require.Equal(t, "list", got.Object)
 	// -thinking 后缀的宽容规则：gemini-2.5-flash-thinking 也命中 gemini-2.5-flash 条目。
 	require.Len(t, got.Data, 2)
-	want0, _, _ := service.FormatModelForDiscovery("gemini-2.5-flash", "gemini-2.5-flash", "claude")
-	want1, _, _ := service.FormatModelForDiscovery("gemini-2.5-flash-thinking", "gemini-2.5-flash-thinking", "claude")
-	require.Equal(t, want0, got.Data[0].ID)
-	require.Equal(t, want1, got.Data[1].ID)
+	// handler 按 IsClaudeCodeDiscoveryClient(c.Request) 决定是否包 CCD shell；
+	// 本用例的请求不带 Claude Code UA 头，因此返回裸 ID（非 CC 客户端路径）。
+	require.Equal(t, "gemini-2.5-flash", got.Data[0].ID)
+	require.Equal(t, "gemini-2.5-flash-thinking", got.Data[1].ID)
 }
 
 func TestFilterUpstreamGeminiModelsBody(t *testing.T) {

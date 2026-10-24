@@ -105,7 +105,7 @@ func (s *BillingService) initCNAndExtendedFallbackPrices() {
 		OutputPricePerToken:    1.474035e-6,
 		CacheReadPricePerToken: 0.073702e-6,
 	}
-	for _, k := range []string{"qwen-max", "qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview"} {
+	for _, k := range []string{"qwen3-max", "qwen3-max-2026-01-23", "qwen3-max-preview"} {
 		s.fallbackPrices[k] = qwenMax
 	}
 	s.fallbackPrices["qwen-plus"] = &ModelPricing{
@@ -365,8 +365,8 @@ func (s *BillingService) getCNAndExtendedFallbackPricing(model string) *ModelPri
 		return s.fallbackPrices["qwen3-vl-plus"]
 	case hasFamilyPrefix(check, "qwen3-vl-flash"):
 		return s.fallbackPrices["qwen3-vl-flash"]
-	case hasFamilyPrefix(check, "qwen3-max"), hasFamilyPrefix(check, "qwen-max"):
-		return s.fallbackPrices["qwen-max"]
+	case hasFamilyPrefix(check, "qwen3-max"):
+		return s.fallbackPrices["qwen3-max"]
 	case hasFamilyPrefix(check, "qwen-plus"):
 		return s.fallbackPrices["qwen-plus"]
 	case hasFamilyPrefix(check, "qwen-flash"), hasFamilyPrefix(check, "qwen-turbo"):
