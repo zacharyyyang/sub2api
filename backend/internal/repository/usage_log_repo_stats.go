@@ -700,6 +700,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			SELECT
 				COALESCE(NULLIF(TRIM(inbound_endpoint), ''), 'unknown') AS inbound_endpoint,
 				COALESCE(NULLIF(TRIM(upstream_endpoint), ''), 'unknown') AS upstream_endpoint,
+				api_key_id,
 				input_tokens,
 				output_tokens,
 				cache_creation_tokens,
@@ -714,8 +715,10 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		SELECT
 			GROUPING(inbound_endpoint) AS inbound_grouped,
 			GROUPING(upstream_endpoint) AS upstream_grouped,
+			GROUPING(api_key_id) AS key_grouped,
 			inbound_endpoint,
 			upstream_endpoint,
+			api_key_id,
 			COUNT(*) AS requests,
 			COALESCE(SUM(input_tokens), 0) AS input_tokens,
 			COALESCE(SUM(output_tokens), 0) AS output_tokens,
@@ -730,7 +733,8 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			(),
 			(inbound_endpoint),
 			(upstream_endpoint),
-			(inbound_endpoint, upstream_endpoint)
+			(inbound_endpoint, upstream_endpoint),
+			(api_key_id)
 		)
 	`, buildWhere(conditions))
 
@@ -745,16 +749,19 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 
 	for rows.Next() {
 		var (
-			inboundGrouped, upstreamGrouped                                      int
+			inboundGrouped, upstreamGrouped, keyGrouped                          int
 			inboundEndpoint, upstreamEndpoint                                    sql.NullString
+			apiKeyID                                                             sql.NullInt64
 			requests, inputTokens, outputTokens, cacheCreationTokens, cacheReads int64
 			cost, actualCost, accountCost, averageDurationMs                     float64
 		)
 		if err := rows.Scan(
 			&inboundGrouped,
 			&upstreamGrouped,
+			&keyGrouped,
 			&inboundEndpoint,
 			&upstreamEndpoint,
+			&apiKeyID,
 			&requests,
 			&inputTokens,
 			&outputTokens,
@@ -775,7 +782,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		}
 
 		switch {
-		case inboundGrouped == 1 && upstreamGrouped == 1:
+		case inboundGrouped == 1 && upstreamGrouped == 1 && keyGrouped == 1:
 			stats.TotalRequests = requests
 			stats.TotalInputTokens = inputTokens
 			stats.TotalOutputTokens = outputTokens
@@ -786,6 +793,12 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			stats.TotalActualCost = actualCost
 			totalAccountCost = accountCost
 			stats.AverageDurationMs = averageDurationMs
+		case keyGrouped == 0 && inboundGrouped == 1 && upstreamGrouped == 1:
+			// 仅按 api_key_id 聚合的那一组（其它维度均被卷起）
+			stats.APIKeys = append(stats.APIKeys, APIKeyStat{
+				ID: apiKeyID.Int64, Requests: requests, TotalTokens: totalTokens,
+				Cost: cost, ActualCost: endpointActualCost,
+			})
 		case inboundGrouped == 0 && upstreamGrouped == 1:
 			stats.Endpoints = append(stats.Endpoints, EndpointStat{
 				Endpoint: inboundEndpoint.String, Requests: requests, TotalTokens: totalTokens,
@@ -819,6 +832,51 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 	sortEndpointStats(stats.UpstreamEndpoints)
 	sortEndpointStats(stats.EndpointPaths)
 
+	// API 密钥名称回填：主聚合查询不 join api_keys（两者都有 user_id，join 会让 WHERE 列名歧义），
+	// 改为拿到 id 后用一次小查询映射名称；已删除的密钥保留 id 并在展示层回退。
+	if len(stats.APIKeys) > 0 {
+		ids := make([]int64, 0, len(stats.APIKeys))
+		for _, s := range stats.APIKeys {
+			if s.ID > 0 {
+				ids = append(ids, s.ID)
+			}
+		}
+		names := map[int64]string{}
+		if len(ids) > 0 {
+			nameRows, nameErr := r.sql.QueryContext(ctx, `SELECT id, name FROM api_keys WHERE id = ANY($1)`, pq.Array(ids))
+			if nameErr == nil {
+				for nameRows.Next() {
+					var id int64
+					var name string
+					if scanErr := nameRows.Scan(&id, &name); scanErr == nil {
+						names[id] = name
+					}
+				}
+				if rowsErr := nameRows.Err(); rowsErr != nil {
+					_ = nameRows.Close()
+					return nil, rowsErr
+				}
+				_ = nameRows.Close()
+			}
+		}
+		for i := range stats.APIKeys {
+			if name := names[stats.APIKeys[i].ID]; name != "" {
+				stats.APIKeys[i].Name = name
+			} else {
+				stats.APIKeys[i].Name = "unknown"
+			}
+		}
+		sort.Slice(stats.APIKeys, func(i, j int) bool {
+			if stats.APIKeys[i].Requests != stats.APIKeys[j].Requests {
+				return stats.APIKeys[i].Requests > stats.APIKeys[j].Requests
+			}
+			if stats.APIKeys[i].Name != stats.APIKeys[j].Name {
+				return stats.APIKeys[i].Name < stats.APIKeys[j].Name
+			}
+			return stats.APIKeys[i].ID < stats.APIKeys[j].ID
+		})
+	}
+
 	stats.TotalAccountCost = &totalAccountCost
 	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheTokens
 
@@ -836,6 +894,7 @@ type AccountUsageStatsResponse = usagestats.AccountUsageStatsResponse
 
 // EndpointStat represents endpoint usage statistics row.
 type EndpointStat = usagestats.EndpointStat
+type APIKeyStat = usagestats.APIKeyStat
 
 func (r *usageLogRepository) getEndpointStatsByColumnWithFilters(ctx context.Context, endpointColumn string, startTime, endTime time.Time, userID, apiKeyID, accountID, groupID int64, model string, modelSource string, requestType *int16, stream *bool, billingType *int8, billingMode string) (results []EndpointStat, err error) {
 	actualCostExpr := "COALESCE(SUM(actual_cost), 0) as actual_cost"

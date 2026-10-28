@@ -115,6 +115,17 @@ type EndpointStat struct {
 	ActualCost  float64 `json:"actual_cost"` // 实际扣除
 }
 
+// APIKeyStat 是按 API 密钥聚合的用量统计。
+// ID 为 0 / Name 为 "unknown" 时表示用量行没有关联的密钥（已删除的密钥）。
+type APIKeyStat struct {
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	Requests    int64   `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	Cost        float64 `json:"cost"`        // 标准计费
+	ActualCost  float64 `json:"actual_cost"` // 实际扣除
+}
+
 // GroupUsageSummary represents today's, yesterday's, and cumulative cost for a single group.
 type GroupUsageSummary struct {
 	GroupID       int64   `json:"group_id"`
@@ -305,6 +316,7 @@ type UsageStats struct {
 	Endpoints                []EndpointStat `json:"endpoints,omitempty"`
 	UpstreamEndpoints        []EndpointStat `json:"upstream_endpoints,omitempty"`
 	EndpointPaths            []EndpointStat `json:"endpoint_paths,omitempty"`
+	APIKeys                  []APIKeyStat   `json:"api_keys,omitempty"`
 }
 
 // PlatformUsage 表示某用户/某 API key 在单个"有效平台"维度的用量明细。

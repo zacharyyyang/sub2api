@@ -47,19 +47,11 @@
           />
         </div>
         <div class="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <EndpointDistributionChart
-            v-model:source="endpointDistributionSource"
-            v-model:metric="endpointDistributionMetric"
-            :endpoint-stats="inboundEndpointStats"
-            :upstream-endpoint-stats="upstreamEndpointStats"
-            :endpoint-path-stats="endpointPathStats"
+          <ApiKeyDistributionChart
+            v-model:metric="apiKeyDistributionMetric"
+            :api-key-stats="apiKeyStats"
             :loading="endpointStatsLoading"
-            :show-source-toggle="true"
             :show-metric-toggle="true"
-            :title="t('usage.endpointDistribution')"
-            :start-date="startDate"
-            :end-date="endDate"
-            :filters="breakdownFilters"
           />
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
@@ -203,14 +195,13 @@ import OpsErrorDetailModal from '@/views/admin/ops/components/OpsErrorDetailModa
 import { listErrorLogs } from '@/api/admin/ops'
 import type { OpsErrorLog } from '@/api/admin/ops'
 import ModelDistributionChart from '@/components/charts/ModelDistributionChart.vue'; import GroupDistributionChart from '@/components/charts/GroupDistributionChart.vue'; import TokenUsageTrend from '@/components/charts/TokenUsageTrend.vue'
-import EndpointDistributionChart from '@/components/charts/EndpointDistributionChart.vue'
+import ApiKeyDistributionChart from '@/components/charts/ApiKeyDistributionChart.vue'
 import Icon from '@/components/icons/Icon.vue'
-import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat, EndpointStat, AdminUser } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
+import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat, ApiKeyStat, AdminUser } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 type DistributionMetric = 'tokens' | 'actual_cost'
-type EndpointSource = 'inbound' | 'upstream' | 'path'
 type ModelDistributionSource = 'requested' | 'upstream' | 'mapping'
 const route = useRoute()
 const usageStats = ref<AdminUsageStatsResponse | null>(null); const usageLogs = ref<AdminUsageLog[]>([]); const loading = ref(false); const exporting = ref(false)
@@ -223,11 +214,8 @@ const loadedModelSources = reactive<Record<ModelDistributionSource, boolean>>({
   mapping: false,
 })
 const groupDistributionMetric = ref<DistributionMetric>('tokens')
-const endpointDistributionMetric = ref<DistributionMetric>('tokens')
-const endpointDistributionSource = ref<EndpointSource>('inbound')
-const inboundEndpointStats = ref<EndpointStat[]>([])
-const upstreamEndpointStats = ref<EndpointStat[]>([])
-const endpointPathStats = ref<EndpointStat[]>([])
+const apiKeyDistributionMetric = ref<DistributionMetric>('tokens')
+const apiKeyStats = ref<ApiKeyStat[]>([])
 const endpointStatsLoading = ref(false)
 let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
 let chartReqSeq = 0
@@ -411,15 +399,11 @@ const loadStats = async (force = false) => {
     })
     if (seq !== statsReqSeq) return
     usageStats.value = s
-    inboundEndpointStats.value = s.endpoints || []
-    upstreamEndpointStats.value = s.upstream_endpoints || []
-    endpointPathStats.value = s.endpoint_paths || []
+    apiKeyStats.value = s.api_keys || []
   } catch (error) {
     if (seq !== statsReqSeq) return
     console.error('Failed to load usage stats:', error)
-    inboundEndpointStats.value = []
-    upstreamEndpointStats.value = []
-    endpointPathStats.value = []
+    apiKeyStats.value = []
   } finally {
     if (seq === statsReqSeq) endpointStatsLoading.value = false
   }
