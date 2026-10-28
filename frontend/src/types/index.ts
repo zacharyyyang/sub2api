@@ -2083,6 +2083,16 @@ export interface EndpointStat {
   actual_cost: number
 }
 
+/** 按 API 密钥聚合的用量统计。name 为 unknown 时表示密钥已被删除。 */
+export interface ApiKeyStat {
+  id: number
+  name: string
+  requests: number
+  total_tokens: number
+  cost: number
+  actual_cost: number
+}
+
 export interface GroupStat {
   group_id: number
   group_name: string

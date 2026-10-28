@@ -517,7 +517,7 @@ func TestUsageLogRepositoryUsageAggregatesFilterNativeCompactionV2(t *testing.T)
 		mock.ExpectQuery("(?s)FROM usage_logs\\s+WHERE native_compaction_v2 = \\$1.*GROUP BY GROUPING SETS").
 			WithArgs(true).
 			WillReturnRows(sqlmock.NewRows([]string{
-				"inbound_grouped", "upstream_grouped", "inbound_endpoint", "upstream_endpoint",
+				"inbound_grouped", "upstream_grouped", "key_grouped", "inbound_endpoint", "upstream_endpoint", "api_key_id",
 				"requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
 				"cost", "actual_cost", "account_cost", "avg_duration_ms",
 			}))
@@ -628,8 +628,10 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
 		WillReturnRows(sqlmock.NewRows([]string{
 			"inbound_grouped",
 			"upstream_grouped",
+			"key_grouped",
 			"inbound_endpoint",
 			"upstream_endpoint",
+			"api_key_id",
 			"requests",
 			"input_tokens",
 			"output_tokens",
@@ -640,10 +642,10 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestedModelSource(t *testing.T)
 			"account_cost",
 			"avg_duration_ms",
 		}).
-			AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(0, 1, "/v1/responses", nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(1, 0, nil, "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
-			AddRow(0, 0, "/v1/responses", "/v1/responses", int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
+			AddRow(1, 1, 1, nil, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
+			AddRow(0, 1, 1, "/v1/responses", nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
+			AddRow(1, 0, 1, nil, "/v1/responses", nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0).
+			AddRow(0, 0, 1, "/v1/responses", "/v1/responses", nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
@@ -669,8 +671,10 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 		WillReturnRows(sqlmock.NewRows([]string{
 			"inbound_grouped",
 			"upstream_grouped",
+			"key_grouped",
 			"inbound_endpoint",
 			"upstream_endpoint",
+			"api_key_id",
 			"requests",
 			"input_tokens",
 			"output_tokens",
@@ -680,7 +684,7 @@ func TestUsageLogRepositoryGetStatsWithFiltersRequestTypePriority(t *testing.T) 
 			"actual_cost",
 			"account_cost",
 			"avg_duration_ms",
-		}).AddRow(1, 1, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
+		}).AddRow(1, 1, 1, nil, nil, nil, int64(1), int64(2), int64(3), int64(1), int64(3), 1.2, 1.0, 1.2, 20.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
@@ -803,10 +807,10 @@ func TestUsageLogRepositoryGetStatsWithFiltersAlwaysReturnsAccountCost(t *testin
 
 	mock.ExpectQuery("(?s)FROM usage_logs.*GROUP BY GROUPING SETS").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"inbound_grouped", "upstream_grouped", "inbound_endpoint", "upstream_endpoint",
+			"inbound_grouped", "upstream_grouped", "key_grouped", "inbound_endpoint", "upstream_endpoint", "api_key_id",
 			"requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
 			"cost", "actual_cost", "account_cost", "avg_duration_ms",
-		}).AddRow(1, 1, nil, nil, int64(50), int64(1000), int64(2000), int64(60), int64(40), 15.0, 12.5, 11.0, 100.0))
+		}).AddRow(1, 1, 1, nil, nil, nil, int64(50), int64(1000), int64(2000), int64(60), int64(40), 15.0, 12.5, 11.0, 100.0))
 
 	stats, err := repo.GetStatsWithFilters(context.Background(), filters)
 	require.NoError(t, err)
