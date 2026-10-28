@@ -304,9 +304,9 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 				float64(cache1h)*deref(p.CacheWrite1hPrice)
 		}
 	}
-	// 一个价都没配 ⇒ 返回 nil（交给后续优先级）；只要配了价（含显式 0）⇒ 返回计算结果，
-	// 即使结果为 0 也不回落（0 是合法成本）。
-	if !p.hasAnyPrice() {
+	// 按 token 公式实际参与计算的价字段判定“是否配置”：
+	// PerRequestPrice 不参与 token 计算，不能因为残留了它就把未配置 token 价当成“已配置 0 价”。
+	if !p.hasTokenPrice() {
 		return nil
 	}
 	cost := float64(tokens.InputTokens)*deref(p.InputPrice) +
@@ -317,11 +317,12 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 	return &cost
 }
 
-// hasAnyPrice 报告该定价是否至少配置了一个价格字段。
-func (p *ChannelModelPricing) hasAnyPrice() bool {
+// hasTokenPrice 报告 token 计费公式实际会用到价格字段是否有至少一个配置。
+// 按次价（PerRequestPrice）不在其中：它属于按次计费模式，混进来会把
+// “未配置 token 价”误判成“配了 0 价”。
+func (p *ChannelModelPricing) hasTokenPrice() bool {
 	return p.InputPrice != nil || p.OutputPrice != nil || p.CacheWritePrice != nil ||
-		p.CacheWrite1hPrice != nil || p.CacheReadPrice != nil ||
-		p.ImageOutputPrice != nil || p.PerRequestPrice != nil
+		p.CacheWrite1hPrice != nil || p.CacheReadPrice != nil || p.ImageOutputPrice != nil
 }
 
 // applyAccountStatsCost resolves the account stats cost for a usage log entry.
