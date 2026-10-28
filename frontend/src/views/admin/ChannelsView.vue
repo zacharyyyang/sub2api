@@ -580,6 +580,7 @@
                       :key="pIdx"
                       :entry="entry"
                       :platform="section.platform"
+                      stats-time-pricing
                       @update="rule.pricing.splice(pIdx, 1, $event)"
                       @remove="removeRulePricingEntry(sIdx, ruleIndex, pIdx)"
                     />
@@ -635,7 +636,7 @@ import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
 import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule } from '@/api/admin/channels'
 import type { PricingFormEntry } from '@/components/admin/channel/types'
-import { apiIntervalsToForm, apiTimePricingToForm, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, formReasoningEffortMultipliersToAPI, formTimePricingToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateReasoningEffortMultipliers, validateTimePricing } from '@/components/admin/channel/types'
+import { apiIntervalsToForm, apiStatsTimePricingToForm, apiTimePricingToForm, createDefaultStatsTimePricingForm, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, formReasoningEffortMultipliersToAPI, formStatsTimePricingToAPI, formTimePricingToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateReasoningEffortMultipliers, validateStatsTimePricing, validateTimePricing } from '@/components/admin/channel/types'
 import type { AdminGroup, GroupPlatform } from '@/types'
 import type { Column } from '@/components/common/types'
 import { platformTextClass, platformBadgeLightClass, platformLabel as catalogPlatformLabel } from '@/utils/platformColors'
@@ -979,7 +980,8 @@ function addRulePricingEntry(sectionIdx: number, ruleIndex: number) {
     image_output_price: null,
     per_request_price: null,
     intervals: [],
-    time_pricing: createDefaultTimePricingForm()
+    time_pricing: createDefaultTimePricingForm(),
+    stats_time_pricing: createDefaultStatsTimePricingForm()
   })
 }
 
@@ -1098,7 +1100,8 @@ function accountStatsRulesToAPI(): AccountStatsPricingRule[] {
             image_output_price: mTokToPerToken(p.image_output_price),
             per_request_price: p.per_request_price != null && p.per_request_price !== '' ? Number(p.per_request_price) : null,
             intervals: formIntervalsToAPI(p.intervals || []),
-            time_pricing: null
+            time_pricing: null,
+            stats_time_pricing: formStatsTimePricingToAPI(p.stats_time_pricing)
           }))
       })
     }
@@ -1439,7 +1442,8 @@ function distributeRulesToPlatforms(apiRules: AccountStatsPricingRule[]) {
         image_output_price: perTokenToMTok(p.image_output_price),
         per_request_price: p.per_request_price,
         intervals: apiIntervalsToForm(p.intervals || []),
-        time_pricing: createDefaultTimePricingForm()
+        time_pricing: createDefaultTimePricingForm(),
+        stats_time_pricing: apiStatsTimePricingToForm(p.stats_time_pricing)
       } as PricingFormEntry))
     }
     section.account_stats_pricing_rules.push(formRule)
@@ -1499,6 +1503,18 @@ async function handleSubmit() {
         appStore.showError(t('admin.channels.emptyModelsInPricing', { platform: platformLabel }))
         activeTab.value = section.platform
         return
+      }
+    }
+    // 账号统计规则条目也会被 models 为空的过滤掉（accountStatsRulesToAPI 只提交有模型的条目），
+    // 已填好的时段价会随条目一起消失；与售价条目同一条判据，显式阻断而不是静默丢弃。
+    for (const rule of section.account_stats_pricing_rules) {
+      for (const entry of rule.pricing) {
+        if (entry.models.length === 0) {
+          const platformLabel = t('admin.groups.platforms.' + section.platform, catalogPlatformLabel(section.platform))
+          appStore.showError(t('admin.channels.emptyModelsInPricing', { platform: platformLabel }))
+          activeTab.value = section.platform
+          return
+        }
       }
     }
   }
@@ -1597,6 +1613,23 @@ async function handleSubmit() {
         appStore.showError(`${platformLabel} - ${modelLabel}: ${timePricingError}`)
         activeTab.value = section.platform
         return
+      }
+    }
+  }
+
+  // 校验账号统计分时价（时段格式/区间重叠/按计费模式必填的单价），并切换到对应平台便于修正
+  for (const section of form.platforms.filter(s => s.enabled)) {
+    for (const rule of section.account_stats_pricing_rules) {
+      for (const entry of rule.pricing) {
+        if (entry.models.length === 0) continue
+        const statsTimeError = validateStatsTimePricing(entry, t)
+        if (statsTimeError) {
+          const platformLabel = t('admin.groups.platforms.' + section.platform, catalogPlatformLabel(section.platform))
+          const modelLabel = entry.models.join(', ') || t('admin.channels.form.unnamed')
+          appStore.showError(`${platformLabel} - ${modelLabel}: ${statsTimeError}`)
+          activeTab.value = section.platform
+          return
+        }
       }
     }
   }

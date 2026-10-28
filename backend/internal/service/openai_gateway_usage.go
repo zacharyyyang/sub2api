@@ -485,11 +485,14 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）
 	if apiKey.GroupID != nil {
-		applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
+		if err := applyAccountStatsCost(ctx, usageLog, s.channelService, s.billingService,
 			account.ID, *apiKey.GroupID, result.UpstreamModel, result.Model,
 			tokens, cost.TotalCost, pricingAt,
 			accountStatsLongContextPricingEnabled(longContextBillingGate) && !modelLongContextExempt,
-		)
+		); err != nil {
+			// 时段价解析失败是失败关闭：用量日志照常写，成本留空，缺陷当天可见。
+			logger.LegacyPrintf("service.openai_gateway", "account stats cost skipped: %v", err)
+		}
 	}
 
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)

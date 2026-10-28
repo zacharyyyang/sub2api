@@ -88,26 +88,27 @@ type AccountStatsPricingRule struct {
 
 // ChannelModelPricing 渠道模型定价条目
 type ChannelModelPricing struct {
-	ID                         int64               `json:"id,omitempty"`
-	ChannelID                  int64               `json:"channel_id,omitempty"`
-	Platform                   string              `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
-	Models                     []string            `json:"models"`
-	BillingMode                BillingMode         `json:"billing_mode"`
-	InputPrice                 *float64            `json:"input_price"`
-	OutputPrice                *float64            `json:"output_price"`
-	CacheWritePrice            *float64            `json:"cache_write_price"`
-	CacheWrite1hPrice          *float64            `json:"cache_write_1h_price"`
-	CacheReadPrice             *float64            `json:"cache_read_price"`
-	FastMultiplier             *float64            `json:"fast_multiplier"`
-	FlexMultiplier             *float64            `json:"flex_multiplier"`
-	ReasoningEffortMultipliers map[string]float64  `json:"reasoning_effort_multipliers,omitempty"`
-	ImageInputPrice            *float64            `json:"image_input_price"`
-	ImageOutputPrice           *float64            `json:"image_output_price"`
-	PerRequestPrice            *float64            `json:"per_request_price"`
-	Intervals                  []PricingInterval   `json:"intervals"`
-	TimePricing                *ChannelTimePricing `json:"time_pricing,omitempty"`
-	CreatedAt                  time.Time           `json:"created_at,omitempty"`
-	UpdatedAt                  time.Time           `json:"updated_at,omitempty"`
+	ID                         int64                    `json:"id,omitempty"`
+	ChannelID                  int64                    `json:"channel_id,omitempty"`
+	Platform                   string                   `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
+	Models                     []string                 `json:"models"`
+	BillingMode                BillingMode              `json:"billing_mode"`
+	InputPrice                 *float64                 `json:"input_price"`
+	OutputPrice                *float64                 `json:"output_price"`
+	CacheWritePrice            *float64                 `json:"cache_write_price"`
+	CacheWrite1hPrice          *float64                 `json:"cache_write_1h_price"`
+	CacheReadPrice             *float64                 `json:"cache_read_price"`
+	FastMultiplier             *float64                 `json:"fast_multiplier"`
+	FlexMultiplier             *float64                 `json:"flex_multiplier"`
+	ReasoningEffortMultipliers map[string]float64       `json:"reasoning_effort_multipliers,omitempty"`
+	ImageInputPrice            *float64                 `json:"image_input_price"`
+	ImageOutputPrice           *float64                 `json:"image_output_price"`
+	PerRequestPrice            *float64                 `json:"per_request_price"`
+	Intervals                  []PricingInterval        `json:"intervals"`
+	TimePricing                *ChannelTimePricing      `json:"time_pricing,omitempty"`
+	StatsTimePricing           *AccountStatsTimePricing `json:"stats_time_pricing,omitempty"`
+	CreatedAt                  time.Time                `json:"created_at,omitempty"`
+	UpdatedAt                  time.Time                `json:"updated_at,omitempty"`
 }
 
 // ChannelTimePricing 渠道模型定价的分时倍率配置。
@@ -122,6 +123,26 @@ type ChannelTimePricingPeriod struct {
 	StartTime  string  `json:"start_time"`
 	EndTime    string  `json:"end_time"`
 	Multiplier float64 `json:"multiplier"`
+}
+
+// AccountStatsTimePricing 账号统计成本的时段独立价配置。
+// 与售价侧 ChannelTimePricing 的倍率语义无关：每个时段带自己完整的一份价。
+type AccountStatsTimePricing struct {
+	Timezone string                          `json:"timezone"`
+	Periods  []AccountStatsTimePricingPeriod `json:"periods,omitempty"`
+}
+
+// AccountStatsTimePricingPeriod 是秒级左闭右开的时段独立价，并兼容历史 HH:mm 数据。
+// 未给出的价字段继承条目基础价，不清零。
+type AccountStatsTimePricingPeriod struct {
+	StartTime         string   `json:"start_time"`
+	EndTime           string   `json:"end_time"`
+	InputPrice        *float64 `json:"input_price"`
+	OutputPrice       *float64 `json:"output_price"`
+	CacheWritePrice   *float64 `json:"cache_write_price"`
+	CacheWrite1hPrice *float64 `json:"cache_write_1h_price"`
+	CacheReadPrice    *float64 `json:"cache_read_price"`
+	PerRequestPrice   *float64 `json:"per_request_price"`
 }
 
 // PricingInterval 定价区间（token 区间 / 按次分层 / 图片分辨率分层）
@@ -228,6 +249,12 @@ func (p ChannelModelPricing) Clone() ChannelModelPricing {
 		}
 		if p.TimePricing.Periods != nil {
 			cp.TimePricing.Periods = append([]ChannelTimePricingPeriod(nil), p.TimePricing.Periods...)
+		}
+	}
+	if p.StatsTimePricing != nil {
+		cp.StatsTimePricing = &AccountStatsTimePricing{Timezone: p.StatsTimePricing.Timezone}
+		if p.StatsTimePricing.Periods != nil {
+			cp.StatsTimePricing.Periods = append([]AccountStatsTimePricingPeriod(nil), p.StatsTimePricing.Periods...)
 		}
 	}
 	return cp

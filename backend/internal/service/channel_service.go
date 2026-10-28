@@ -751,6 +751,11 @@ func validateAccountStatsPricingRules(rules []AccountStatsPricingRule) error {
 					infraerrors.BadRequest("ACCOUNT_STATS_TIME_PRICING_UNSUPPORTED", "account stats pricing does not support time pricing"))
 			}
 		}
+		for j := range rules[i].Pricing {
+			if err := validateAccountStatsTimePricing(&rules[i].Pricing[j]); err != nil {
+				return fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
+			}
+		}
 		if err := validatePricingEntries(rules[i].Pricing); err != nil {
 			return fmt.Errorf("account stats pricing rule #%d: %w", i+1, err)
 		}

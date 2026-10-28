@@ -67,7 +67,7 @@ func (r *channelRepository) batchLoadAccountStatsModelPricing(ctx context.Contex
 
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, rule_id, platform, models, billing_mode, input_price, output_price,
-		        cache_write_price, cache_write_1h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price, created_at, updated_at
+		        cache_write_price, cache_write_1h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price, stats_time_pricing_timezone, created_at, updated_at
 		 FROM channel_account_stats_model_pricing WHERE rule_id = ANY($1) ORDER BY rule_id, id`,
 		pq.Array(ruleIDs),
 	)
@@ -77,17 +77,22 @@ func (r *channelRepository) batchLoadAccountStatsModelPricing(ctx context.Contex
 	defer func() { _ = rows.Close() }()
 
 	pricingMap := make(map[int64][]service.ChannelModelPricing, len(ruleIDs))
+	statsTimePricingTimezones := make(map[int64]string)
 	for rows.Next() {
 		var p service.ChannelModelPricing
 		var ruleID int64
 		var modelsJSON []byte
 		var reasoningEffortMultipliersJSON []byte
+		var statsTimePricingTimezone sql.NullString
 		if err := rows.Scan(
 			&p.ID, &ruleID, &p.Platform, &modelsJSON, &p.BillingMode,
 			&p.InputPrice, &p.OutputPrice, &p.CacheWritePrice, &p.CacheWrite1hPrice, &p.CacheReadPrice,
-			&reasoningEffortMultipliersJSON, &p.ImageOutputPrice, &p.PerRequestPrice, &p.CreatedAt, &p.UpdatedAt,
+			&reasoningEffortMultipliersJSON, &p.ImageOutputPrice, &p.PerRequestPrice, &statsTimePricingTimezone, &p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan account stats model pricing: %w", err)
+		}
+		if statsTimePricingTimezone.Valid {
+			statsTimePricingTimezones[p.ID] = statsTimePricingTimezone.String
 		}
 		if err := json.Unmarshal(modelsJSON, &p.Models); err != nil {
 			p.Models = []string{}
@@ -103,7 +108,7 @@ func (r *channelRepository) batchLoadAccountStatsModelPricing(ctx context.Contex
 		return nil, fmt.Errorf("iterate account stats model pricing: %w", err)
 	}
 
-	// Load intervals for all pricing entries.
+	// Load intervals and time-of-day price periods for all pricing entries.
 	var allPricingIDs []int64
 	for _, pricings := range pricingMap {
 		for _, p := range pricings {
@@ -115,9 +120,20 @@ func (r *channelRepository) batchLoadAccountStatsModelPricing(ctx context.Contex
 		if err != nil {
 			return nil, err
 		}
+		periodsMap, err := r.batchLoadAccountStatsTimePricingPeriods(ctx, allPricingIDs)
+		if err != nil {
+			return nil, err
+		}
 		for ruleID, pricings := range pricingMap {
 			for i := range pricings {
 				pricings[i].Intervals = intervalsMap[pricings[i].ID]
+				// 有时段行才组装结构；无行即 nil——这就是存量条目（F5）的兼容落点。
+				if periods := periodsMap[pricings[i].ID]; len(periods) > 0 {
+					pricings[i].StatsTimePricing = &service.AccountStatsTimePricing{
+						Timezone: statsTimePricingTimezones[pricings[i].ID],
+						Periods:  periods,
+					}
+				}
 			}
 			pricingMap[ruleID] = pricings
 		}
@@ -187,12 +203,17 @@ func createAccountStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID in
 		billingMode = service.BillingModeToken
 	}
 	platform := pricing.Platform
+	var statsTimePricingTimezone *string
+	if pricing.StatsTimePricing != nil && len(pricing.StatsTimePricing.Periods) > 0 {
+		timezone := pricing.StatsTimePricing.Timezone
+		statsTimePricingTimezone = &timezone
+	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO channel_account_stats_model_pricing (rule_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id, created_at, updated_at`,
+		`INSERT INTO channel_account_stats_model_pricing (rule_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price, stats_time_pricing_timezone)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id, created_at, updated_at`,
 		ruleID, platform, modelsJSON, billingMode,
 		pricing.InputPrice, pricing.OutputPrice, pricing.CacheWritePrice, pricing.CacheWrite1hPrice, pricing.CacheReadPrice,
-		reasoningEffortMultipliersJSON, pricing.ImageOutputPrice, pricing.PerRequestPrice,
+		reasoningEffortMultipliersJSON, pricing.ImageOutputPrice, pricing.PerRequestPrice, statsTimePricingTimezone,
 	).Scan(&pricing.ID, &pricing.CreatedAt, &pricing.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("insert account stats model pricing: %w", err)
@@ -203,6 +224,14 @@ func createAccountStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID in
 		iv.PricingID = pricing.ID
 		if err := createAccountStatsIntervalTx(ctx, tx, iv); err != nil {
 			return err
+		}
+	}
+	// Persist time-of-day price periods (mirrors intervals handling).
+	if pricing.StatsTimePricing != nil {
+		for i := range pricing.StatsTimePricing.Periods {
+			if err := createAccountStatsTimePricingPeriodTx(ctx, tx, pricing.ID, i, &pricing.StatsTimePricing.Periods[i]); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -251,4 +280,53 @@ func (r *channelRepository) batchLoadAccountStatsIntervals(ctx context.Context, 
 		result[iv.PricingID] = append(result[iv.PricingID], iv)
 	}
 	return result, rows.Err()
+}
+
+// batchLoadAccountStatsTimePricingPeriods loads time-of-day price periods for account stats pricing entries.
+func (r *channelRepository) batchLoadAccountStatsTimePricingPeriods(ctx context.Context, pricingIDs []int64) (map[int64][]service.AccountStatsTimePricingPeriod, error) {
+	if len(pricingIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT pricing_id, start_time, end_time, input_price, output_price,
+		        cache_write_price, cache_write_1h_price, cache_read_price, per_request_price
+		 FROM channel_account_stats_pricing_periods
+		 WHERE pricing_id = ANY($1) ORDER BY pricing_id, sort_order, id`,
+		pq.Array(pricingIDs),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("batch load account stats time pricing periods: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[int64][]service.AccountStatsTimePricingPeriod)
+	for rows.Next() {
+		var pricingID int64
+		var period service.AccountStatsTimePricingPeriod
+		if err := rows.Scan(
+			&pricingID, &period.StartTime, &period.EndTime,
+			&period.InputPrice, &period.OutputPrice, &period.CacheWritePrice, &period.CacheWrite1hPrice,
+			&period.CacheReadPrice, &period.PerRequestPrice,
+		); err != nil {
+			return nil, fmt.Errorf("scan account stats time pricing period: %w", err)
+		}
+		result[pricingID] = append(result[pricingID], period)
+	}
+	return result, rows.Err()
+}
+
+// createAccountStatsTimePricingPeriodTx inserts a single time-of-day price period for an account stats pricing entry.
+func createAccountStatsTimePricingPeriodTx(ctx context.Context, tx *sql.Tx, pricingID int64, sortOrder int, period *service.AccountStatsTimePricingPeriod) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO channel_account_stats_pricing_periods
+		 (pricing_id, start_time, end_time, input_price, output_price, cache_write_price, cache_write_1h_price, cache_read_price, per_request_price, sort_order)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		pricingID, period.StartTime, period.EndTime,
+		period.InputPrice, period.OutputPrice, period.CacheWritePrice, period.CacheWrite1hPrice,
+		period.CacheReadPrice, period.PerRequestPrice, sortOrder,
+	)
+	if err != nil {
+		return fmt.Errorf("insert account stats time pricing period: %w", err)
+	}
+	return nil
 }

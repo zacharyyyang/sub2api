@@ -257,6 +257,13 @@
           </div>
         </div>
 
+        <StatsTimePricingSection
+          v-if="statsTimePricing"
+          :model-value="entry.stats_time_pricing ?? emptyStatsTimePricing"
+          :billing-mode="entry.billing_mode"
+          @update:model-value="emit('update', { ...entry, stats_time_pricing: $event })"
+        />
+
         <div class="mt-3 border-t border-gray-200 pt-3 dark:border-dark-600" data-testid="reasoning-effort-multipliers">
           <div class="flex items-center justify-between gap-2">
             <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
@@ -306,8 +313,9 @@ import Icon from '@/components/icons/Icon.vue'
 import IntervalRow from './IntervalRow.vue'
 import ModelTagInput from './ModelTagInput.vue'
 import TimePricingSection from './TimePricingSection.vue'
+import StatsTimePricingSection from './StatsTimePricingSection.vue'
 import type { PricingFormEntry, IntervalFormEntry } from './types'
-import { perTokenToMTok, getPlatformTagClass, isValidPositiveMultiplier, validateReasoningEffortMultipliers } from './types'
+import { createDefaultStatsTimePricingForm, perTokenToMTok, getPlatformTagClass, isValidPositiveMultiplier, validateReasoningEffortMultipliers } from './types'
 import { REASONING_EFFORT_LEVELS, type ReasoningEffortLevel } from '@/constants/channel'
 import type { BillingMode } from '@/api/admin/channels'
 import channelsAPI from '@/api/admin/channels'
@@ -320,10 +328,13 @@ const props = withDefaults(defineProps<{
   hideTokenIntervals?: boolean
   enableTimePricing?: boolean
   enableTierMultipliers?: boolean
+  /** 账号统计（成本）条目卡片：渲染分时独立价区块；售价卡片不渲染 */
+  statsTimePricing?: boolean
 }>(), {
   hideTokenIntervals: false,
   enableTimePricing: false,
   enableTierMultipliers: false,
+  statsTimePricing: false,
 })
 
 const emit = defineEmits<{
@@ -333,6 +344,9 @@ const emit = defineEmits<{
 
 // Collapse state: entries with existing models default to collapsed
 const collapsed = ref(props.entry.models.length > 0)
+
+// 旧规则条目可能未带 stats_time_pricing，给出一个稳定的空表供子组件绑定
+const emptyStatsTimePricing = createDefaultStatsTimePricingForm()
 
 const billingModeOptions = computed(() => [
   { value: 'token', label: t('admin.channels.billingMode.token') },

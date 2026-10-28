@@ -22,6 +22,9 @@ import (
 // longContextPricingEnabled 表示上游是否对本次请求收取长上下文费率，用于优先级 3；
 // 由 accountStatsLongContextPricingEnabled 按账号开关得出，不受分组售价开关影响。
 // reasoningEffort 是最终转发等级；按账号统计定价中配置的等级倍率计费。
+//
+// 返回 error 只来自时段价解析失败（失败关闭）：此时本次成本不计算，
+// 调用方需记日志并让 AccountStatsCost 保持 nil，不得回落基础价。
 func resolveAccountStatsCost(
 	ctx context.Context,
 	channelService *ChannelService,
@@ -36,41 +39,45 @@ func resolveAccountStatsCost(
 	pricingAt time.Time,
 	longContextPricingEnabled bool,
 	reasoningEfforts ...string,
-) *float64 {
+) (*float64, error) {
 	reasoningEffort := ""
 	if len(reasoningEfforts) > 0 {
 		reasoningEffort = reasoningEfforts[0]
 	}
 	if channelService == nil || upstreamModel == "" {
-		return nil
+		return nil, nil
 	}
 	channel, err := channelService.GetChannelForGroup(ctx, groupID)
 	if err != nil || channel == nil {
-		return nil
+		return nil, nil
 	}
 
 	platform := channelService.GetGroupPlatform(ctx, groupID)
 
 	// 优先级 1：自定义规则（始终尝试）
-	if cost := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount, reasoningEffort); cost != nil {
-		return cost
+	customCost, err := tryCustomRules(channel, accountID, groupID, platform, upstreamModel, tokens, requestCount, pricingAt, reasoningEffort)
+	if err != nil {
+		return nil, err
+	}
+	if customCost != nil {
+		return customCost, nil
 	}
 
 	// 优先级 2：渠道开启"应用模型定价到账号统计"时，直接使用客户计费（倍率前）
 	if channel.ApplyPricingToAccountStats {
 		cost := totalCost
 		if cost <= 0 {
-			return nil
+			return nil, nil
 		}
-		return &cost
+		return &cost, nil
 	}
 
 	// 优先级 3：模型定价文件（LiteLLM）默认价格
 	if billingService != nil {
-		return tryModelFilePricing(billingService, upstreamModel, tokens, serviceTier, pricingAt, longContextPricingEnabled, reasoningEffort)
+		return tryModelFilePricing(billingService, upstreamModel, tokens, serviceTier, pricingAt, longContextPricingEnabled, reasoningEffort), nil
 	}
 
-	return nil
+	return nil, nil
 }
 
 // tryModelFilePricing 使用模型定价文件（LiteLLM/fallback）中的价格计算费用。
@@ -105,11 +112,13 @@ func tryModelFilePricing(billingService *BillingService, model string, tokens Us
 }
 
 // tryCustomRules 遍历自定义规则，按数组顺序先命中为准。
+// 命中条目若配了时段价，按请求时刻选段算成本；时段文本解析失败上抛 error（失败关闭）。
 func tryCustomRules(
 	channel *Channel, accountID, groupID int64,
 	platform, model string, tokens UsageTokens, requestCount int,
+	pricingAt time.Time,
 	reasoningEfforts ...string,
-) *float64 {
+) (*float64, error) {
 	reasoningEffort := ""
 	if len(reasoningEfforts) > 0 {
 		reasoningEffort = reasoningEfforts[0]
@@ -123,13 +132,16 @@ func tryCustomRules(
 		if pricing == nil {
 			continue // 规则匹配但模型不在规则定价中，继续下一条
 		}
-		cost := calculateStatsCost(pricing, tokens, requestCount)
+		cost, err := calculateStatsCostAt(pricing, tokens, requestCount, pricingAt)
+		if err != nil {
+			return nil, err
+		}
 		if cost != nil {
 			*cost *= reasoningEffortBillingMultiplier(reasoningEffort, pricing.ReasoningEffortMultipliers)
 		}
-		return cost
+		return cost, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // matchAccountStatsRule 检查规则是否匹配指定的 accountID 和 groupID。
@@ -208,6 +220,47 @@ func calculateStatsCost(pricing *ChannelModelPricing, tokens UsageTokens, reques
 	}
 }
 
+// calculateStatsCostAt 按请求时刻选段计算费用。
+// 命中时段 ⇒ 用该段价构造临时价，复用 calculateStatsCost；命中时段不叠加 token 区间。
+// 未配置时段或落在空档 ⇒ 走原基础价路径（与未配置时段的条目同一条代码）。
+// 时段文本解析失败 ⇒ 返回 error（失败关闭），不回落基础价。
+func calculateStatsCostAt(pricing *ChannelModelPricing, tokens UsageTokens, requestCount int, pricingAt time.Time) (*float64, error) {
+	if pricing == nil {
+		return nil, nil
+	}
+	period, err := pricing.StatsTimePricing.PriceAt(pricingAt)
+	if err != nil {
+		return nil, &accountStatsTimePricingError{
+			PricingID: pricing.ID,
+			Platform:  pricing.Platform,
+			Models:    pricing.Models,
+			Reason:    err.Error(),
+		}
+	}
+	if period == nil {
+		return calculateStatsCost(pricing, tokens, requestCount), nil
+	}
+	effective := &ChannelModelPricing{
+		BillingMode:       pricing.BillingMode,
+		InputPrice:        firstNonNilPrice(period.InputPrice, pricing.InputPrice),
+		OutputPrice:       firstNonNilPrice(period.OutputPrice, pricing.OutputPrice),
+		CacheWritePrice:   firstNonNilPrice(period.CacheWritePrice, pricing.CacheWritePrice),
+		CacheWrite1hPrice: firstNonNilPrice(period.CacheWrite1hPrice, pricing.CacheWrite1hPrice),
+		CacheReadPrice:    firstNonNilPrice(period.CacheReadPrice, pricing.CacheReadPrice),
+		PerRequestPrice:   firstNonNilPrice(period.PerRequestPrice, pricing.PerRequestPrice),
+		ImageOutputPrice:  pricing.ImageOutputPrice,
+	}
+	return calculateStatsCost(effective, tokens, requestCount), nil
+}
+
+// firstNonNilPrice 返回时段内给出的价；未给出时继承条目基础值（不清零）。
+func firstNonNilPrice(override, base *float64) *float64 {
+	if override != nil {
+		return override
+	}
+	return base
+}
+
 // calculatePerRequestStatsCost 按次/图片计费。
 func calculatePerRequestStatsCost(pricing *ChannelModelPricing, requestCount int) *float64 {
 	if pricing.PerRequestPrice == nil || *pricing.PerRequestPrice <= 0 {
@@ -263,6 +316,8 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 // applyAccountStatsCost resolves the account stats cost for a usage log entry.
 // It resolves the upstream model (falling back to the requested model) and calls
 // the 4-level priority chain via resolveAccountStatsCost.
+// 时段价解析失败时返回 error，并让 AccountStatsCost 保持 nil（失败关闭）；
+// 调用点只记日志，用量日志照常落库。
 func applyAccountStatsCost(
 	ctx context.Context,
 	usageLog *UsageLog,
@@ -273,7 +328,7 @@ func applyAccountStatsCost(
 	totalCost float64,
 	pricingAt time.Time,
 	longContextPricingEnabled bool,
-) {
+) error {
 	model := upstreamModel
 	if model == "" {
 		model = requestedModel
@@ -290,9 +345,15 @@ func applyAccountStatsCost(
 	if usageLog != nil && usageLog.ReasoningEffort != nil {
 		reasoningEffort = *usageLog.ReasoningEffort
 	}
-	usageLog.AccountStatsCost = resolveAccountStatsCost(
+	cost, err := resolveAccountStatsCost(
 		ctx, cs, bs, accountID, groupID, model, tokens, requestCount, totalCost, serviceTier, pricingAt, longContextPricingEnabled, reasoningEffort,
 	)
+	if err != nil {
+		usageLog.AccountStatsCost = nil
+		return err
+	}
+	usageLog.AccountStatsCost = cost
+	return nil
 }
 
 // accountStatsLongContextPricingEnabled 判断账号统计成本是否计入长上下文阶梯。

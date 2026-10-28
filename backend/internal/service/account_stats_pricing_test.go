@@ -381,7 +381,8 @@ func TestTryCustomRules_FirstMatchWins(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result, err := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// 应使用第一条规则的价格：100*0.01 + 50*0.02 = 2.0
 	require.InDelta(t, 2.0, *result, 1e-12)
@@ -405,7 +406,8 @@ func TestTryCustomRules_SkipsNonMatchingRules(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result, err := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// 跳过规则1（账号不匹配），使用规则2：100*0.05 = 5.0
 	require.InDelta(t, 5.0, *result, 1e-12)
@@ -423,7 +425,8 @@ func TestTryCustomRules_NoMatch_ReturnsNil(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 2, "", "claude-opus-4", tokens, 1)
+	result, err := tryCustomRules(channel, 999, 2, "", "claude-opus-4", tokens, 1, time.Time{})
+	require.NoError(t, err)
 	require.Nil(t, result) // 账号和分组都不匹配
 }
 
@@ -445,7 +448,8 @@ func TestTryCustomRules_RuleMatchesButModelNot_ContinuesToNext(t *testing.T) {
 		},
 	}
 	tokens := UsageTokens{InputTokens: 100}
-	result := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1)
+	result, err := tryCustomRules(channel, 999, 1, "", "claude-opus-4", tokens, 1, time.Time{})
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.InDelta(t, 5.0, *result, 1e-12) // 使用规则2
 }
@@ -737,8 +741,9 @@ func TestResolveAccountStatsCost_DeepSeekPricingPriority(t *testing.T) {
 			if tt.noChannel {
 				groupID = 99
 			}
-			cost := resolveAccountStatsCost(context.Background(), cs, newTestBillingService(),
+			cost, err := resolveAccountStatsCost(context.Background(), cs, newTestBillingService(),
 				1, groupID, "deepseek-v4-flash", UsageTokens{InputTokens: 1000}, 1, 0.75, "", peak, true)
+			require.NoError(t, err)
 			if tt.noChannel {
 				require.Nil(t, cost)
 				return
@@ -754,13 +759,14 @@ func TestResolveAccountStatsCost_DeepSeekPricingPriority(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResolveAccountStatsCost_NilChannelService(t *testing.T) {
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		nil, // channelService is nil
 		newTestBillingServiceWithPrices(map[string]*ModelPricing{}),
 		1, 1, "claude-sonnet-4",
 		UsageTokens{InputTokens: 100}, 1, 0.5, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -770,13 +776,14 @@ func TestResolveAccountStatsCost_EmptyUpstreamModel(t *testing.T) {
 		Status: StatusActive,
 	}, 1, "")
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs,
 		newTestBillingServiceWithPrices(map[string]*ModelPricing{}),
 		1, 1, "", // empty upstream model
 		UsageTokens{InputTokens: 100}, 1, 0.5, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -787,13 +794,14 @@ func TestResolveAccountStatsCost_GetChannelForGroupReturnsNil(t *testing.T) {
 		Status: StatusActive,
 	}, 1, "")
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs,
 		newTestBillingServiceWithPrices(map[string]*ModelPricing{}),
 		1, 99, "claude-sonnet-4", // groupID 99 has no channel
 		UsageTokens{InputTokens: 100}, 1, 0.5, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -819,12 +827,13 @@ func TestResolveAccountStatsCost_HitsCustomRule(t *testing.T) {
 
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, nil, // billingService not needed when custom rule hits
 		1, 10, "claude-sonnet-4",
 		tokens, 1, 999.0, "priority", time.Time{}, true, // 自定义账号价格不叠加服务层级倍率
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// 100*0.01 + 50*0.02 = 1.0 + 1.0 = 2.0
 	require.InDelta(t, 2.0, *result, 1e-12)
@@ -841,12 +850,13 @@ func TestResolveAccountStatsCost_ApplyPricingToAccountStats_UsesTotalCost(t *tes
 
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, nil,
 		1, 10, "claude-sonnet-4",
 		tokens, 1, 0.75, "priority", time.Time{}, true, // 已完成用户计费，不再重复应用服务层级倍率
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.InDelta(t, 0.75, *result, 1e-12)
 }
@@ -859,12 +869,13 @@ func TestResolveAccountStatsCost_ApplyPricingToAccountStats_ZeroTotalCost_Return
 	}
 	cs := newTestChannelServiceForStats(t, channel, 10, "anthropic")
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, nil,
 		1, 10, "claude-sonnet-4",
 		UsageTokens{}, 1, 0.0, "", time.Time{}, true, // totalCost = 0
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -886,12 +897,13 @@ func TestResolveAccountStatsCost_FallsBackToLiteLLM(t *testing.T) {
 
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, bs,
 		1, 10, "claude-sonnet-4",
 		tokens, 1, 999.0, "", time.Time{}, true, // totalCost ignored
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// 100*0.001 + 50*0.002 = 0.1 + 0.1 = 0.2
 	require.InDelta(t, 0.2, *result, 1e-12)
@@ -907,12 +919,13 @@ func TestResolveAccountStatsCost_FallbackHonorsAnthropicFast(t *testing.T) {
 		},
 	})
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(), cs, bs,
 		1, 10, "claude-opus-5",
 		UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000},
 		1, 0, "fast", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.InDelta(t, 60, *result, 1e-12)
 }
@@ -926,12 +939,13 @@ func TestResolveAccountStatsCost_Gemini36FlashTierUsesFallbackPricing(t *testing
 	cs := newTestChannelServiceForStats(t, channel, 10, "antigravity")
 	bs := NewBillingService(&config.Config{}, nil)
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, bs,
 		1, 10, "gemini-3.6-flash-low",
 		UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheReadTokens: 1_000_000}, 1, 0, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.InDelta(t, 4.575, *result, 1e-12)
 }
@@ -950,12 +964,13 @@ func TestResolveAccountStatsCost_AllMiss_ReturnsNil(t *testing.T) {
 
 	tokens := UsageTokens{InputTokens: 100, OutputTokens: 50}
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, bs,
 		1, 10, "totally-unknown-model",
 		tokens, 1, 0.0, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -967,12 +982,13 @@ func TestResolveAccountStatsCost_NilBillingService_SkipsLiteLLM(t *testing.T) {
 	}
 	cs := newTestChannelServiceForStats(t, channel, 10, "anthropic")
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, nil, // billingService is nil
 		1, 10, "claude-sonnet-4",
 		UsageTokens{InputTokens: 100}, 1, 0.0, "", time.Time{}, true,
 	)
+	require.NoError(t, err)
 	require.Nil(t, result)
 }
 
@@ -1000,12 +1016,13 @@ func TestResolveAccountStatsCost_CustomRulePriorityOverApplyPricing(t *testing.T
 
 	tokens := UsageTokens{InputTokens: 100}
 
-	result := resolveAccountStatsCost(
+	result, err := resolveAccountStatsCost(
 		context.Background(),
 		cs, nil,
 		1, 10, "claude-sonnet-4",
 		tokens, 1, 99.0, "", time.Time{}, true, // totalCost = 99.0 (would be used if ApplyPricing wins)
 	)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// Custom rule: 100*0.05 = 5.0 (NOT 99.0 from totalCost)
 	require.InDelta(t, 5.0, *result, 1e-12)
@@ -1029,11 +1046,12 @@ func TestApplyAccountStatsCost_UsesUsageLogServiceTier(t *testing.T) {
 	serviceTier := "priority"
 	usageLog := &UsageLog{ServiceTier: &serviceTier}
 
-	applyAccountStatsCost(
+	err := applyAccountStatsCost(
 		context.Background(), usageLog, cs, bs,
 		1, 10, "gpt-5.6-sol", "gpt-5.6-sol",
 		UsageTokens{InputTokens: 100, OutputTokens: 50}, 999, time.Time{}, true,
 	)
+	require.NoError(t, err)
 
 	require.NotNil(t, usageLog.AccountStatsCost)
 	require.InDelta(t, 0.4, *usageLog.AccountStatsCost, 1e-12)
@@ -1079,9 +1097,10 @@ func TestApplyAccountStatsCost_LongContextFollowsAccountGate(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			usageLog := &UsageLog{ServiceTier: &tt.tier}
-			applyAccountStatsCost(context.Background(), usageLog, cs, bs,
+			err := applyAccountStatsCost(context.Background(), usageLog, cs, bs,
 				1, 10, "gpt-5.6-sol", "gpt-5.6-sol", tokens, 999, time.Time{},
 				accountStatsLongContextPricingEnabled(tt.gate))
+			require.NoError(t, err)
 			require.NotNil(t, usageLog.AccountStatsCost)
 			require.InDelta(t, tt.wantCost, *usageLog.AccountStatsCost, 1e-12)
 		})

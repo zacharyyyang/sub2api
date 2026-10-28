@@ -1,4 +1,4 @@
-import type { BillingMode, ChannelTimePricing, PricingInterval } from '@/api/admin/channels'
+import type { BillingMode, ChannelTimePricing, AccountStatsTimePricing, PricingInterval } from '@/api/admin/channels'
 import { REASONING_EFFORT_LEVELS } from '@/constants/channel'
 
 type TranslateFn = (key: string, params?: Record<string, unknown>) => string
@@ -36,6 +36,8 @@ export interface PricingFormEntry {
   per_request_price: number | string | null
   intervals: IntervalFormEntry[]
   time_pricing: TimePricingFormEntry
+  /** 仅账号统计（成本）条目使用：分时独立价。售价侧条目不带此字段。 */
+  stats_time_pricing?: StatsTimePricingFormEntry
 }
 
 export interface TimePricingPeriodFormEntry {
@@ -148,6 +150,158 @@ export function validateTimePricing(value: TimePricingFormEntry, t: TranslateFn)
   for (let i = 1; i < sorted.length; i++) {
     if (sorted[i].start < sorted[i - 1].end) {
       return timePricingValidationMessage(t, 'overlap')
+    }
+  }
+  return null
+}
+
+// ── 账号统计（成本）分时独立价 ──────────────────────────────
+// 与售价侧分时倍率是两套机制：成本侧每段自带完整单价（无倍率），
+// 结构键名 `stats_time_pricing`，售价侧 `time_pricing` 一字不动。
+
+export interface StatsTimePricingPeriodFormEntry {
+  start_time: string
+  end_time: string
+  input_price: number | string | null
+  output_price: number | string | null
+  cache_write_price: number | string | null
+  /**
+   * 界面上不出现在段表列内（§8 只列 7 列），按接口原值（per-token）透写：
+   * 不走 $/MTok 换算，否则超过 10 位有效数字的值在保存时会被改写。
+   */
+  cache_write_1h_price?: number | null
+  cache_read_price: number | string | null
+  per_request_price: number | string | null
+}
+
+export interface StatsTimePricingFormEntry {
+  timezone: string
+  periods: StatsTimePricingPeriodFormEntry[]
+}
+
+/** 时区默认值与售价侧时段表同一默认，避免两张时段表默认值不同 */
+export function createDefaultStatsTimePricingForm(): StatsTimePricingFormEntry {
+  return { timezone: DEFAULT_TIME_PRICING_TIMEZONE, periods: [] }
+}
+
+export function apiStatsTimePricingToForm(value: AccountStatsTimePricing | null | undefined): StatsTimePricingFormEntry {
+  if (!value || !value.periods?.length) return createDefaultStatsTimePricingForm()
+  return {
+    // 已配置时段时原样带上库里的时区：缺失或非法不在读侧就地补上默认值，
+    // 否则一次无关的保存会把坏配置静默写成默认时区。空值留给提交校验阻断。
+    timezone: typeof value.timezone === 'string' ? value.timezone : '',
+    periods: value.periods.map(period => ({
+      start_time: LEGACY_CLOCK_TIME.test(period.start_time) ? `${period.start_time}:00` : period.start_time,
+      end_time: LEGACY_CLOCK_TIME.test(period.end_time) ? `${period.end_time}:00` : period.end_time,
+      input_price: perTokenToMTok(period.input_price),
+      output_price: perTokenToMTok(period.output_price),
+      cache_write_price: perTokenToMTok(period.cache_write_price),
+      cache_write_1h_price: period.cache_write_1h_price ?? null,
+      cache_read_price: perTokenToMTok(period.cache_read_price),
+      per_request_price: period.per_request_price ?? null,
+    })),
+  }
+}
+
+/** 段表删空 ⇒ null（回到未配置形态，行为与改动前一致） */
+export function formStatsTimePricingToAPI(
+  value: StatsTimePricingFormEntry | null | undefined,
+): AccountStatsTimePricing | null {
+  if (!value?.periods?.length) return null
+  const timezone = typeof value.timezone === 'string' ? value.timezone.trim() : ''
+  return {
+    timezone,
+    periods: value.periods.map(period => ({
+      start_time: period.start_time,
+      end_time: period.end_time,
+      input_price: mTokToPerToken(period.input_price),
+      output_price: mTokToPerToken(period.output_price),
+      cache_write_price: mTokToPerToken(period.cache_write_price),
+      cache_write_1h_price: toNullableNumber(period.cache_write_1h_price),
+      cache_read_price: mTokToPerToken(period.cache_read_price),
+      per_request_price: toNullableNumber(period.per_request_price),
+    })),
+  }
+}
+
+function statsTimePricingRequiredPrice(
+  period: StatsTimePricingPeriodFormEntry,
+  billingMode: BillingMode,
+): boolean {
+  const blank = (val: number | string | null | undefined) => val === null || val === undefined || val === ''
+  // 必填项按条目计费模式分（与后端写入校验同一判据；空模式按 token）
+  if (!billingMode || billingMode === 'token') {
+    return blank(period.input_price) || blank(period.output_price) || blank(period.cache_read_price)
+  }
+  return blank(period.per_request_price)
+}
+
+/**
+ * 校验账号统计分时价；返回错误消息，通过返回 null。
+ * 时段语义与售价侧一致（左闭右开、00:00:00 作当日 24:00、不跨零点、不重叠），
+ * 必填项按条目 billing_mode 区分：token 需三价齐全，按次/图片/视频需按次价。
+ */
+export function validateStatsTimePricing(entry: PricingFormEntry, t: TranslateFn): string | null {
+  const value = entry.stats_time_pricing
+  if (!value?.periods?.length) return null
+
+  if (typeof value.timezone !== 'string' || value.timezone.trim() === '') {
+    return timePricingValidationMessage(t, 'timezone')
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value.timezone.trim() })
+  } catch {
+    return timePricingValidationMessage(t, 'timezone')
+  }
+
+  const periods: { start: number, end: number, index: number }[] = []
+  for (const [index, period] of value.periods.entries()) {
+    const number = index + 1
+    if (!CLOCK_TIME.test(period.start_time) || !CLOCK_TIME.test(period.end_time)) {
+      return t('admin.channels.statsTimePricingValidation.format', { index: number })
+    }
+    if (period.start_time === period.end_time) {
+      return t('admin.channels.statsTimePricingValidation.range', { index: number })
+    }
+
+    const start = timeToSeconds(period.start_time, false)
+    const end = timeToSeconds(period.end_time, true)
+    if (start >= end) return t('admin.channels.statsTimePricingValidation.range', { index: number })
+    periods.push({ start, end, index: number })
+
+    if (statsTimePricingRequiredPrice(period, entry.billing_mode)) {
+      const mode = !entry.billing_mode || entry.billing_mode === 'token' ? 'token' : 'perRequest'
+      return t(`admin.channels.statsTimePricingValidation.required.${mode}`, { index: number })
+    }
+    const prices: [string, number | string | null | undefined][] = [
+      ['inputPrice', period.input_price],
+      ['outputPrice', period.output_price],
+      ['cacheWritePrice', period.cache_write_price],
+      ['cacheWrite1hPrice', period.cache_write_1h_price],
+      ['cacheReadPrice', period.cache_read_price],
+      ['perRequestPrice', period.per_request_price],
+    ]
+    for (const [key, val] of prices) {
+      if (val == null || val === '') continue
+      if (!Number.isFinite(Number(val))) {
+        return t('admin.channels.statsTimePricingValidation.invalidPrice', {
+          index: number,
+          field: intervalPriceLabel(t, key),
+        })
+      }
+      if (Number(val) < 0) {
+        return t('admin.channels.statsTimePricingValidation.negativePrice', {
+          index: number,
+          field: intervalPriceLabel(t, key),
+        })
+      }
+    }
+  }
+
+  const sorted = [...periods].sort((a, b) => a.start - b.start)
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].start < sorted[i - 1].end) {
+      return t('admin.channels.statsTimePricingValidation.overlap', { index: sorted[i].index })
     }
   }
   return null

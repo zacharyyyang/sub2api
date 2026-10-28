@@ -95,6 +95,17 @@ export default {
         overlap: 'Time periods must not overlap',
         multiplier: 'Multiplier must be greater than 0 with at most two decimal places'
       },
+      statsTimePricingValidation: {
+        required: {
+          token: 'Period #{index}: token billing requires input, output and cache read prices',
+          perRequest: 'Period #{index}: per-request billing requires a per-request price'
+        },
+        format: 'Period #{index}: start and end times must use HH:mm:ss format',
+        range: 'Period #{index}: start time must be earlier than end time; split ranges across midnight',
+        overlap: 'Period #{index}: overlaps an earlier period',
+        invalidPrice: 'Period #{index}: {field} must be a number',
+        negativePrice: 'Period #{index}: {field} must not be negative'
+      },
       deleteConfirm: 'Are you sure you want to delete channel "{name}"? This cannot be undone.',
       columns: {
         name: 'Name',
@@ -166,6 +177,8 @@ export default {
         endTime: 'End time',
         multiplier: 'Multiplier',
         removeTimePeriod: 'Remove period',
+        statsTimePricing: 'Account stats cost time pricing (optional)',
+        statsTimePricingHint: 'A request falling in a period uses the unit prices of that period and no longer stacks the context intervals above; gaps outside every period follow the base prices and interval rules above. Input/output/cache read are $/MTok; per-request price is $ per request.',
         minTokens: 'Min',
         maxTokens: 'Max',
         inclusive: '(inclusive)',

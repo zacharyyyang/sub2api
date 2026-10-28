@@ -95,6 +95,17 @@ export default {
         overlap: '时间段不能重叠',
         multiplier: '倍率必须大于 0，且最多保留两位小数'
       },
+      statsTimePricingValidation: {
+        required: {
+          token: '时段 #{index}：Token 计费必须填写输入价格、输出价格与缓存读取价格',
+          perRequest: '时段 #{index}：按次计费必须填写单次价格'
+        },
+        format: '时段 #{index}：开始与结束时间必须使用 HH:mm:ss 格式',
+        range: '时段 #{index}：开始时间必须早于结束时间；跨午夜请拆分为两个时段',
+        overlap: '时段 #{index}：与前面已配置的时段重叠',
+        invalidPrice: '时段 #{index}：{field}必须是数字',
+        negativePrice: '时段 #{index}：{field}不能为负数'
+      },
       deleteConfirm: '确定要删除渠道「{name}」吗？此操作不可撤销。',
       columns: {
         name: '名称',
@@ -166,6 +177,8 @@ export default {
         endTime: '结束时间',
         multiplier: '倍率',
         removeTimePeriod: '删除时间段',
+        statsTimePricing: '账号统计成本分时定价（可选）',
+        statsTimePricingHint: '命中时段用该段自己的单价计算账号统计成本，不再叠加上方的上下文区间价；时段之外的空档按上方基础价与区间规则计。输入/输出/缓存读单位为 $/MTok，按次价单位为每次请求的 $。',
         minTokens: '最小',
         maxTokens: '最大',
         inclusive: '（含）',

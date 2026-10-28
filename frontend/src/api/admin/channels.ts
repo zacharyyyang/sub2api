@@ -38,6 +38,26 @@ export interface ChannelTimePricing {
   periods: ChannelTimePricingPeriod[]
 }
 
+export interface AccountStatsTimePricingPeriod {
+  start_time: string
+  end_time: string
+  input_price: number | null
+  output_price: number | null
+  cache_write_price: number | null
+  cache_write_1h_price?: number | null
+  cache_read_price: number | null
+  per_request_price: number | null
+}
+
+/**
+ * 账号统计（成本）分时独立价：每段自带完整单价，无倍率关系。
+ * 与售价侧 ChannelTimePricing（倍率结构）是两套结构，不可混用。
+ */
+export interface AccountStatsTimePricing {
+  timezone: string
+  periods?: AccountStatsTimePricingPeriod[]
+}
+
 export interface ChannelModelPricing {
   id?: number
   platform: string
@@ -56,6 +76,7 @@ export interface ChannelModelPricing {
   per_request_price: number | null
   intervals: PricingInterval[]
   time_pricing: ChannelTimePricing | null
+  stats_time_pricing?: AccountStatsTimePricing | null
 }
 
 export interface AccountStatsPricingRule {
