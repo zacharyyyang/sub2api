@@ -250,7 +250,7 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 
 	resp.ModelPricing = make([]channelModelPricingResponse, 0, len(ch.ModelPricing))
 	for _, p := range ch.ModelPricing {
-		resp.ModelPricing = append(resp.ModelPricing, pricingToResponse(&p))
+		resp.ModelPricing = append(resp.ModelPricing, pricingToResponse(&p, service.PlatformAnthropic))
 	}
 
 	resp.ApplyPricingToAccountStats = ch.ApplyPricingToAccountStats
@@ -270,7 +270,7 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 			ruleResp.AccountIDs = []int64{}
 		}
 		for i := range rule.Pricing {
-			ruleResp.Pricing = append(ruleResp.Pricing, pricingToResponse(&rule.Pricing[i]))
+			ruleResp.Pricing = append(ruleResp.Pricing, pricingToResponse(&rule.Pricing[i], ""))
 		}
 		resp.AccountStatsPricingRules = append(resp.AccountStatsPricingRules, ruleResp)
 	}
@@ -278,7 +278,11 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 	return resp
 }
 
-func pricingToResponse(p *service.ChannelModelPricing) channelModelPricingResponse {
+// pricingToResponse 序列化定价条目。defaultPlatform 只在平台为空时兜底：
+// 主模型定价按 Anthropic 兜底（既有行为）；账号统计规则不能兜底——
+// 空平台在那里语义是“不限平台”（account_stats_pricing.go 的匹配逻辑），
+// 一旦兜底成 Anthropic，GET→PUT 往返就会把“不限平台”默默收窄成仅 Anthropic。
+func pricingToResponse(p *service.ChannelModelPricing, defaultPlatform string) channelModelPricingResponse {
 	models := p.Models
 	if models == nil {
 		models = []string{}
@@ -289,7 +293,7 @@ func pricingToResponse(p *service.ChannelModelPricing) channelModelPricingRespon
 	}
 	platform := p.Platform
 	if platform == "" {
-		platform = service.PlatformAnthropic
+		platform = defaultPlatform
 	}
 	intervals := make([]pricingIntervalResponse, 0, len(p.Intervals))
 	for _, iv := range p.Intervals {

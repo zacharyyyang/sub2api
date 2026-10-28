@@ -497,7 +497,7 @@ func TestPricingToResponse_TimePricing(t *testing.T) {
 				StartTime: "14:00", EndTime: "18:00", Multiplier: 1.25,
 			}},
 		},
-	})
+	}, service.PlatformAnthropic)
 
 	require.NotNil(t, got.TimePricing)
 	require.Equal(t, "Asia/Shanghai", got.TimePricing.Timezone)
@@ -506,15 +506,30 @@ func TestPricingToResponse_TimePricing(t *testing.T) {
 }
 
 func TestPricingToResponse_TimePricingNil(t *testing.T) {
-	got := pricingToResponse(&service.ChannelModelPricing{})
+	got := pricingToResponse(&service.ChannelModelPricing{}, service.PlatformAnthropic)
 	require.Nil(t, got.TimePricing)
+}
+
+func TestPricingToResponse_EmptyPlatformDefault(t *testing.T) {
+	// 主模型定价：空平台兜底成 anthropic（既有行为）
+	modelPricing := pricingToResponse(&service.ChannelModelPricing{}, service.PlatformAnthropic)
+	require.Equal(t, service.PlatformAnthropic, modelPricing.Platform)
+
+	// 账号统计规则：空平台必须保持空——它在上游匹配逻辑里是“不限平台”；
+	// 一旦兜底成 anthropic，GET→PUT 往返就把“不限平台”静默收窄成仅 anthropic。
+	rulePricing := pricingToResponse(&service.ChannelModelPricing{}, "")
+	require.Equal(t, "", rulePricing.Platform)
+
+	// 已显式配置的平台不受兜底影响
+	explicit := pricingToResponse(&service.ChannelModelPricing{Platform: service.PlatformOpenAI}, "")
+	require.Equal(t, service.PlatformOpenAI, explicit.Platform)
 }
 
 func TestPricingRequestAndResponse_ReasoningEffortMultipliers(t *testing.T) {
 	var req channelModelPricingRequest
 	require.NoError(t, json.Unmarshal([]byte(`{"models":["custom-model"],"reasoning_effort_multipliers":{"none":0.5,"high":1.5,"max":3}}`), &req))
 	pricing := pricingRequestToService([]channelModelPricingRequest{req}, true)
-	got := pricingToResponse(&pricing[0])
+	got := pricingToResponse(&pricing[0], service.PlatformAnthropic)
 	require.Equal(t, map[string]float64{"none": 0.5, "high": 1.5, "max": 3}, got.ReasoningEffortMultipliers)
 	data, err := json.Marshal(got)
 	require.NoError(t, err)

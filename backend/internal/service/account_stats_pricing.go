@@ -262,8 +262,10 @@ func firstNonNilPrice(override, base *float64) *float64 {
 }
 
 // calculatePerRequestStatsCost 按次/图片计费。
+// 价格未配置（nil）⇒ 返回 nil，交给后续优先级；已配置（含显式 0 价）⇒ 返回该值。
+// 0 是合法价（免费时段/免费额度），不能当成“未命中”回落成售价。
 func calculatePerRequestStatsCost(pricing *ChannelModelPricing, requestCount int) *float64 {
-	if pricing.PerRequestPrice == nil || *pricing.PerRequestPrice <= 0 {
+	if pricing.PerRequestPrice == nil {
 		return nil
 	}
 	cost := *pricing.PerRequestPrice * float64(requestCount)
@@ -302,15 +304,24 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 				float64(cache1h)*deref(p.CacheWrite1hPrice)
 		}
 	}
+	// 一个价都没配 ⇒ 返回 nil（交给后续优先级）；只要配了价（含显式 0）⇒ 返回计算结果，
+	// 即使结果为 0 也不回落（0 是合法成本）。
+	if !p.hasAnyPrice() {
+		return nil
+	}
 	cost := float64(tokens.InputTokens)*deref(p.InputPrice) +
 		float64(tokens.OutputTokens)*deref(p.OutputPrice) +
 		cacheCreationCost +
 		float64(tokens.CacheReadTokens)*deref(p.CacheReadPrice) +
 		float64(tokens.ImageOutputTokens)*deref(p.ImageOutputPrice)
-	if cost <= 0 {
-		return nil
-	}
 	return &cost
+}
+
+// hasAnyPrice 报告该定价是否至少配置了一个价格字段。
+func (p *ChannelModelPricing) hasAnyPrice() bool {
+	return p.InputPrice != nil || p.OutputPrice != nil || p.CacheWritePrice != nil ||
+		p.CacheWrite1hPrice != nil || p.CacheReadPrice != nil ||
+		p.ImageOutputPrice != nil || p.PerRequestPrice != nil
 }
 
 // applyAccountStatsCost resolves the account stats cost for a usage log entry.

@@ -289,8 +289,10 @@ func TestCalculateStatsCost_TokenBilling_AllTokensZero(t *testing.T) {
 	}
 	tokens := UsageTokens{} // all zeros
 	result := calculateStatsCost(pricing, tokens, 1)
-	// totalCost == 0 → returns nil (does not override, falls back to default formula)
-	require.Nil(t, result)
+	// 契约：配了价 ⇒ 返回计算结果（哪怕是 0）；一个价都不配 ⇒ nil（交给后续优先级）。
+	// 因此零 token 请求返回 0，而不是回落到售价。
+	require.NotNil(t, result)
+	require.InDelta(t, 0, *result, 1e-12)
 }
 
 func TestCalculateStatsCost_PerRequestBilling(t *testing.T) {
@@ -320,8 +322,9 @@ func TestCalculateStatsCost_PerRequestBilling_PriceZero(t *testing.T) {
 		PerRequestPrice: testPtrFloat64(0),
 	}
 	result := calculateStatsCost(pricing, UsageTokens{}, 1)
-	// price == 0 → condition *pricing.PerRequestPrice > 0 is false → returns nil
-	require.Nil(t, result)
+	// 显式 0 价是合法价（免费时段）——必须返回 0 而不是 nil，否则会回落成售价。
+	require.NotNil(t, result)
+	require.InDelta(t, 0, *result, 1e-12)
 }
 
 func TestCalculateStatsCost_ImageBilling(t *testing.T) {
@@ -357,6 +360,55 @@ func TestCalculateStatsCost_DefaultBillingMode_FallsToToken(t *testing.T) {
 	result := calculateStatsCost(pricing, tokens, 1)
 	require.NotNil(t, result)
 	require.InDelta(t, 0.2, *result, 1e-12)
+}
+
+// ---------------------------------------------------------------------------
+// 显式 0 价（免费时段）不得被当成“未命中”
+// ---------------------------------------------------------------------------
+
+func TestCalculateStatsCost_TokenBilling_AllZeroPricesReturnZero(t *testing.T) {
+	pricing := &ChannelModelPricing{
+		InputPrice:     testPtrFloat64(0),
+		OutputPrice:    testPtrFloat64(0),
+		CacheReadPrice: testPtrFloat64(0),
+	}
+	tokens := UsageTokens{InputTokens: 1000, OutputTokens: 500}
+	result := calculateStatsCost(pricing, tokens, 1)
+	require.NotNil(t, result, "配置了价（即使全为 0）也必须返回结果，不能回落")
+	require.InDelta(t, 0, *result, 1e-12)
+}
+
+func TestCalculateStatsCost_TokenBilling_NoPriceConfiguredReturnsNil(t *testing.T) {
+	pricing := &ChannelModelPricing{}
+	tokens := UsageTokens{InputTokens: 1000, OutputTokens: 500}
+	require.Nil(t, calculateStatsCost(pricing, tokens, 1),
+		"一个价都不配 ⇒ nil，交给后续优先级")
+}
+
+func TestCalculateStatsCostAt_ZeroPricePeriodWins(t *testing.T) {
+	// 时段命中且该段显式配 0 价（免费窗口）⇒ 账号统计成本 = 0，
+	// 不得因“结果为 0”回落成基础价或售价。
+	period := AccountStatsTimePricingPeriod{
+		StartTime:      "00:00:00",
+		EndTime:        "23:59:59",
+		InputPrice:     testPtrFloat64(0),
+		OutputPrice:    testPtrFloat64(0),
+		CacheReadPrice: testPtrFloat64(0),
+	}
+	pricing := &ChannelModelPricing{
+		InputPrice:     testPtrFloat64(0.001),
+		OutputPrice:    testPtrFloat64(0.002),
+		CacheReadPrice: testPtrFloat64(0.0001),
+		StatsTimePricing: &AccountStatsTimePricing{
+			Timezone: "Asia/Shanghai",
+			Periods:  []AccountStatsTimePricingPeriod{period},
+		},
+	}
+	at := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	result, err := calculateStatsCostAt(pricing, UsageTokens{InputTokens: 1000, OutputTokens: 500}, 1, at)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.InDelta(t, 0, *result, 1e-12)
 }
 
 // ---------------------------------------------------------------------------
