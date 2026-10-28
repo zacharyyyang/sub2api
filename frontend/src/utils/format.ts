@@ -75,6 +75,27 @@ export function formatCurrency(amount: number | null | undefined, currency: stri
 }
 
 /**
+ * 格式化**价格/成本**金额（人民币）。
+ *
+ * 与 formatCurrency 的区别：formatCurrency 管**余额/额度**，本仓内部以 USD 记账，
+ * 所以它保持 USD；而模型单价、渠道成本、用量计价这些数值本来就是按人民币录入的，
+ * 用 $ 会把 ¥0.4/M 显示成 $0.4/M，因此单独一个人民币口径的格式化函数。
+ */
+export function formatPriceCNY(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined) return '¥0.00'
+
+  const locale = getLocale()
+  const fractionDigits = amount > 0 && amount < 0.01 ? 6 : 2
+
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: 'CNY',
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits
+  }).format(amount)
+}
+
+/**
  * 格式化字节大小
  * @param bytes 字节数
  * @param decimals 小数位数

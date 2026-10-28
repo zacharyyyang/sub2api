@@ -20,7 +20,7 @@ export function formatScaled(value: number | null, scale: number, minFractionDig
       s = (dot === -1 ? `${s}.` : s) + '0'.repeat(minFractionDigits - digits)
     }
   }
-  return `$${s}`
+  return `¥${s}`
 }
 
 import type { UserPricingInterval } from '@/api/channels'
