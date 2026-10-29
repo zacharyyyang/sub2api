@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -70,7 +71,12 @@ var (
 	fxRateLoaderMu       sync.Mutex
 	fxRateSettingsLoader func(ctx context.Context) (rate float64, configured, auto, ok bool)
 	fxRateLoaded         bool
+	fxRateLoadInFlight   chan struct{} // 非 nil 表示正在加载，关闭即表示本轮加载结束
+	lastLoadFailureAt    time.Time
 )
+
+// loadRetryCooldown 是加载失败后的重试间隔：失败不能永久放弃，也不能每次请求都打数据库。
+const loadRetryCooldown = 30 * time.Second
 
 // RegisterFXRateSettingsLoader 注册设置加载器（由 NewSettingService 调用，进程内只一份）。
 func RegisterFXRateSettingsLoader(loader func(ctx context.Context) (float64, bool, bool, bool)) {
@@ -79,25 +85,59 @@ func RegisterFXRateSettingsLoader(loader func(ctx context.Context) (float64, boo
 	fxRateSettingsLoader = loader
 }
 
-// ensureLoaded 在汇率尚未配置时同步加载一次设置（仅一次，失败不重试到死）。
+// ensureLoaded 在汇率状态未知时同步加载一次设置。
+// 并发语义：加载进行中的其他调用**等待同一个结果**再继续，不允许拿到未配置的中性汇率去计价。
+// 失败语义：读取失败不记为「已加载」，过 loadRetryCooldown 后重试；每次都记 WARN，不静默。
 func ensureLoaded() {
-	fxRateLoaderMu.Lock()
-	loader := fxRateSettingsLoader
-	already := fxRateLoaded
-	if loader == nil || already {
+	for {
+		fxRateLoaderMu.Lock()
+		if fxRateLoaded {
+			fxRateLoaderMu.Unlock()
+			return
+		}
+		if fxRateLoadInFlight != nil {
+			wait := fxRateLoadInFlight
+			fxRateLoaderMu.Unlock()
+			<-wait // 等同一次加载结束，再回环判断是否成功
+			continue
+		}
+		if loader := fxRateSettingsLoader; loader == nil {
+			fxRateLoaderMu.Unlock()
+			return
+		}
+		if !lastLoadFailureAt.IsZero() && time.Since(lastLoadFailureAt) < loadRetryCooldown {
+			fxRateLoaderMu.Unlock()
+			return
+		}
+		done := make(chan struct{})
+		fxRateLoadInFlight = done
+		loader := fxRateSettingsLoader
 		fxRateLoaderMu.Unlock()
-		return
-	}
-	fxRateLoaded = true
-	fxRateLoaderMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	rate, configured, auto, ok := loader(ctx)
-	if !ok {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		rate, configured, auto, ok := loader(ctx)
+		cancel()
+		if ok {
+			ConfigureUSDToCNYRate(rate, configured, auto)
+		}
+
+		fxRateLoaderMu.Lock()
+		if ok {
+			fxRateLoaded = true
+			lastLoadFailureAt = time.Time{}
+		} else {
+			lastLoadFailureAt = time.Now()
+		}
+		fxRateLoadInFlight = nil
+		fxRateLoaderMu.Unlock()
+		close(done)
+
+		if !ok {
+			slog.Warn("rate.settings_load_failed",
+				"note", "settings read failed; pricing keeps the last known rate and retries after cooldown")
+		}
 		return
 	}
-	ConfigureUSDToCNYRate(rate, configured, auto)
 }
 
 // ConfigureUSDToCNYRate 由设置解析路径调用，把手动值、是否已配置、自动开关灌进状态。
@@ -105,7 +145,7 @@ func ensureLoaded() {
 func ConfigureUSDToCNYRate(manual float64, configured, auto bool) {
 	fxRate.mu.Lock()
 	defer fxRate.mu.Unlock()
-	if manual > 0 && manual == manual { // NaN 自我比较为 false
+	if manual > 0 && !math.IsNaN(manual) && !math.IsInf(manual, 0) {
 		fxRate.manual = manual
 	}
 	fxRate.configured = configured
@@ -157,9 +197,13 @@ func FXRateCurrentStatus() FXRateStatus {
 		LastErrorAt:    fxRate.lastErrAt,
 		RefreshEveryMs: usdToCNYRefreshEvery.Milliseconds(),
 	}
-	if fxRate.auto && fxRate.live > 0 {
+	switch {
+	case !fxRate.configured:
+		// 与 CurrentUSDToCNYRate 同一规则：未配置就是中性值，不报告手动/实时值。
+		st.Rate, st.Source = NeutralUSDToCNYRate, "neutral"
+	case fxRate.auto && fxRate.live > 0:
 		st.Rate, st.Source = fxRate.live, "live"
-	} else {
+	default:
 		st.Rate, st.Source = fxRate.manual, "manual"
 	}
 	return st
@@ -174,7 +218,7 @@ func RefreshUSDToCNYRateNow(ctx context.Context) error {
 func (s *fxRateState) ensureRefresher() {
 	s.refresh.Do(func() {
 		go func() {
-			// 启动时先抓一次，之后按小时刷新。
+			// 启动时先抓一次，之后按「每日」周期刷新（usdToCNYRefreshEvery）。
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_ = s.refreshNow(ctx)
 			cancel()
@@ -323,6 +367,8 @@ func channelPricingInCNY(p *ChannelModelPricing, rate float64) *ChannelModelPric
 	cloned.ImageOutputPrice = scale(p.ImageOutputPrice)
 	cloned.PerRequestPrice = scale(p.PerRequestPrice)
 	cloned.Intervals = convertIntervalsToCNY(p.Intervals, rate)
+	// 金额已换成人民币，币种标识必须跟着走，否则调用方会把人民币数字当美元解读。
+	cloned.PriceCurrency = PriceCurrencyCNY
 
 	if p.StatsTimePricing != nil {
 		periods := make([]AccountStatsTimePricingPeriod, len(p.StatsTimePricing.Periods))
@@ -382,7 +428,7 @@ func parseFXRateSetting(raw string) (rate float64, configured bool) {
 		return NeutralUSDToCNYRate, false
 	}
 	v, err := strconv.ParseFloat(trimmed, 64)
-	if err != nil || v <= 0 || v != v {
+	if err != nil || v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, true
 	}
 	return v, true

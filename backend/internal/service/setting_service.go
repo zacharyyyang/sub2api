@@ -304,7 +304,8 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 			return 0, false, false, false
 		}
 		vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyUSDToCNYRate, SettingKeyUSDToCNYRateAuto})
-		if err != nil || len(vals) == 0 {
+		if err != nil {
+			// 读取失败：ok=false，让调用方保持「未加载」并在冷却后重试，而不是把失败当成「没有配置」。
 			return 0, false, false, false
 		}
 		rate, configured := parseFXRateSetting(vals[SettingKeyUSDToCNYRate])

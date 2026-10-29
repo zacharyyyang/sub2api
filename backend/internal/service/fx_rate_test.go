@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -317,8 +318,7 @@ func TestDeepSeekGatewayPath_ConvertsExactlyOnce(t *testing.T) {
 
 // 回归：首次使用时自动从设置加载汇率——不依赖任何页面先调过 parseSettings。
 func TestCurrentUSDToCNYRate_AutoLoadsSettingsOnFirstUse(t *testing.T) {
-	// 同一个进程里别的用例可能已经触发过一次加载，这里重置一次性标志
-	fxRateLoaded = false
+	withFreshFXLoaderState(t)
 	ConfigureUSDToCNYRate(0, false, false)
 	t.Cleanup(func() { ConfigureUSDToCNYRate(1, false, false) })
 
@@ -335,3 +335,96 @@ func TestCurrentUSDToCNYRate_AutoLoadsSettingsOnFirstUse(t *testing.T) {
 func timeNowForTest() time.Time { return timeNowForTestFixed }
 
 var timeNowForTestFixed = time.Date(2026, 10, 29, 17, 0, 0, 0, time.UTC)
+
+// withFreshFXLoaderState 保存/恢复加载器相关全局状态，避免用例之间互相污染。
+func withFreshFXLoaderState(t *testing.T) {
+	t.Helper()
+	fxRateLoaderMu.Lock()
+	prevLoader := fxRateSettingsLoader
+	prevLoaded := fxRateLoaded
+	prevFailure := lastLoadFailureAt
+	fxRateSettingsLoader = nil
+	fxRateLoaded = false
+	lastLoadFailureAt = time.Time{}
+	fxRateLoaderMu.Unlock()
+	t.Cleanup(func() {
+		fxRateLoaderMu.Lock()
+		defer fxRateLoaderMu.Unlock()
+		fxRateSettingsLoader = prevLoader
+		fxRateLoaded = prevLoaded
+		lastLoadFailureAt = prevFailure
+	})
+}
+
+// F1 回归：首个调用加载期间，其他并发调用必须等到加载结果，不得提前拿到中性 1。
+func TestCurrentUSDToCNYRate_ConcurrentCallersWaitForFirstLoad(t *testing.T) {
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, false)
+
+	release := make(chan struct{})
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		<-release
+		return 7.2, true, false, true
+	})
+
+	const N = 8
+	results := make([]float64, N)
+	var wg sync.WaitGroup
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			results[idx] = CurrentUSDToCNYRate()
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	for i, got := range results {
+		if !almostEqual(got, 7.2) {
+			t.Fatalf("caller %d saw %v, want 7.2 (must wait for first load)", i, got)
+		}
+	}
+}
+
+// F2 回归：读取失败不得被记成「已加载」，冷却后必须重试成功。
+func TestEnsureLoaded_RetriesAfterReadFailure(t *testing.T) {
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, false)
+
+	calls := 0
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		calls++
+		if calls == 1 {
+			return 0, false, false, false // 模拟设置表读取失败
+		}
+		return 6.9, true, false, true
+	})
+
+	if got := CurrentUSDToCNYRate(); !almostEqual(got, NeutralUSDToCNYRate) {
+		t.Fatalf("after failed load must stay neutral, got %v", got)
+	}
+	// 冷却期内不重试，冷却结束后重试并生效
+	fxRateLoaderMu.Lock()
+	lastLoadFailureAt = time.Now().Add(-2 * loadRetryCooldown)
+	fxRateLoaderMu.Unlock()
+	if got := CurrentUSDToCNYRate(); !almostEqual(got, 6.9) {
+		t.Fatalf("retry after cooldown must apply loaded rate, got %v", got)
+	}
+
+	_ = calls
+}
+
+// F3 回归：±Inf 不得写入汇率状态。
+func TestConfigureUSDToCNYRate_RejectsInfinity(t *testing.T) {
+	withRate(t, 7.2, false)
+	ConfigureUSDToCNYRate(math.Inf(1), true, false)
+	if got := CurrentUSDToCNYRate(); !almostEqual(got, 7.2) {
+		t.Fatalf("+Inf must be ignored, got %v", got)
+	}
+	ConfigureUSDToCNYRate(math.Inf(-1), true, false)
+	if got := CurrentUSDToCNYRate(); !almostEqual(got, 7.2) {
+		t.Fatalf("-Inf must be ignored, got %v", got)
+	}
+}
