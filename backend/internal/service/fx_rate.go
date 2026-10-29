@@ -70,18 +70,19 @@ var fxRate = &fxRateState{manual: NeutralUSDToCNYRate, auto: true}
 // 而不是依赖某个页面先调过一次 parseSettings。
 var (
 	fxRateLoaderMu       sync.Mutex
-	fxRateSettingsLoader func(ctx context.Context) (rate float64, configured, auto, ok bool)
+	fxRateSettingsLoader func(ctx context.Context) (rate float64, configured, auto bool, err error)
 	fxRateLoaded         bool
 	fxRateLoadEverOK     bool          // 是否至少成功加载过一次（成功且「键不存在」也算）
 	fxRateLoadInFlight   chan struct{} // 非 nil 表示正在加载，关闭即表示本轮加载结束
 	lastLoadFailureAt    time.Time
+	lastLoadErr          error // 最近一次加载失败的原因，启动期据此报错
 )
 
 // loadRetryCooldown 是加载失败后的重试间隔：失败不能永久放弃，也不能每次请求都打数据库。
 const loadRetryCooldown = 30 * time.Second
 
 // RegisterFXRateSettingsLoader 注册设置加载器（由 NewSettingService 调用，进程内只一份）。
-func RegisterFXRateSettingsLoader(loader func(ctx context.Context) (float64, bool, bool, bool)) {
+func RegisterFXRateSettingsLoader(loader func(ctx context.Context) (float64, bool, bool, error)) {
 	fxRateLoaderMu.Lock()
 	defer fxRateLoaderMu.Unlock()
 	fxRateSettingsLoader = loader
@@ -117,8 +118,9 @@ func ensureLoaded() {
 		fxRateLoaderMu.Unlock()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		rate, configured, auto, ok := loader(ctx)
+		rate, configured, auto, loadErr := loader(ctx)
 		cancel()
+		ok := loadErr == nil
 		if ok {
 			ConfigureUSDToCNYRate(rate, configured, auto)
 		}
@@ -128,8 +130,10 @@ func ensureLoaded() {
 			fxRateLoaded = true
 			fxRateLoadEverOK = true
 			lastLoadFailureAt = time.Time{}
+			lastLoadErr = nil
 		} else {
 			lastLoadFailureAt = time.Now()
+			lastLoadErr = loadErr
 		}
 		fxRateLoadInFlight = nil
 		fxRateLoaderMu.Unlock()
@@ -193,6 +197,9 @@ func FXRateForBilling() (float64, error) {
 	hasLoader := fxRateSettingsLoader != nil
 	fxRateLoaderMu.Unlock()
 	if hasLoader && !loadedOnce {
+		if loadErr := lastLoadErr; loadErr != nil {
+			return 0, fmt.Errorf("%w: %v", ErrPricingRateUnavailable, loadErr)
+		}
 		return 0, ErrPricingRateUnavailable
 	}
 	// 已成功确认过「没有配置」→ 按规则不换算。
@@ -209,6 +216,9 @@ func LoadFXRateAtStartup(ctx context.Context) error {
 	hasLoader := fxRateSettingsLoader != nil
 	fxRateLoaderMu.Unlock()
 	if hasLoader && !loadedOnce {
+		if loadErr := lastLoadErr; loadErr != nil {
+			return fmt.Errorf("load pricing FX settings: %w", loadErr)
+		}
 		return ErrPricingRateUnavailable
 	}
 	return nil

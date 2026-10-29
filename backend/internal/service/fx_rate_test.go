@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -322,8 +324,8 @@ func TestCurrentUSDToCNYRate_AutoLoadsSettingsOnFirstUse(t *testing.T) {
 	ConfigureUSDToCNYRate(0, false, false)
 	t.Cleanup(func() { ConfigureUSDToCNYRate(1, false, false) })
 
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
-		return 7.2, true, false, true
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
+		return 7.2, true, false, nil
 	})
 	t.Cleanup(func() { RegisterFXRateSettingsLoader(nil) })
 
@@ -365,9 +367,9 @@ func TestCurrentUSDToCNYRate_ConcurrentCallersWaitForFirstLoad(t *testing.T) {
 	ConfigureUSDToCNYRate(0, false, false)
 
 	release := make(chan struct{})
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
 		<-release
-		return 7.2, true, false, true
+		return 7.2, true, false, nil
 	})
 
 	const N = 8
@@ -397,12 +399,12 @@ func TestEnsureLoaded_RetriesAfterReadFailure(t *testing.T) {
 	ConfigureUSDToCNYRate(0, false, false)
 
 	calls := 0
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
 		calls++
 		if calls == 1 {
-			return 0, false, false, false // 模拟设置表读取失败
+			return 0, false, false, errors.New("db down") // 模拟设置表读取失败
 		}
-		return 6.9, true, false, true
+		return 6.9, true, false, nil
 	})
 
 	if _, err := FXRateForBilling(); err == nil {
@@ -436,8 +438,8 @@ func TestConfigureUSDToCNYRate_RejectsInfinity(t *testing.T) {
 func TestFXRateForBilling_FailsClosedWhenStateUnknown(t *testing.T) {
 	withFreshFXLoaderState(t)
 	ConfigureUSDToCNYRate(0, false, false)
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
-		return 0, false, false, false // 持续读库失败
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
+		return 0, false, false, errors.New("db down") // 持续读库失败
 	})
 	if _, err := FXRateForBilling(); err == nil {
 		t.Fatal("unknown state must return an error")
@@ -448,8 +450,8 @@ func TestFXRateForBilling_FailsClosedWhenStateUnknown(t *testing.T) {
 func TestFXRateForBilling_NeutralWhenConfirmedUnconfigured(t *testing.T) {
 	withFreshFXLoaderState(t)
 	ConfigureUSDToCNYRate(0, false, false)
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
-		return NeutralUSDToCNYRate, false, true, true
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
+		return NeutralUSDToCNYRate, false, true, nil
 	})
 	got, err := FXRateForBilling()
 	if err != nil {
@@ -476,17 +478,22 @@ func TestLoadFXRateAtStartup(t *testing.T) {
 	withFreshFXLoaderState(t)
 	ConfigureUSDToCNYRate(0, false, true)
 
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
-		return 0, false, false, false
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
+		return 0, false, false, errors.New("db down")
 	})
-	if err := LoadFXRateAtStartup(context.Background()); err == nil {
+	err := LoadFXRateAtStartup(context.Background())
+	if err == nil {
 		t.Fatal("startup must refuse when the rate state cannot be read")
+	}
+	// 启动报错必须带出数据库原始原因，而不是一个无信息的通用错误
+	if !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("startup error must carry the underlying cause, got %v", err)
 	}
 
 	withFreshFXLoaderState(t)
 	ConfigureUSDToCNYRate(0, false, true)
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
-		return 7.1, true, true, true
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
+		return 7.1, true, true, nil
 	})
 	if err := LoadFXRateAtStartup(context.Background()); err != nil {
 		t.Fatalf("startup must succeed once settings load: %v", err)

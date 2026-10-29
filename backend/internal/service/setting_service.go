@@ -299,21 +299,21 @@ func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *Setti
 	// 让计价汇率能在「首次使用时」自己从设置表加载，而不是依赖某个页面先
 	// 调过一次 parseSettings。不注册这个加载器，重启后若没人打开设置页，
 	// 汇率会一直停在「未配置」→ 换算永远不生效（上线当日即撞到这个问题）。
-	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, error) {
 		if s == nil || s.settingRepo == nil {
-			return 0, false, false, false
+			return 0, false, false, nil
 		}
 		vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyUSDToCNYRate, SettingKeyUSDToCNYRateAuto})
 		if err != nil {
-			// 读取失败：ok=false，让调用方保持「未加载」并在冷却后重试，而不是把失败当成「没有配置」。
-			return 0, false, false, false
+			// 读取失败：把原始错误交回调用方，让启动期能报出真实原因，也让运行期重试。
+			return 0, false, false, fmt.Errorf("read pricing FX settings: %w", err)
 		}
 		rate, configured := parseFXRateSetting(vals[SettingKeyUSDToCNYRate])
 		_, present := vals[SettingKeyUSDToCNYRate]
 		if !present {
 			configured = false
 		}
-		return rate, configured, parseFXRateAutoSetting(vals[SettingKeyUSDToCNYRateAuto]), true
+		return rate, configured, parseFXRateAutoSetting(vals[SettingKeyUSDToCNYRateAuto]), nil
 	})
 	return s
 }
