@@ -404,6 +404,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					zap.Int64("account_id", account.ID),
 					zap.Bool("fallback_error_response_written", wroteFallback),
 					zap.Bool("upstream_error_response_already_written", upstreamErrorAlreadyCommunicated),
+					// 图片形状指纹：只记 scheme/MIME/长度，不记图片内容。
+					// 用于定位上游为何判 image_url 不安全（裸 base64 / file:// / data URI 等）。
+					zap.String("image_input_shape", service.DescribeImageInputs(body)),
 					zap.Error(err),
 				)
 				submitChatUsage(result)
