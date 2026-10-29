@@ -292,10 +292,29 @@ const (
 
 // NewSettingService 创建系统设置服务实例
 func NewSettingService(settingRepo SettingRepository, cfg *config.Config) *SettingService {
-	return &SettingService{
+	s := &SettingService{
 		settingRepo: settingRepo,
 		cfg:         cfg,
 	}
+	// 让计价汇率能在「首次使用时」自己从设置表加载，而不是依赖某个页面先
+	// 调过一次 parseSettings。不注册这个加载器，重启后若没人打开设置页，
+	// 汇率会一直停在「未配置」→ 换算永远不生效（上线当日即撞到这个问题）。
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		if s == nil || s.settingRepo == nil {
+			return 0, false, false, false
+		}
+		vals, err := s.settingRepo.GetMultiple(ctx, []string{SettingKeyUSDToCNYRate, SettingKeyUSDToCNYRateAuto})
+		if err != nil || len(vals) == 0 {
+			return 0, false, false, false
+		}
+		rate, configured := parseFXRateSetting(vals[SettingKeyUSDToCNYRate])
+		_, present := vals[SettingKeyUSDToCNYRate]
+		if !present {
+			configured = false
+		}
+		return rate, configured, parseFXRateAutoSetting(vals[SettingKeyUSDToCNYRateAuto]), true
+	})
+	return s
 }
 
 // SetDefaultSubscriptionGroupReader injects an optional group reader for default subscription validation.

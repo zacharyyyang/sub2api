@@ -31,7 +31,7 @@ const (
 	SuggestedUSDToCNYRate = 7.2
 
 	usdToCNYRateEndpoint = "https://open.er-api.com/v6/latest/USD"
-	usdToCNYRefreshEvery = time.Hour
+	usdToCNYRefreshEvery = 24 * time.Hour
 )
 
 // 币种取值。定价条目与渠道默认币种都用这两个值。
@@ -64,6 +64,42 @@ type fxRateState struct {
 
 var fxRate = &fxRateState{manual: NeutralUSDToCNYRate, auto: true}
 
+// fxRateSettingsLoader 由 SettingService 注册：让汇率能在首次使用时自己从设置表加载，
+// 而不是依赖某个页面先调过一次 parseSettings。
+var (
+	fxRateLoaderMu       sync.Mutex
+	fxRateSettingsLoader func(ctx context.Context) (rate float64, configured, auto, ok bool)
+	fxRateLoaded         bool
+)
+
+// RegisterFXRateSettingsLoader 注册设置加载器（由 NewSettingService 调用，进程内只一份）。
+func RegisterFXRateSettingsLoader(loader func(ctx context.Context) (float64, bool, bool, bool)) {
+	fxRateLoaderMu.Lock()
+	defer fxRateLoaderMu.Unlock()
+	fxRateSettingsLoader = loader
+}
+
+// ensureLoaded 在汇率尚未配置时同步加载一次设置（仅一次，失败不重试到死）。
+func ensureLoaded() {
+	fxRateLoaderMu.Lock()
+	loader := fxRateSettingsLoader
+	already := fxRateLoaded
+	if loader == nil || already {
+		fxRateLoaderMu.Unlock()
+		return
+	}
+	fxRateLoaded = true
+	fxRateLoaderMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rate, configured, auto, ok := loader(ctx)
+	if !ok {
+		return
+	}
+	ConfigureUSDToCNYRate(rate, configured, auto)
+}
+
 // ConfigureUSDToCNYRate 由设置解析路径调用，把手动值、是否已配置、自动开关灌进状态。
 // 非法值（<=0 / NaN）不覆写现值：保留上一个有效汇率，绝不允许把汇率清成 0。
 func ConfigureUSDToCNYRate(manual float64, configured, auto bool) {
@@ -80,6 +116,7 @@ func ConfigureUSDToCNYRate(manual float64, configured, auto bool) {
 // 未配置汇率时返回中性值 1（不换算）——自动抓取不得在管理员没设之前把换算打开。
 // 首次调用会启动后台刷新协程：抓取是外部网络调用，不能阻塞计费热路径。
 func CurrentUSDToCNYRate() float64 {
+	ensureLoaded()
 	fxRate.ensureRefresher()
 	fxRate.mu.RLock()
 	defer fxRate.mu.RUnlock()

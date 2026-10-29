@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"math"
 	"testing"
 	"time"
@@ -288,3 +289,49 @@ func TestDeepSeekPolicyRespectsCurrencyContext(t *testing.T) {
 		t.Fatalf("billing context must convert once, got %v", cny.InputPricePerToken)
 	}
 }
+
+func TestDeepSeekGatewayPath_ConvertsExactlyOnce(t *testing.T) {
+	withRate(t, 7.2, false)
+	s := &BillingService{fallbackPrices: map[string]*ModelPricing{}}
+	s.initFallbackPricing()
+	resolver := NewModelPricingResolver(nil, s)
+	resolved := resolver.Resolve(context.Background(), PricingInput{Model: "deepseek-v4.1-flash-1017"})
+	if resolved.BasePricing != nil {
+		if !almostEqual(resolved.BasePricing.InputPricePerToken, 1.5e-7*7.2) {
+			t.Fatalf("resolved input must be CNY once (1.08e-6), got %v", resolved.BasePricing.InputPricePerToken)
+		}
+	}
+	bd, err := s.CalculateCostUnified(CostInput{
+		Ctx: context.Background(), Model: "deepseek-v4.1-flash-1017",
+		Tokens:         UsageTokens{InputTokens: 407, OutputTokens: 156},
+		RateMultiplier: 1, Resolver: resolver, Resolved: resolved, PricingAt: timeNowForTestFixed,
+	})
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	want := (407*1.5e-7*7.2 + 156*6.0e-7*7.2) * deepseekPeakMultiplierForGroupAt(nil, timeNowForTestFixed)
+	if bd.TotalCost < want*0.99 || bd.TotalCost > want*1.01 {
+		t.Fatalf("total %v not within 1%% of %v (single CNY conversion × peak)", bd.TotalCost, want)
+	}
+}
+
+// 回归：首次使用时自动从设置加载汇率——不依赖任何页面先调过 parseSettings。
+func TestCurrentUSDToCNYRate_AutoLoadsSettingsOnFirstUse(t *testing.T) {
+	// 同一个进程里别的用例可能已经触发过一次加载，这里重置一次性标志
+	fxRateLoaded = false
+	ConfigureUSDToCNYRate(0, false, false)
+	t.Cleanup(func() { ConfigureUSDToCNYRate(1, false, false) })
+
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		return 7.2, true, false, true
+	})
+	t.Cleanup(func() { RegisterFXRateSettingsLoader(nil) })
+
+	if got := CurrentUSDToCNYRate(); !almostEqual(got, 7.2) {
+		t.Fatalf("must auto-load rate from settings on first use, got %v", got)
+	}
+}
+
+func timeNowForTest() time.Time { return timeNowForTestFixed }
+
+var timeNowForTestFixed = time.Date(2026, 10, 29, 17, 0, 0, 0, time.UTC)
