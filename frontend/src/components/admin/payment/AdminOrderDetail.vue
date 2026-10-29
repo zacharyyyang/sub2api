@@ -132,7 +132,7 @@ const props = defineProps<{
   order: PaymentOrder | null
 }>()
 
-const creditedAmountSymbol = currencySymbol('USD')
+const creditedAmountSymbol = currencySymbol('CNY')
 
 const paymentAmountSymbol = computed(() => currencySymbol(props.order?.currency))
 
