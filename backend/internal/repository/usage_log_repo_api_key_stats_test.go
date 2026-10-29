@@ -117,3 +117,27 @@ func TestUsageLogRepositoryGetStatsWithFiltersAPIKeyNameQueryFailureSurfaces(t *
 	require.Contains(t, err.Error(), "api_keys lookup failed")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// 名称扫描失败（列数不符等）：同样必须向上报错，不得落成缺失占位。
+func TestUsageLogRepositoryGetStatsWithFiltersAPIKeyNameScanFailureSurfaces(t *testing.T) {
+	db, mock := newSQLMock(t)
+	repo := &usageLogRepository{sql: db}
+
+	mock.ExpectQuery(statsQueryPattern).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"inbound_grouped", "upstream_grouped", "key_grouped",
+			"inbound_endpoint", "upstream_endpoint", "api_key_id",
+			"requests", "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
+			"cost", "actual_cost", "account_cost", "avg_duration_ms",
+		}).
+			AddRow(1, 1, 0, nil, nil, int64(7), int64(1), int64(10), int64(5), int64(0), int64(0), 0.1, 0.1, 0.1, 5.0))
+
+	// 只有一列，扫描 id/name 时会失败
+	mock.ExpectQuery("SELECT id, name FROM api_keys").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
+
+	_, err := repo.GetStatsWithFilters(context.Background(), usagestats.UsageLogFilters{})
+	require.Error(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
