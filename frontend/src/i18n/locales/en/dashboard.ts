@@ -384,6 +384,7 @@ export default {
     apiKeyDistribution: 'API Key Distribution',
     apiKeyColumn: 'API Key',
     apiKeyDeleted: '(deleted key)',
+    distributionLoadFailed: 'Failed to load statistics',
     inbound: 'Inbound',
     upstream: 'Upstream',
     mapping: 'Mapping',

@@ -50,8 +50,10 @@
           <ApiKeyDistributionChart
             v-model:metric="apiKeyDistributionMetric"
             :api-key-stats="apiKeyStats"
+            :error="apiKeyStatsError"
             :loading="endpointStatsLoading"
             :show-metric-toggle="true"
+            @retry="loadStats(true)"
           />
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
@@ -216,6 +218,8 @@ const loadedModelSources = reactive<Record<ModelDistributionSource, boolean>>({
 const groupDistributionMetric = ref<DistributionMetric>('tokens')
 const apiKeyDistributionMetric = ref<DistributionMetric>('tokens')
 const apiKeyStats = ref<ApiKeyStat[]>([])
+// 读取失败与「没有用量」是两件事：面板显式报错并提供重试，不把失败渲染成空表
+const apiKeyStatsError = ref<string | null>(null)
 const endpointStatsLoading = ref(false)
 let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
 let chartReqSeq = 0
@@ -400,10 +404,12 @@ const loadStats = async (force = false) => {
     if (seq !== statsReqSeq) return
     usageStats.value = s
     apiKeyStats.value = s.api_keys || []
+    apiKeyStatsError.value = null
   } catch (error) {
     if (seq !== statsReqSeq) return
     console.error('Failed to load usage stats:', error)
     apiKeyStats.value = []
+    apiKeyStatsError.value = t('usage.distributionLoadFailed')
   } finally {
     if (seq === statsReqSeq) endpointStatsLoading.value = false
   }

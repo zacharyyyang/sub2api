@@ -33,6 +33,17 @@
     <div v-if="loading" class="flex h-48 items-center justify-center">
       <LoadingSpinner />
     </div>
+    <!-- 读取失败必须与「确实没有用量」区分开：两者都渲染空表就把业务错误吞掉了 -->
+    <div
+      v-else-if="error"
+      class="flex h-48 flex-col items-center justify-center gap-2 text-sm text-red-500"
+      data-test="api-key-distribution-error"
+    >
+      <span>{{ error }}</span>
+      <button type="button" class="btn btn-secondary btn-sm" @click="emit('retry')">
+        {{ t('common.retry') }}
+      </button>
+    </div>
     <div
       v-else-if="displayStats.length > 0 && chartData"
       class="flex flex-col items-center gap-4 sm:flex-row sm:gap-6"
@@ -59,9 +70,9 @@
             >
               <td
                 class="max-w-[140px] truncate py-1.5 font-medium text-gray-900 dark:text-white"
-                :title="item.name || String(item.id)"
+                :title="displayName(item)"
               >
-                {{ item.name || t('usage.apiKeyDeleted') }}
+                {{ displayName(item) }}
               </td>
               <td class="py-1.5 text-right text-gray-600 dark:text-gray-400">
                 {{ formatNumber(item.requests) }}
@@ -103,12 +114,14 @@ const props = withDefaults(
   defineProps<{
     apiKeyStats?: ApiKeyStat[]
     loading?: boolean
+    error?: string | null
     metric?: 'tokens' | 'actual_cost'
     showMetricToggle?: boolean
   }>(),
   {
     apiKeyStats: () => [],
     loading: false,
+    error: null,
     metric: 'tokens',
     showMetricToggle: true
   }
@@ -116,9 +129,14 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: 'update:metric', value: 'tokens' | 'actual_cost'): void
+  (e: 'retry'): void
 }>()
 
 const { t } = useI18n()
+
+/** 名称查不到（密钥已删除）时带上 id，否则多把这样的密钥会显示成一堆同名行，无法分辨来源。 */
+const displayName = (item: ApiKeyStat): string =>
+  item.name || `${t('usage.apiKeyDeleted')} #${item.id}`
 
 const toFiniteNumber = (value: unknown): number => {
   const n = typeof value === 'number' ? value : Number(value)
@@ -162,7 +180,7 @@ const displayStats = computed(() => {
 const chartData = computed(() => {
   if (!displayStats.value.length) return null
   return {
-    labels: displayStats.value.map((s) => s.name || String(s.id)),
+    labels: displayStats.value.map((s) => displayName(s)),
     datasets: [
       {
         data: displayStats.value.map((s) =>

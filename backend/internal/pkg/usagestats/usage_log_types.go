@@ -116,7 +116,7 @@ type EndpointStat struct {
 }
 
 // APIKeyStat 是按 API 密钥聚合的用量统计。
-// ID 为 0 / Name 为 "unknown" 时表示用量行没有关联的密钥（已删除的密钥）。
+// ID 为 0 / Name 为空表示用量行关联的密钥已不存在（无法回填名称）。
 type APIKeyStat struct {
 	ID          int64   `json:"id"`
 	Name        string  `json:"name"`

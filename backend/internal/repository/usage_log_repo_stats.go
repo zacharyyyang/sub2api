@@ -833,7 +833,9 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 	sortEndpointStats(stats.EndpointPaths)
 
 	// API 密钥名称回填：主聚合查询不 join api_keys（两者都有 user_id，join 会让 WHERE 列名歧义），
-	// 改为拿到 id 后用一次小查询映射名称；已删除的密钥保留 id 并在展示层回退。
+	// 改为拿到 id 后用一次小查询映射名称。查询/扫描失败一律向上报错：
+	// “名称查不到”（密钥已删除）与“名称查不了”（数据库故障）不是同一件事，后者被当成
+	// 缺失占位就会静默错误地展示成一批已删除密钥。
 	if len(stats.APIKeys) > 0 {
 		ids := make([]int64, 0, len(stats.APIKeys))
 		for _, s := range stats.APIKeys {
@@ -844,27 +846,27 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 		names := map[int64]string{}
 		if len(ids) > 0 {
 			nameRows, nameErr := r.sql.QueryContext(ctx, `SELECT id, name FROM api_keys WHERE id = ANY($1)`, pq.Array(ids))
-			if nameErr == nil {
-				for nameRows.Next() {
-					var id int64
-					var name string
-					if scanErr := nameRows.Scan(&id, &name); scanErr == nil {
-						names[id] = name
-					}
-				}
-				if rowsErr := nameRows.Err(); rowsErr != nil {
-					_ = nameRows.Close()
-					return nil, rowsErr
-				}
-				_ = nameRows.Close()
+			if nameErr != nil {
+				return nil, nameErr
 			}
+			for nameRows.Next() {
+				var id int64
+				var name string
+				if scanErr := nameRows.Scan(&id, &name); scanErr != nil {
+					_ = nameRows.Close()
+					return nil, scanErr
+				}
+				names[id] = name
+			}
+			if rowsErr := nameRows.Err(); rowsErr != nil {
+				_ = nameRows.Close()
+				return nil, rowsErr
+			}
+			_ = nameRows.Close()
 		}
 		for i := range stats.APIKeys {
-			if name := names[stats.APIKeys[i].ID]; name != "" {
-				stats.APIKeys[i].Name = name
-			} else {
-				stats.APIKeys[i].Name = "unknown"
-			}
+			// 查不到就留空：展示层用本地化占位 + id 兜底
+			stats.APIKeys[i].Name = names[stats.APIKeys[i].ID]
 		}
 		sort.Slice(stats.APIKeys, func(i, j int) bool {
 			if stats.APIKeys[i].Requests != stats.APIKeys[j].Requests {

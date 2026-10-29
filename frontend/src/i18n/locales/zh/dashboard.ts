@@ -389,6 +389,7 @@ export default {
     apiKeyDistribution: 'API 密钥分布',
     apiKeyColumn: 'API 密钥',
     apiKeyDeleted: '（已删除的密钥）',
+    distributionLoadFailed: '统计加载失败',
     inbound: '入站',
     upstream: '上游',
     mapping: '映射',
