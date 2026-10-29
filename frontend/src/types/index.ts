@@ -2046,6 +2046,7 @@ export interface UsageStatsResponse {
   endpoints?: EndpointStat[]
   upstream_endpoints?: EndpointStat[]
   endpoint_paths?: EndpointStat[]
+  api_keys?: ApiKeyStat[]
 }
 
 // ==================== Trend & Chart Types ====================
