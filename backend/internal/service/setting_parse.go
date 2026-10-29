@@ -292,6 +292,10 @@ func parseForwardedClientIPHeadersSetting(value string) ([]string, error) {
 
 // parseSettings 解析设置到结构体
 func (s *SettingService) parseSettings(settings map[string]string) *SystemSettings {
+	// 计价汇率不绘图到结构体，直接同步进进程内状态：计费热路径要用它把美元价
+	// 换算成人民币，走结构体太远且容易漏同步。
+	fxRateValue, fxRateConfigured := parseFXRateSetting(settings[SettingKeyUSDToCNYRate])
+	ConfigureUSDToCNYRate(fxRateValue, fxRateConfigured, parseFXRateAutoSetting(settings[SettingKeyUSDToCNYRateAuto]))
 	emailVerifyEnabled := settings[SettingKeyEmailVerifyEnabled] == "true"
 	loginAgreementDocuments := parseLoginAgreementDocuments(settings[SettingKeyLoginAgreementDocuments])
 	loginAgreementUpdatedAt := strings.TrimSpace(settings[SettingKeyLoginAgreementUpdatedAt])

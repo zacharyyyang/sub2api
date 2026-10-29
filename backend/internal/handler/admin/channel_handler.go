@@ -39,6 +39,7 @@ type createChannelRequest struct {
 	Features                   string                           `json:"features"`
 	FeaturesConfig             map[string]any                   `json:"features_config"`
 	ApplyPricingToAccountStats bool                             `json:"apply_pricing_to_account_stats"`
+	DefaultPriceCurrency       string                           `json:"default_price_currency" binding:"omitempty,oneof=USD CNY"`
 	AccountStatsPricingRules   []accountStatsPricingRuleRequest `json:"account_stats_pricing_rules"`
 }
 
@@ -54,9 +55,12 @@ type updateChannelRequest struct {
 	Features                   *string                           `json:"features"`
 	FeaturesConfig             map[string]any                    `json:"features_config"`
 	ApplyPricingToAccountStats *bool                             `json:"apply_pricing_to_account_stats"`
+	DefaultPriceCurrency       string                            `json:"default_price_currency" binding:"omitempty,oneof=USD CNY"`
 	AccountStatsPricingRules   *[]accountStatsPricingRuleRequest `json:"account_stats_pricing_rules"`
 }
 
+// channelModelPricingRequest 是定价条目请求体。PriceCurrency 声明本条目的价格是美元
+// 还是人民币：USD（默认）使用前乘计价汇率，CNY 原样使用。
 type channelModelPricingRequest struct {
 	Platform                   string                     `json:"platform" binding:"omitempty,max=50"`
 	Models                     []string                   `json:"models" binding:"required,min=1,max=100"`
@@ -72,6 +76,7 @@ type channelModelPricingRequest struct {
 	ImageInputPrice            *float64                   `json:"image_input_price" binding:"omitempty,min=0"`
 	ImageOutputPrice           *float64                   `json:"image_output_price" binding:"omitempty,min=0"`
 	PerRequestPrice            *float64                   `json:"per_request_price" binding:"omitempty,min=0"`
+	PriceCurrency              string                     `json:"price_currency" binding:"omitempty,oneof=USD CNY"`
 	Intervals                  []pricingIntervalRequest   `json:"intervals"`
 	TimePricing                *channelTimePricingRequest `json:"time_pricing"`
 	StatsTimePricing           *statsTimePricingRequest   `json:"stats_time_pricing"`
@@ -143,6 +148,7 @@ type channelResponse struct {
 	ModelPricing               []channelModelPricingResponse     `json:"model_pricing"`
 	ModelMapping               map[string]map[string]string      `json:"model_mapping"`
 	ApplyPricingToAccountStats bool                              `json:"apply_pricing_to_account_stats"`
+	DefaultPriceCurrency       string                            `json:"default_price_currency"`
 	AccountStatsPricingRules   []accountStatsPricingRuleResponse `json:"account_stats_pricing_rules"`
 	CreatedAt                  string                            `json:"created_at"`
 	UpdatedAt                  string                            `json:"updated_at"`
@@ -164,6 +170,7 @@ type channelModelPricingResponse struct {
 	ImageInputPrice            *float64                    `json:"image_input_price"`
 	ImageOutputPrice           *float64                    `json:"image_output_price"`
 	PerRequestPrice            *float64                    `json:"per_request_price"`
+	PriceCurrency              string                      `json:"price_currency"`
 	Intervals                  []pricingIntervalResponse   `json:"intervals"`
 	TimePricing                *channelTimePricingResponse `json:"time_pricing"`
 	StatsTimePricing           *statsTimePricingResponse   `json:"stats_time_pricing"`
@@ -241,6 +248,7 @@ func channelToResponse(ch *service.Channel) *channelResponse {
 		UpdatedAt:      ch.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 	resp.BillingModelSource = ch.BillingModelSource
+	resp.DefaultPriceCurrency = ch.DefaultPriceCurrency
 	if resp.GroupIDs == nil {
 		resp.GroupIDs = []int64{}
 	}
@@ -315,6 +323,7 @@ func pricingToResponse(p *service.ChannelModelPricing, defaultPlatform string) c
 		ImageInputPrice:            p.ImageInputPrice,
 		ImageOutputPrice:           p.ImageOutputPrice,
 		PerRequestPrice:            p.PerRequestPrice,
+		PriceCurrency:              p.PriceCurrency,
 		Intervals:                  intervals,
 		TimePricing:                timePricingToResponse(p.TimePricing),
 		StatsTimePricing:           statsTimePricingToResponse(p.StatsTimePricing),
@@ -437,6 +446,7 @@ func pricingRequestToService(reqs []channelModelPricingRequest, allowChannelMult
 			ImageInputPrice:            r.ImageInputPrice,
 			ImageOutputPrice:           r.ImageOutputPrice,
 			PerRequestPrice:            r.PerRequestPrice,
+			PriceCurrency:              r.PriceCurrency,
 			Intervals:                  intervals,
 			TimePricing:                timePricingRequestToService(r.TimePricing),
 			StatsTimePricing:           statsTimePricingRequestToService(r.StatsTimePricing),
@@ -589,6 +599,7 @@ func (h *ChannelHandler) Create(c *gin.Context) {
 		Features:                   req.Features,
 		FeaturesConfig:             req.FeaturesConfig,
 		ApplyPricingToAccountStats: req.ApplyPricingToAccountStats,
+		DefaultPriceCurrency:       req.DefaultPriceCurrency,
 		AccountStatsPricingRules:   statsRules,
 	})
 	if err != nil {
@@ -625,6 +636,7 @@ func (h *ChannelHandler) Update(c *gin.Context) {
 		Features:                   req.Features,
 		FeaturesConfig:             req.FeaturesConfig,
 		ApplyPricingToAccountStats: req.ApplyPricingToAccountStats,
+		DefaultPriceCurrency:       req.DefaultPriceCurrency,
 	}
 	if req.ModelPricing != nil {
 		pricing := pricingRequestToService(*req.ModelPricing, true)

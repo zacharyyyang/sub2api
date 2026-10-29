@@ -8,6 +8,14 @@ import type { BillingMode, ChannelStatus, BillingModelSource } from '@/constants
 
 export type { BillingMode } from '@/constants/channel'
 
+/** 定价条目/渠道的计价币种：USD 使用前乘计价汇率，CNY 原样使用。 */
+export type PriceCurrency = 'USD' | 'CNY'
+
+export const PRICE_CURRENCY_OPTIONS: Array<{ value: PriceCurrency, label: string }> = [
+  { value: 'USD', label: 'USD' },
+  { value: 'CNY', label: 'CNY' },
+]
+
 export interface PricingInterval {
   id?: number
   min_tokens: number
@@ -74,6 +82,7 @@ export interface ChannelModelPricing {
   image_input_price: number | null
   image_output_price: number | null
   per_request_price: number | null
+  price_currency?: PriceCurrency
   intervals: PricingInterval[]
   time_pricing: ChannelTimePricing | null
   stats_time_pricing?: AccountStatsTimePricing | null
@@ -99,6 +108,7 @@ export interface Channel {
   model_pricing: ChannelModelPricing[]
   model_mapping: Record<string, Record<string, string>> // platform → {src→dst}
   apply_pricing_to_account_stats: boolean
+  default_price_currency?: PriceCurrency
   account_stats_pricing_rules: AccountStatsPricingRule[]
   created_at: string
   updated_at: string
@@ -114,6 +124,7 @@ export interface CreateChannelRequest {
   restrict_models?: boolean
   features_config?: Record<string, unknown>
   apply_pricing_to_account_stats?: boolean
+  default_price_currency?: PriceCurrency
   account_stats_pricing_rules?: AccountStatsPricingRule[]
 }
 
@@ -128,6 +139,7 @@ export interface UpdateChannelRequest {
   restrict_models?: boolean
   features_config?: Record<string, unknown>
   apply_pricing_to_account_stats?: boolean
+  default_price_currency?: PriceCurrency
   account_stats_pricing_rules?: AccountStatsPricingRule[]
 }
 

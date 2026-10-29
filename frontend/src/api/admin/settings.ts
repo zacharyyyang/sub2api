@@ -674,6 +674,10 @@ export interface SystemSettings {
   payment_balance_disabled: boolean;
   payment_balance_recharge_multiplier: number;
   payment_subscription_usd_to_cny_rate: number;
+  /** 计价汇率（1 USD = X CNY）：美元标度的价格使用前乘这个值，必填且 > 0。 */
+  payment_usd_to_cny_rate: number;
+  /** 为 true 时每小时从汇率源刷新计价汇率。 */
+  payment_usd_to_cny_rate_auto: boolean;
   payment_recharge_fee_rate: number;
   payment_recharge_bonus_tiers?: RechargeBonusTier[];
   payment_recharge_bonus_mode?: string;
@@ -998,6 +1002,8 @@ export interface UpdateSettingsRequest {
   payment_balance_disabled?: boolean;
   payment_balance_recharge_multiplier?: number;
   payment_subscription_usd_to_cny_rate?: number;
+  payment_usd_to_cny_rate?: number;
+  payment_usd_to_cny_rate_auto?: boolean;
   payment_recharge_fee_rate?: number;
   payment_recharge_bonus_tiers?: RechargeBonusTier[];
   payment_recharge_bonus_mode?: string;

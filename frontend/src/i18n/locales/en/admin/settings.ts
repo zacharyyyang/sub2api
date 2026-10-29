@@ -744,6 +744,11 @@ export default {
         subscriptionUsdToCnyRateHint:
           'CNY charged per 1 USD of plan price on CNY channels (e.g. 7.15). 0 or empty = disabled, plan price is charged as-is. When enabled, all plan prices must be set in USD',
         subscriptionUsdToCnyRateDisabled: 'Disabled (price charged as-is)',
+        pricingUsdToCnyRate: 'Pricing USD to CNY Rate (1 USD = ? CNY)',
+        pricingUsdToCnyRateHint: 'USD-denominated prices (built-in price table and pricing entries with currency USD) are multiplied by this rate before use. Required and must be greater than 0.',
+        pricingUsdToCnyRateRequired: 'Pricing rate must be greater than 0',
+        pricingUsdToCnyRateAuto: 'Auto-update hourly',
+        pricingUsdToCnyRateAutoHint: 'When enabled, the rate is refreshed from the rate source every hour. A failed fetch keeps the current value.',
         rechargeFeeRate: 'Recharge Fee Rate',
         rechargeFeeRateHint: 'Percentage of service fee charged on top of recharge amount, 0 means no fee',
         rechargeFeePreview: 'Preview: Recharge 100, fee {fee}',

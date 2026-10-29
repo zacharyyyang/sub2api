@@ -256,12 +256,22 @@ func toModelPlazaOfficialPricing(p *service.PlazaOfficialPricing) *modelPlazaOff
 	if p == nil {
 		return nil
 	}
+	// 官方参考价恒为美元标度，展示前按汇率换成人民币，与实付价同口径。
+	officialIntervals := make([]service.PricingInterval, len(p.Intervals))
+	copy(officialIntervals, p.Intervals)
+	for i := range officialIntervals {
+		officialIntervals[i].InputPrice = service.USDPriceInCNYForDisplay(officialIntervals[i].InputPrice)
+		officialIntervals[i].OutputPrice = service.USDPriceInCNYForDisplay(officialIntervals[i].OutputPrice)
+		officialIntervals[i].CacheWritePrice = service.USDPriceInCNYForDisplay(officialIntervals[i].CacheWritePrice)
+		officialIntervals[i].CacheWrite1hPrice = service.USDPriceInCNYForDisplay(officialIntervals[i].CacheWrite1hPrice)
+		officialIntervals[i].CacheReadPrice = service.USDPriceInCNYForDisplay(officialIntervals[i].CacheReadPrice)
+	}
 	return &modelPlazaOfficialPricing{
-		InputPrice:        p.InputPrice,
-		OutputPrice:       p.OutputPrice,
-		CacheWritePrice:   p.CacheWritePrice,
-		CacheWrite1hPrice: p.CacheWrite1hPrice,
-		CacheReadPrice:    p.CacheReadPrice,
-		Intervals:         toUserPricingIntervals(p.Intervals),
+		InputPrice:        service.USDPriceInCNYForDisplay(p.InputPrice),
+		OutputPrice:       service.USDPriceInCNYForDisplay(p.OutputPrice),
+		CacheWritePrice:   service.USDPriceInCNYForDisplay(p.CacheWritePrice),
+		CacheWrite1hPrice: service.USDPriceInCNYForDisplay(p.CacheWrite1hPrice),
+		CacheReadPrice:    service.USDPriceInCNYForDisplay(p.CacheReadPrice),
+		Intervals:         toUserPricingIntervals(officialIntervals),
 	}
 }

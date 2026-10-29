@@ -56,8 +56,11 @@ type Channel struct {
 	RestrictModels     bool           // 是否限制模型（仅允许定价列表中的模型）
 	Features           string         // 渠道特性描述（JSON 数组），用于支付页面展示
 	FeaturesConfig     map[string]any // 渠道功能配置（如 web search emulation）
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// DefaultPriceCurrency 是本渠道新建定价条目的默认币种（USD/CNY）。
+	// 条目自身声明了 price_currency 时以条目为准。
+	DefaultPriceCurrency string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 
 	// 关联的分组 ID 列表
 	GroupIDs []int64
@@ -88,27 +91,30 @@ type AccountStatsPricingRule struct {
 
 // ChannelModelPricing 渠道模型定价条目
 type ChannelModelPricing struct {
-	ID                         int64                    `json:"id,omitempty"`
-	ChannelID                  int64                    `json:"channel_id,omitempty"`
-	Platform                   string                   `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
-	Models                     []string                 `json:"models"`
-	BillingMode                BillingMode              `json:"billing_mode"`
-	InputPrice                 *float64                 `json:"input_price"`
-	OutputPrice                *float64                 `json:"output_price"`
-	CacheWritePrice            *float64                 `json:"cache_write_price"`
-	CacheWrite1hPrice          *float64                 `json:"cache_write_1h_price"`
-	CacheReadPrice             *float64                 `json:"cache_read_price"`
-	FastMultiplier             *float64                 `json:"fast_multiplier"`
-	FlexMultiplier             *float64                 `json:"flex_multiplier"`
-	ReasoningEffortMultipliers map[string]float64       `json:"reasoning_effort_multipliers,omitempty"`
-	ImageInputPrice            *float64                 `json:"image_input_price"`
-	ImageOutputPrice           *float64                 `json:"image_output_price"`
-	PerRequestPrice            *float64                 `json:"per_request_price"`
-	Intervals                  []PricingInterval        `json:"intervals"`
-	TimePricing                *ChannelTimePricing      `json:"time_pricing,omitempty"`
-	StatsTimePricing           *AccountStatsTimePricing `json:"stats_time_pricing,omitempty"`
-	CreatedAt                  time.Time                `json:"created_at,omitempty"`
-	UpdatedAt                  time.Time                `json:"updated_at,omitempty"`
+	ID                         int64              `json:"id,omitempty"`
+	ChannelID                  int64              `json:"channel_id,omitempty"`
+	Platform                   string             `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
+	Models                     []string           `json:"models"`
+	BillingMode                BillingMode        `json:"billing_mode"`
+	InputPrice                 *float64           `json:"input_price"`
+	OutputPrice                *float64           `json:"output_price"`
+	CacheWritePrice            *float64           `json:"cache_write_price"`
+	CacheWrite1hPrice          *float64           `json:"cache_write_1h_price"`
+	CacheReadPrice             *float64           `json:"cache_read_price"`
+	FastMultiplier             *float64           `json:"fast_multiplier"`
+	FlexMultiplier             *float64           `json:"flex_multiplier"`
+	ReasoningEffortMultipliers map[string]float64 `json:"reasoning_effort_multipliers,omitempty"`
+	ImageInputPrice            *float64           `json:"image_input_price"`
+	ImageOutputPrice           *float64           `json:"image_output_price"`
+	PerRequestPrice            *float64           `json:"per_request_price"`
+	// PriceCurrency 声明本条目的价格是美元还是人民币：
+	// USD（默认）在使用前乘计价汇率；CNY 原样使用。
+	PriceCurrency    string                   `json:"price_currency,omitempty"`
+	Intervals        []PricingInterval        `json:"intervals"`
+	TimePricing      *ChannelTimePricing      `json:"time_pricing,omitempty"`
+	StatsTimePricing *AccountStatsTimePricing `json:"stats_time_pricing,omitempty"`
+	CreatedAt        time.Time                `json:"created_at,omitempty"`
+	UpdatedAt        time.Time                `json:"updated_at,omitempty"`
 }
 
 // ChannelTimePricing 渠道模型定价的分时倍率配置。

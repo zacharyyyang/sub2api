@@ -1,4 +1,4 @@
-import type { BillingMode, ChannelTimePricing, AccountStatsTimePricing, PricingInterval } from '@/api/admin/channels'
+import type { BillingMode, ChannelTimePricing, AccountStatsTimePricing, PricingInterval, PriceCurrency } from '@/api/admin/channels'
 import { REASONING_EFFORT_LEVELS } from '@/constants/channel'
 
 type TranslateFn = (key: string, params?: Record<string, unknown>) => string
@@ -34,6 +34,8 @@ export interface PricingFormEntry {
   image_input_price: number | string | null
   image_output_price: number | string | null
   per_request_price: number | string | null
+  /** 条目计价币种：USD（默认，用前乘汇率）/ CNY（原样）。 */
+  price_currency?: PriceCurrency
   intervals: IntervalFormEntry[]
   time_pricing: TimePricingFormEntry
   /** 仅账号统计（成本）条目使用：分时独立价。售价侧条目不带此字段。 */

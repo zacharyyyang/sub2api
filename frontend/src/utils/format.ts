@@ -53,13 +53,16 @@ export function formatNumber(num: number | null | undefined): string {
 }
 
 /**
- * 格式化货币金额
+ * 格式化货币金额。
+ *
+ * 本仓的记账单位是人民币：余额、额度、订单、兑换、佣金存的就是人民币数值，
+ * 所以默认币种为 CNY（只换符号，不做二次换算）。
  * @param amount 金额
- * @param currency 货币代码，默认 USD
- * @returns 格式化后的字符串，如 "$1.25"
+ * @param currency 货币代码，默认 CNY
+ * @returns 格式化后的字符串，如 "¥1.25"
  */
-export function formatCurrency(amount: number | null | undefined, currency: string = 'USD'): string {
-  if (amount === null || amount === undefined) return '$0.00'
+export function formatCurrency(amount: number | null | undefined, currency: string = 'CNY'): string {
+  if (amount === null || amount === undefined) return '¥0.00'
 
   const locale = getLocale()
 
@@ -77,9 +80,8 @@ export function formatCurrency(amount: number | null | undefined, currency: stri
 /**
  * 格式化**价格/成本**金额（人民币）。
  *
- * 与 formatCurrency 的区别：formatCurrency 管**余额/额度**，本仓内部以 USD 记账，
- * 所以它保持 USD；而模型单价、渠道成本、用量计价这些数值本来就是按人民币录入的，
- * 用 $ 会把 ¥0.4/M 显示成 $0.4/M，因此单独一个人民币口径的格式化函数。
+ * 与 formatCurrency 同属人民币口径；保留独立函数是因为模型单价、渠道成本、用量计价
+ * 这些调用点已经在用它的名字，语义完全一致，合并只会带来无意义的改名噪声。
  */
 export function formatPriceCNY(amount: number | null | undefined): string {
   if (amount === null || amount === undefined) return '¥0.00'

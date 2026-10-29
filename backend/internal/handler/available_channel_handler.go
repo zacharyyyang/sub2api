@@ -331,10 +331,12 @@ func toUserPricingIntervals(src []service.PricingInterval) []userPricingInterval
 }
 
 // toUserPricing 将 service 层定价转换为用户 DTO；入参为 nil 时返回 nil。
+// 用户看到的单价必须与计费用同一口径：USD 条目×汇率、CNY 条目原样。
 func toUserPricing(p *service.ChannelModelPricing) *userSupportedModelPricing {
 	if p == nil {
 		return nil
 	}
+	p = service.PriceEntryInCNYForDisplay(p)
 	intervals := toUserPricingIntervals(p.Intervals)
 	if intervals == nil {
 		// 用户侧定价的 intervals 固定输出数组（空配置为 []），保持既有契约。

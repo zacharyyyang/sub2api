@@ -61,7 +61,12 @@ type PaymentConfig struct {
 	BalanceRechargeMultiplier float64  `json:"balance_recharge_multiplier"`
 	// SubscriptionUSDToCNYRate 为 0 时订阅换算关闭（兼容存量行为）。
 	SubscriptionUSDToCNYRate float64 `json:"subscription_usd_to_cny_rate"`
-	RechargeFeeRate          float64 `json:"recharge_fee_rate"`
+	// USDToCNYRate 是计价汇率（1 USD = X CNY）：美元标度的价格使用前乘这个值。
+	// 不允许为 0——汇率缺失会让所有美元价归零。
+	USDToCNYRate float64 `json:"usd_to_cny_rate"`
+	// USDToCNYRateAuto 为 true 时每小时从汇率源刷新实时值；关掉则钉住手动值。
+	USDToCNYRateAuto bool    `json:"usd_to_cny_rate_auto"`
+	RechargeFeeRate  float64 `json:"recharge_fee_rate"`
 	// RechargeBonusTiers 余额充值优惠阶梯（按 MinAmount 升序）；空表示无优惠。
 	RechargeBonusTiers []RechargeBonusTier `json:"recharge_bonus_tiers"`
 	// RechargeBonusMode 阶梯模式：bonus（赠金）/ discount（折扣），已归一化。
@@ -100,6 +105,8 @@ type UpdatePaymentConfigRequest struct {
 	BalanceDisabled           *bool    `json:"balance_disabled"`
 	BalanceRechargeMultiplier *float64 `json:"balance_recharge_multiplier"`
 	SubscriptionUSDToCNYRate  *float64 `json:"subscription_usd_to_cny_rate"`
+	USDToCNYRate              *float64 `json:"usd_to_cny_rate"`
+	USDToCNYRateAuto          *bool    `json:"usd_to_cny_rate_auto"`
 	RechargeFeeRate           *float64 `json:"recharge_fee_rate"`
 	// RechargeBonusTiers nil 表示不更新；空切片表示清空阶梯。
 	RechargeBonusTiers  *[]RechargeBonusTier `json:"recharge_bonus_tiers"`
@@ -230,6 +237,7 @@ func (s *PaymentConfigService) GetPaymentConfig(ctx context.Context) (*PaymentCo
 		SettingPaymentEnabled, SettingMinRechargeAmount, SettingMaxRechargeAmount,
 		SettingDailyRechargeLimit, SettingOrderTimeoutMinutes, SettingMaxPendingOrders,
 		SettingEnabledPaymentTypes, SettingBalancePayDisabled, SettingBalanceRechargeMult, SettingSubscriptionUSDToCNYRate, SettingRechargeFeeRate, SettingLoadBalanceStrategy,
+		SettingKeyUSDToCNYRate, SettingKeyUSDToCNYRateAuto,
 		SettingRechargeBonusTiers, SettingRechargeBonusMode, SettingRechargeBonusNotice,
 		SettingProductNamePrefix, SettingProductNameSuffix,
 		SettingHelpImageURL, SettingHelpText,
@@ -250,6 +258,10 @@ func (s *PaymentConfigService) GetPaymentConfig(ctx context.Context) (*PaymentCo
 }
 
 func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *PaymentConfig {
+	// 计价汇率：解析后同时灌入进程内状态，让管理端保存后立即生效。
+	fxRateValue, fxRateConfigured := parseFXRateSetting(vals[SettingKeyUSDToCNYRate])
+	fxRateAuto := parseFXRateAutoSetting(vals[SettingKeyUSDToCNYRateAuto])
+	ConfigureUSDToCNYRate(fxRateValue, fxRateConfigured, fxRateAuto)
 	cfg := &PaymentConfig{
 		Enabled:                   vals[SettingPaymentEnabled] == "true",
 		MinAmount:                 pcParseFloat(vals[SettingMinRechargeAmount], 1),
@@ -261,13 +273,16 @@ func (s *PaymentConfigService) parsePaymentConfig(vals map[string]string) *Payme
 		BalanceRechargeMultiplier: normalizeBalanceRechargeMultiplier(pcParseFloat(vals[SettingBalanceRechargeMult], defaultBalanceRechargeMultiplier)),
 		SubscriptionUSDToCNYRate:  normalizeSubscriptionUSDToCNYRate(pcParseFloat(vals[SettingSubscriptionUSDToCNYRate], 0)),
 		RechargeFeeRate:           pcParseFloat(vals[SettingRechargeFeeRate], 0),
-		RechargeBonusTiers:        parseRechargeBonusTiers(vals[SettingRechargeBonusTiers]),
-		RechargeBonusNotice:       vals[SettingRechargeBonusNotice],
-		LoadBalanceStrategy:       vals[SettingLoadBalanceStrategy],
-		ProductNamePrefix:         vals[SettingProductNamePrefix],
-		ProductNameSuffix:         vals[SettingProductNameSuffix],
-		HelpImageURL:              vals[SettingHelpImageURL],
-		HelpText:                  vals[SettingHelpText],
+		// 计价汇率同时灌入进程内状态：管理端保存后立即生效，不用等下一次设置重载。
+		USDToCNYRate:        fxRateValue,
+		USDToCNYRateAuto:    fxRateAuto,
+		RechargeBonusTiers:  parseRechargeBonusTiers(vals[SettingRechargeBonusTiers]),
+		RechargeBonusNotice: vals[SettingRechargeBonusNotice],
+		LoadBalanceStrategy: vals[SettingLoadBalanceStrategy],
+		ProductNamePrefix:   vals[SettingProductNamePrefix],
+		ProductNameSuffix:   vals[SettingProductNameSuffix],
+		HelpImageURL:        vals[SettingHelpImageURL],
+		HelpText:            vals[SettingHelpText],
 
 		CancelRateLimitEnabled: vals[SettingCancelRateLimitOn] == "true",
 		CancelRateLimitMax:     pcParseInt(vals[SettingCancelRateLimitMax], 10),
@@ -347,6 +362,13 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 			return infraerrors.BadRequest("INVALID_SUBSCRIPTION_USD_TO_CNY_RATE", "subscription USD to CNY rate must be 0 (disabled) or a positive number")
 		}
 	}
+	if req.USDToCNYRate != nil {
+		v := *req.USDToCNYRate
+		// 与订阅汇率不同，计价汇率不允许 0：汇率为 0 会让所有美元价归零。
+		if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+			return infraerrors.BadRequest("INVALID_USD_TO_CNY_RATE", "pricing USD to CNY rate must be greater than 0")
+		}
+	}
 	if req.RechargeFeeRate != nil {
 		v := *req.RechargeFeeRate
 		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > 100 {
@@ -396,6 +418,12 @@ func (s *PaymentConfigService) UpdatePaymentConfig(ctx context.Context, req Upda
 	}
 	if req.SubscriptionUSDToCNYRate != nil {
 		m[SettingSubscriptionUSDToCNYRate] = formatPositiveFloatExact(req.SubscriptionUSDToCNYRate)
+	}
+	if req.USDToCNYRate != nil {
+		m[SettingKeyUSDToCNYRate] = formatPositiveFloatExact(req.USDToCNYRate)
+	}
+	if req.USDToCNYRateAuto != nil {
+		m[SettingKeyUSDToCNYRateAuto] = formatBoolOrEmpty(req.USDToCNYRateAuto)
 	}
 	if req.RechargeFeeRate != nil {
 		m[SettingRechargeFeeRate] = formatNonNegativeFloat(req.RechargeFeeRate)

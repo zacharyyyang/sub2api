@@ -228,6 +228,15 @@
               </p>
             </div>
 
+            <!-- 渠道默认币种：新建定价条目的预填值 -->
+            <div>
+              <label class="input-label">{{ t('admin.channels.form.defaultPriceCurrency') }}</label>
+              <Select v-model="form.default_price_currency" :options="priceCurrencyOptions" />
+              <p class="mt-1 text-xs text-gray-400">
+                {{ t('admin.channels.form.defaultPriceCurrencyHint') }}
+              </p>
+            </div>
+
             <!-- Platform Management -->
             <div class="space-y-3">
               <label class="input-label mb-0">{{ t('admin.channels.form.platformConfig') }}</label>
@@ -448,6 +457,8 @@
                   :key="idx"
                   :entry="entry"
                   :platform="section.platform"
+                  show-price-currency
+                  :default-price-currency="form.default_price_currency"
                   enable-time-pricing
                   enable-tier-multipliers
                   @update="updatePricingEntry(sIdx, idx, $event)"
@@ -580,6 +591,8 @@
                       :key="pIdx"
                       :entry="entry"
                       :platform="section.platform"
+                      show-price-currency
+                      :default-price-currency="form.default_price_currency"
                       stats-time-pricing
                       @update="rule.pricing.splice(pIdx, 1, $event)"
                       @remove="removeRulePricingEntry(sIdx, ruleIndex, pIdx)"
@@ -634,7 +647,7 @@ import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { adminAPI } from '@/api/admin'
-import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule } from '@/api/admin/channels'
+import type { Channel, ChannelModelPricing, CreateChannelRequest, UpdateChannelRequest, AccountStatsPricingRule, PriceCurrency } from '@/api/admin/channels'
 import type { PricingFormEntry } from '@/components/admin/channel/types'
 import { apiIntervalsToForm, apiStatsTimePricingToForm, apiTimePricingToForm, createDefaultStatsTimePricingForm, createDefaultTimePricingForm, findModelConflict, formIntervalsToAPI, formReasoningEffortMultipliersToAPI, formStatsTimePricingToAPI, formTimePricingToAPI, isValidPositiveMultiplier, mTokToPerToken, perTokenToMTok, validateIntervals, validateReasoningEffortMultipliers, validateStatsTimePricing, validateTimePricing } from '@/components/admin/channel/types'
 import type { AdminGroup, GroupPlatform } from '@/types'
@@ -722,6 +735,12 @@ const billingModelSourceOptions = computed(() => [
   { value: 'response_model', label: t('admin.channels.form.billingModelSourceResponse', 'Bill by upstream response model') }
 ])
 
+// 计价币种选项：USD 条目使用前乘汇率，CNY 条目原样使用
+const priceCurrencyOptions = computed(() => [
+  { value: 'USD', label: t('admin.channels.form.priceCurrencyUsd') },
+  { value: 'CNY', label: t('admin.channels.form.priceCurrencyCny') }
+])
+
 // ── State ──
 const channels = ref<Channel[]>([])
 const loading = ref(false)
@@ -759,6 +778,7 @@ const form = reactive({
   status: 'active',
   restrict_models: false,
   billing_model_source: 'channel_mapped' as string,
+  default_price_currency: 'USD' as PriceCurrency,
   platforms: [] as PlatformSection[],
   apply_pricing_to_account_stats: false,
 })
@@ -862,6 +882,7 @@ function addPricingEntry(sectionIdx: number) {
   form.platforms[sectionIdx].model_pricing.push({
     models: [],
     billing_mode: 'token',
+    price_currency: form.default_price_currency,
     input_price: null,
     output_price: null,
     cache_write_price: null,
@@ -901,6 +922,7 @@ async function syncLatestModels(sectionIdx: number) {
     section.model_pricing.push({
       models: newModels,
       billing_mode: 'token',
+      price_currency: form.default_price_currency,
       input_price: null,
       output_price: null,
       cache_write_price: null,
@@ -971,6 +993,7 @@ function addRulePricingEntry(sectionIdx: number, ruleIndex: number) {
   form.platforms[sectionIdx].account_stats_pricing_rules[ruleIndex].pricing.push({
     models: [],
     billing_mode: 'token',
+    price_currency: form.default_price_currency,
     input_price: null,
     output_price: null,
     cache_write_price: null,
@@ -1099,6 +1122,7 @@ function accountStatsRulesToAPI(): AccountStatsPricingRule[] {
             image_input_price: mTokToPerToken(p.image_input_price),
             image_output_price: mTokToPerToken(p.image_output_price),
             per_request_price: p.per_request_price != null && p.per_request_price !== '' ? Number(p.per_request_price) : null,
+            price_currency: p.price_currency ?? form.default_price_currency,
             intervals: formIntervalsToAPI(p.intervals || []),
             time_pricing: null,
             stats_time_pricing: formStatsTimePricingToAPI(p.stats_time_pricing)
@@ -1146,6 +1170,7 @@ function formToAPI(): { group_ids: number[], model_pricing: ChannelModelPricing[
         image_input_price: mTokToPerToken(entry.image_input_price),
         image_output_price: mTokToPerToken(entry.image_output_price),
         per_request_price: entry.per_request_price != null && entry.per_request_price !== '' ? Number(entry.per_request_price) : null,
+        price_currency: entry.price_currency ?? form.default_price_currency,
         intervals: formIntervalsToAPI(entry.intervals || []),
         time_pricing: formTimePricingToAPI(entry.time_pricing)
       })
@@ -1249,6 +1274,7 @@ function apiToForm(channel: Channel): PlatformSection[] {
         image_input_price: perTokenToMTok(p.image_input_price),
         image_output_price: perTokenToMTok(p.image_output_price),
         per_request_price: p.per_request_price,
+        price_currency: p.price_currency ?? 'USD',
         intervals: apiIntervalsToForm(p.intervals || []),
         time_pricing: apiTimePricingToForm(p.time_pricing)
       } as PricingFormEntry))
@@ -1363,6 +1389,7 @@ function resetForm() {
   form.status = 'active'
   form.restrict_models = false
   form.billing_model_source = 'channel_mapped'
+  form.default_price_currency = 'USD'
   form.platforms = []
   form.apply_pricing_to_account_stats = false
   activeTab.value = 'basic'
@@ -1385,6 +1412,7 @@ async function openEditDialog(channel: Channel) {
   form.status = channel.status
   form.restrict_models = channel.restrict_models || false
   form.billing_model_source = channel.billing_model_source || 'channel_mapped'
+  form.default_price_currency = channel.default_price_currency || 'USD'
   form.apply_pricing_to_account_stats = channel.apply_pricing_to_account_stats || false
   // Must load groups first so apiToForm can map groupID → platform
   await Promise.all([loadGroups(), loadAllChannelsForConflict()])
@@ -1441,6 +1469,7 @@ function distributeRulesToPlatforms(apiRules: AccountStatsPricingRule[]) {
         image_input_price: perTokenToMTok(p.image_input_price),
         image_output_price: perTokenToMTok(p.image_output_price),
         per_request_price: p.per_request_price,
+        price_currency: p.price_currency ?? 'USD',
         intervals: apiIntervalsToForm(p.intervals || []),
         time_pricing: createDefaultTimePricingForm(),
         stats_time_pricing: apiStatsTimePricingToForm(p.stats_time_pricing)
@@ -1648,6 +1677,7 @@ async function handleSubmit() {
         model_mapping: Object.keys(model_mapping).length > 0 ? model_mapping : {},
         billing_model_source: form.billing_model_source,
         restrict_models: form.restrict_models,
+        default_price_currency: form.default_price_currency,
         features_config,
         apply_pricing_to_account_stats: form.apply_pricing_to_account_stats,
         account_stats_pricing_rules: accountStatsRulesToAPI()
@@ -1663,6 +1693,7 @@ async function handleSubmit() {
         model_mapping: Object.keys(model_mapping).length > 0 ? model_mapping : {},
         billing_model_source: form.billing_model_source,
         restrict_models: form.restrict_models,
+        default_price_currency: form.default_price_currency,
         features_config,
         apply_pricing_to_account_stats: form.apply_pricing_to_account_stats,
         account_stats_pricing_rules: accountStatsRulesToAPI()

@@ -876,6 +876,7 @@ func (s *ChannelService) Create(ctx context.Context, input *CreateChannelInput) 
 		Features:                   input.Features,
 		FeaturesConfig:             input.FeaturesConfig,
 		ApplyPricingToAccountStats: input.ApplyPricingToAccountStats,
+		DefaultPriceCurrency:       input.DefaultPriceCurrency,
 		AccountStatsPricingRules:   input.AccountStatsPricingRules,
 	}
 	channel.normalizeBillingModelSource()
@@ -993,6 +994,9 @@ func (s *ChannelService) applyUpdateInput(ctx context.Context, channel *Channel,
 	}
 	if input.AccountStatsPricingRules != nil {
 		channel.AccountStatsPricingRules = *input.AccountStatsPricingRules
+	}
+	if input.DefaultPriceCurrency != "" {
+		channel.DefaultPriceCurrency = input.DefaultPriceCurrency
 	}
 	return nil
 }
@@ -1188,7 +1192,9 @@ type CreateChannelInput struct {
 	Features                   string
 	FeaturesConfig             map[string]any
 	ApplyPricingToAccountStats bool
-	AccountStatsPricingRules   []AccountStatsPricingRule
+	// DefaultPriceCurrency 是本渠道新建定价条目的默认币种（USD/CNY）；空值由仓储层归一为 USD。
+	DefaultPriceCurrency     string
+	AccountStatsPricingRules []AccountStatsPricingRule
 }
 
 // UpdateChannelInput 更新渠道输入
@@ -1204,5 +1210,7 @@ type UpdateChannelInput struct {
 	Features                   *string
 	FeaturesConfig             map[string]any
 	ApplyPricingToAccountStats *bool
-	AccountStatsPricingRules   *[]AccountStatsPricingRule
+	// DefaultPriceCurrency 为空表示不修改（与 BillingModelSource 同一约定）。
+	DefaultPriceCurrency     string
+	AccountStatsPricingRules *[]AccountStatsPricingRule
 }

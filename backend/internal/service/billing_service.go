@@ -1399,16 +1399,27 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 	return s.getModelPricingAt(model, timezone.Now())
 }
 
-// CacheStoragePricePerTokenHour 返回模型的显式上下文缓存存储单价（每 token 每小时，USD）。
+// CacheStoragePricePerTokenHour 返回模型的显式上下文缓存存储单价（每 token 每小时，人民币）。
 // 优先级：价格表（override_file 等）按确定性识别配置的值 > 内置型号价 > 内置 Pro/Flash 系列兜底价；
-// 均未命中返回 0。
+// 均未命中返回 0。价表与内置价都是美元标度，返回前按计价汇率换算成人民币。
 func (s *BillingService) CacheStoragePricePerTokenHour(model string) float64 {
+	usd := 0.0
 	if s != nil && s.pricingService != nil {
 		if pricing := s.pricingService.GetIdentifiedModelPricing(model); pricing != nil && pricing.CacheStorageCostPerTokenPerHour > 0 {
-			return pricing.CacheStorageCostPerTokenPerHour
+			usd = pricing.CacheStorageCostPerTokenPerHour
 		}
 	}
-	return builtinGeminiCacheStoragePrice(model)
+	if usd <= 0 {
+		usd = builtinGeminiCacheStoragePrice(model)
+	}
+	if usd <= 0 {
+		return 0
+	}
+	rate := CurrentUSDToCNYRate()
+	if rate <= 0 {
+		rate = 1
+	}
+	return usd * rate
 }
 
 // getModelPricingAt 是 GetModelPricing 的带计费时点内部变体：pricingAt 显式
@@ -1457,7 +1468,7 @@ func (s *BillingService) getModelPricingAt(model string, pricingAt time.Time) (*
 				ImageInputPricePerToken:       litellmPricing.InputCostPerImageToken,
 				ImageCacheReadPricePerToken:   litellmPricing.CacheReadInputImageTokenCost,
 				ImageOutputPricePerToken:      litellmPricing.OutputCostPerImageToken,
-			}, true, pricingAt), nil
+			}, true, pricingAt, false), nil
 		}
 	}
 
@@ -1469,7 +1480,7 @@ func (s *BillingService) getModelPricingAt(model string, pricingAt time.Time) (*
 		if _, seen := s.fallbackWarnSeen.LoadOrStore(model, struct{}{}); !seen {
 			log.Printf("[Billing] Using fallback pricing for model: %s", model)
 		}
-		return s.applyModelSpecificPricingPolicyEx(model, fallback, true, pricingAt), nil
+		return s.applyModelSpecificPricingPolicyEx(model, fallback, true, pricingAt, false), nil
 	}
 
 	return nil, fmt.Errorf("%w for model: %s", ErrModelPricingUnavailable, model)
@@ -1579,6 +1590,11 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 		if err != nil {
 			return nil, err
 		}
+		// 无 Resolver 路径同样要过汇率：目录价是美元标度，
+		// 否则同一模型走不同入口会算出不同金额。
+		converted := *pricing
+		convertModelPricingToCNY(&converted, CurrentUSDToCNYRate())
+		pricing = &converted
 		breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongContextBilling && !input.DisableModelLongContextPricing)
 		applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
 		return breakdown, nil
@@ -1650,7 +1666,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 	// 默认价卡（Source=LiteLLM || Source=Fallback）应用 DeepSeek 官方价强制覆盖（幂等，GetModelPricing
 	// 内部已强制过）；分组/渠道自定义定价保留运营者配置，不强制覆盖官方价。
 	isDefaultPriceCard := resolved.Source == PricingSourceLiteLLM || resolved.Source == PricingSourceFallback
-	pricing = s.applyModelSpecificPricingPolicyEx(input.Model, pricing, isDefaultPriceCard, pricingAt)
+	pricing = s.applyModelSpecificPricingPolicyEx(input.Model, pricing, isDefaultPriceCard, pricingAt, true)
 
 	// DeepSeek 模型默认价卡按官方或百炼/千帆峰谷口径调整。
 	// 仅作用于默认价卡（无分组/渠道自定义定价）——分组/渠道
@@ -1910,6 +1926,11 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 		return nil, err
 	}
 
+	// 旧接口（CalculateCost 系列）不经过 Resolver，汇率边界要在这里补齐。
+	converted := *pricing
+	convertModelPricingToCNY(&converted, CurrentUSDToCNYRate())
+	pricing = &converted
+
 	return s.computeTokenBreakdown(pricing, tokens, rateMultiplier, serviceTier, longContextBillingEnabled), nil
 }
 
@@ -1921,16 +1942,27 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 // 供无既有时点的策略修正场景与测试使用；计费/展示主路径分别经
 // calculateTokenCost 与 getModelPricingAt 显式传时点，分组/渠道自定义定价
 // 用 applyModelSpecificPricingPolicyEx 关闭强制，保留运营者配置。
+// applyModelSpecificPricingPolicy 与 Ex 相同，但假定传入价是美元标度（目录取价路径）。
 func (s *BillingService) applyModelSpecificPricingPolicy(model string, pricing *ModelPricing) *ModelPricing {
-	return s.applyModelSpecificPricingPolicyEx(model, pricing, true, time.Time{})
+	return s.applyModelSpecificPricingPolicyEx(model, pricing, true, time.Time{}, false)
 }
 
 // applyModelSpecificPricingPolicyEx 与 applyModelSpecificPricingPolicy 相同，
-// 但由调用方控制是否强制 DeepSeek 官方价（forceDeepSeekRates），并显式传入
-// 计费时点 pricingAt（零值表示按当前时刻判定）。
+// 但由调用方控制是否强制 DeepSeek 官方价（forceDeepSeekRates），显式传入
+// 计费时点 pricingAt（零值表示按当前时刻判定），以及传入价当前是什么单位
+// （pricesInCNY）。
 // calculateTokenCost 对分组/渠道自定义定价（Source 非 LiteLLM）传 false：
 // 强制覆盖会把运营者配置的售价盖回官方价，违反自定义定价语义。
-func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceDeepSeekRates bool, pricingAt time.Time) *ModelPricing {
+//
+// pricesInCNY 必须与调用点的现实一致：目录取价路径拿到的是美元数字（false），
+// 计费路径此时 pricing 已被换汇（true）。写错会让官方价常量被算成汇率平方。
+func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing *ModelPricing, forceDeepSeekRates bool, pricingAt time.Time, pricesInCNY bool) *ModelPricing {
+	officialPrice := func(usd float64) float64 {
+		if pricesInCNY {
+			return ToCNYAmount(usd)
+		}
+		return usd
+	}
 	if pricing == nil {
 		return nil
 	}
@@ -1947,16 +1979,18 @@ func (s *BillingService) applyModelSpecificPricingPolicyEx(model string, pricing
 	if forceDeepSeekRates && isDeepSeekModel(model) && strings.ToLower(strings.TrimSpace(model)) != "deepseek-v4-flash-0731" {
 		cloned := *pricing
 		if isDeepSeekProModel(model) && !deepseekProBilledAsFlash(pricingAt) {
-			cloned.InputPricePerToken = deepseekProOffPeakInputPrice
-			cloned.OutputPricePerToken = deepseekProOffPeakOutputPrice
-			cloned.CacheReadPricePerToken = deepseekProOffPeakCacheRead
+			cloned.InputPricePerToken = officialPrice(deepseekProOffPeakInputPrice)
+			cloned.OutputPricePerToken = officialPrice(deepseekProOffPeakOutputPrice)
+			cloned.CacheReadPricePerToken = officialPrice(deepseekProOffPeakCacheRead)
 		} else {
 			// deepseek-flash（= V4.1-Flash）、deepseek-v4-flash /
 			// deepseek-v4-flash-vision-exp 与其余 deepseek-* 共用 flash 价；
 			// 切换时点之后的 pro 请求同样按 flash 价计费。
-			cloned.InputPricePerToken = deepseekFlashOffPeakInputPrice
-			cloned.OutputPricePerToken = deepseekFlashOffPeakOutputPrice
-			cloned.CacheReadPricePerToken = deepseekFlashOffPeakCacheRead
+			// 这里的常量是官方美元价，必须换成人民币，否则这一覆盖会把
+			// 解析阶段已换好的计算结果又改回美元数字。
+			cloned.InputPricePerToken = officialPrice(deepseekFlashOffPeakInputPrice)
+			cloned.OutputPricePerToken = officialPrice(deepseekFlashOffPeakOutputPrice)
+			cloned.CacheReadPricePerToken = officialPrice(deepseekFlashOffPeakCacheRead)
 		}
 		return &cloned
 	}
@@ -2175,6 +2209,8 @@ func (s *BillingService) CalculateWebSearchCost(callCount int, groupPrice *float
 	if groupPrice != nil && *groupPrice >= 0 {
 		unitPrice = *groupPrice
 	}
+	// 默认价与分组价都是美元标度：与 token 计费同口径，换成人民币再算总额。
+	unitPrice = ToCNYAmount(unitPrice)
 	totalCost := unitPrice * float64(callCount)
 
 	// 应用倍率（保存时强制 > 0；负数按 0 处理避免按 1x 误扣）
@@ -2207,7 +2243,7 @@ func (s *BillingService) CalculateSearchCost(numCalls int, groupPricePer1k *floa
 	if rateMultiplier < 0 {
 		rateMultiplier = 0
 	}
-	unit := pricePer1k / 1000.0
+	unit := ToCNYAmount(pricePer1k) / 1000.0
 	total := unit * float64(numCalls)
 	return &CostBreakdown{
 		TotalCost:   total,
@@ -2254,7 +2290,7 @@ func (s *BillingService) CalculateAudioCost(mode string, durationOrUnits float64
 	if rateMultiplier < 0 {
 		rateMultiplier = 0
 	}
-	total := unitPrice * durationOrUnits
+	total := ToCNYAmount(unitPrice) * durationOrUnits
 	return &CostBreakdown{
 		TotalCost:   total,
 		ActualCost:  total * rateMultiplier,
@@ -2274,8 +2310,8 @@ func (s *BillingService) CalculateImageCost(model string, imageSize string, imag
 	}
 	imageSize = NormalizeImageBillingTierOrDefault(imageSize)
 
-	// 获取单价
-	unitPrice := s.getImageUnitPrice(model, imageSize, groupConfig)
+	// 获取单价（图片单价默认值与分组价都是美元标度，统一换成人民币再算总额）
+	unitPrice := ToCNYAmount(s.getImageUnitPrice(model, imageSize, groupConfig))
 
 	// 计算总费用
 	totalCost := unitPrice * float64(imageCount)
@@ -2307,7 +2343,7 @@ func (s *BillingService) CalculateVideoCost(model string, resolution string, vid
 	resolution = NormalizeVideoBillingResolutionOrDefault(resolution)
 	durationSeconds = NormalizeVideoBillingDurationSecondsOrDefault(durationSeconds)
 
-	perSecondPrice := s.getVideoUnitPrice(model, resolution, groupConfig)
+	perSecondPrice := ToCNYAmount(s.getVideoUnitPrice(model, resolution, groupConfig))
 	totalCost := perSecondPrice * float64(durationSeconds) * float64(videoCount)
 
 	if rateMultiplier < 0 {

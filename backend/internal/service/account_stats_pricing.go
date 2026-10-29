@@ -132,6 +132,8 @@ func tryCustomRules(
 		if pricing == nil {
 			continue // 规则匹配但模型不在规则定价中，继续下一条
 		}
+		// 成本价也要按条目币种换算成人民币：USD 条目 ×汇率，CNY 条目原样。
+		pricing = channelPricingInCNY(pricing, CurrentUSDToCNYRate())
 		cost, err := calculateStatsCostAt(pricing, tokens, requestCount, pricingAt)
 		if err != nil {
 			return nil, err

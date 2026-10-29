@@ -97,6 +97,17 @@
               class="mt-1"
             />
           </div>
+          <div v-if="showPriceCurrency" class="w-32">
+            <label class="text-xs font-medium text-gray-500 dark:text-gray-400">
+              {{ t('admin.channels.form.priceCurrency') }}
+            </label>
+            <Select
+              :modelValue="currentPriceCurrency"
+              @update:modelValue="onPriceCurrencyUpdate($event as PriceCurrency)"
+              :options="priceCurrencyOptions"
+              class="mt-1"
+            />
+          </div>
         </div>
 
         <!-- Token mode -->
@@ -104,7 +115,7 @@
           <!-- Default prices (fallback when no interval matches) -->
           <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
             {{ t('admin.channels.form.defaultPrices') }}
-            <span class="ml-1 font-normal text-gray-400">$/MTok</span>
+            <span class="ml-1 font-normal text-gray-400">{{ priceUnitSymbol }}/MTok</span>
           </label>
           <div class="pricing-default-grid mt-1 grid gap-2">
             <div>
@@ -193,7 +204,7 @@
           <!-- Default per-request price -->
           <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
             {{ t('admin.channels.form.defaultPerRequestPrice') }}
-            <span class="ml-1 font-normal text-gray-400">$</span>
+            <span class="ml-1 font-normal text-gray-400">{{ priceUnitSymbol }}</span>
           </label>
           <div class="mt-1 w-48">
             <input :value="entry.per_request_price" @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
@@ -229,7 +240,7 @@
           <!-- Default image price (per-request, same as per_request mode) -->
           <label class="mt-3 block text-xs font-medium text-gray-500 dark:text-gray-400">
             {{ entry.billing_mode === 'video' ? t('admin.channels.form.defaultVideoPrice') : t('admin.channels.form.defaultImagePrice') }}
-            <span class="ml-1 font-normal text-gray-400">$</span>
+            <span class="ml-1 font-normal text-gray-400">{{ priceUnitSymbol }}</span>
           </label>
           <div class="mt-1 w-48">
             <input :value="entry.per_request_price" @input="emitField('per_request_price', ($event.target as HTMLInputElement).value)"
@@ -317,7 +328,7 @@ import StatsTimePricingSection from './StatsTimePricingSection.vue'
 import type { PricingFormEntry, IntervalFormEntry } from './types'
 import { createDefaultStatsTimePricingForm, perTokenToMTok, getPlatformTagClass, isValidPositiveMultiplier, validateReasoningEffortMultipliers } from './types'
 import { REASONING_EFFORT_LEVELS, type ReasoningEffortLevel } from '@/constants/channel'
-import type { BillingMode } from '@/api/admin/channels'
+import type { BillingMode, PriceCurrency } from '@/api/admin/channels'
 import channelsAPI from '@/api/admin/channels'
 
 const { t } = useI18n()
@@ -330,11 +341,17 @@ const props = withDefaults(defineProps<{
   enableTierMultipliers?: boolean
   /** 账号统计（成本）条目卡片：渲染分时独立价区块；售价卡片不渲染 */
   statsTimePricing?: boolean
+  /** 是否展示「币种」下拉（仅渠道编辑弹窗用；分组价没有币种字段） */
+  showPriceCurrency?: boolean
+  /** 条目未单独设币种时展示的默认值（渠道默认币种） */
+  defaultPriceCurrency?: PriceCurrency
 }>(), {
   hideTokenIntervals: false,
   enableTimePricing: false,
   enableTierMultipliers: false,
   statsTimePricing: false,
+  showPriceCurrency: false,
+  defaultPriceCurrency: 'USD',
 })
 
 const emit = defineEmits<{
@@ -359,6 +376,23 @@ const billingModeLabel = computed(() => {
   const opt = billingModeOptions.value.find(o => o.value === props.entry.billing_mode)
   return opt ? opt.label : props.entry.billing_mode
 })
+
+// 「币种」下拉：条目未显式设置时展示渠道默认币种（没有则 USD）
+const currentPriceCurrency = computed<PriceCurrency>(
+  () => props.entry.price_currency ?? props.defaultPriceCurrency ?? 'USD'
+)
+
+const priceCurrencyOptions = computed(() => [
+  { value: 'USD', label: t('admin.channels.form.priceCurrencyUsd') },
+  { value: 'CNY', label: t('admin.channels.form.priceCurrencyCny') },
+])
+
+/** 价格单位符号跟着币种走：USD 条目用 $，CNY 条目用 ¥（数值本身不做换算） */
+const priceUnitSymbol = computed(() => (currentPriceCurrency.value === 'CNY' ? '¥' : '$'))
+
+function onPriceCurrencyUpdate(currency: PriceCurrency) {
+  emit('update', { ...props.entry, price_currency: currency })
+}
 
 const reasoningEffortMultiplierError = computed(() =>
   validateReasoningEffortMultipliers(props.entry.reasoning_effort_multipliers, t)

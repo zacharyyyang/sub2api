@@ -41,6 +41,11 @@ type ResolvedPricing struct {
 	// 渠道定价原始配置（用于区间模式下获取 ImageOutputPrice）
 	channelPricing *ChannelModelPricing
 
+	// currencyNormalized 表示价格已经在解析过程中换算到人民币
+	// （CNY 条目：继承的目录价先换成人民币，再叠条目自己的人民币价）。
+	// 置位后出口换算跳过，避免一次结果被乘两次汇率。
+	currencyNormalized bool
+
 	longContextPricingEnabled bool
 }
 
@@ -66,10 +71,17 @@ type PricingInput struct {
 	Group   *Group
 }
 
-// Resolve 解析模型定价。
+// Resolve 解析模型定价，并统一把结果换算到人民币口径。
 // 1. 获取基础定价（LiteLLM → Fallback）
 // 2. 如果指定了 GroupID，查找渠道定价并覆盖
+// 3. 按来源币种把美元价 ×计价汇率（CNY 条目原样）
 func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) *ResolvedPricing {
+	resolved := r.resolvePricing(ctx, input)
+	applyPricingCurrencyConversion(resolved)
+	return resolved
+}
+
+func (r *ModelPricingResolver) resolvePricing(ctx context.Context, input PricingInput) *ResolvedPricing {
 	longContextPricingEnabled := input.Group == nil || input.Group.LongContextPricingEnabled
 	if groupPricing := matchGroupModelPricing(input.Group, input.Model); groupPricing != nil {
 		// Group token cards only override the first-tier / flat rates.
@@ -97,6 +109,9 @@ func (r *ModelPricingResolver) Resolve(ctx context.Context, input PricingInput) 
 					Mode:           mode,
 					Source:         PricingSourceChannel,
 					channelPricing: chPricing,
+					// 按次/图片/视频模式的价格全来自条目自身：CNY 条目直接就是人民币，
+					// 不需要也不允许再乘汇率。
+					currencyNormalized: NormalizePriceCurrency(chPricing.PriceCurrency) == PriceCurrencyCNY,
 				}
 				resolved.longContextPricingEnabled = longContextPricingEnabled
 				r.applyRequestTierOverrides(chPricing, resolved)
@@ -133,7 +148,12 @@ func (r *ModelPricingResolver) resolveConfiguredPricing(config *ChannelModelPric
 	if mode == "" {
 		mode = BillingModeToken
 	}
-	resolved := &ResolvedPricing{Mode: mode, Source: source, channelPricing: config}
+	resolved := &ResolvedPricing{
+		Mode:               mode,
+		Source:             source,
+		channelPricing:     config,
+		currencyNormalized: NormalizePriceCurrency(config.PriceCurrency) == PriceCurrencyCNY,
+	}
 	if mode == BillingModePerRequest || mode == BillingModeImage || mode == BillingModeVideo {
 		r.applyRequestTierOverrides(config, resolved)
 		return resolved
@@ -240,6 +260,14 @@ func (r *ModelPricingResolver) applyTokenOverrides(chPricing *ChannelModelPricin
 		// 防止修改 fallbackPrices 中的共享指针
 		cloned := *resolved.BasePricing
 		resolved.BasePricing = &cloned
+	}
+
+	// 币种边界必须在「合并之前」：CNY 条目下，未被条目覆盖的字段继承的是目录价（美元），
+	// 条目覆盖的字段是人民币。先把继承来的目录价换成人民币，再叠条目价，
+	// 否则一张只填输入价的人民币卡片会得到「输入人民币 + 输出美元」的混合结果。
+	if NormalizePriceCurrency(chPricing.PriceCurrency) == PriceCurrencyCNY {
+		convertModelPricingToCNY(resolved.BasePricing, CurrentUSDToCNYRate())
+		resolved.currencyNormalized = true
 	}
 
 	applyChannelTokenPriceOverrides(resolved.BasePricing, chPricing)

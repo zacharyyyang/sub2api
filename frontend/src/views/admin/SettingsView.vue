@@ -8151,6 +8151,50 @@
                     </p>
                   </div>
                 </div>
+                <!-- Row 2.5: 计价汇率（美元来源的价格使用前乘这个值） -->
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="input-label">{{
+                      t("admin.settings.payment.pricingUsdToCnyRate")
+                    }}
+                      <span class="text-red-500">*</span></label>
+                    <input
+                      :value="form.payment_usd_to_cny_rate ?? ''"
+                      @input="
+                        form.payment_usd_to_cny_rate = parseFloat(
+                          ($event.target as HTMLInputElement).value,
+                        ) || 0
+                      "
+                      type="number"
+                      step="0.0001"
+                      min="0.0001"
+                      class="input"
+                      required
+                    />
+                    <p class="mt-0.5 text-xs text-gray-400">
+                      {{ t("admin.settings.payment.pricingUsdToCnyRateHint") }}
+                    </p>
+                    <p
+                      v-if="!(Number(form.payment_usd_to_cny_rate) > 0)"
+                      class="mt-1 text-xs font-medium text-red-500"
+                    >
+                      {{ t("admin.settings.payment.pricingUsdToCnyRateRequired") }}
+                    </p>
+                  </div>
+                  <div>
+                    <label class="input-label">{{
+                      t("admin.settings.payment.pricingUsdToCnyRateAuto")
+                    }}</label>
+                    <div class="mt-1">
+                      <Toggle v-model="form.payment_usd_to_cny_rate_auto" />
+                    </div>
+                    <p class="mt-0.5 text-xs text-gray-400">
+                      {{
+                        t("admin.settings.payment.pricingUsdToCnyRateAutoHint")
+                      }}
+                    </p>
+                  </div>
+                </div>
                 <!-- Row 3: Pending orders + load balance + cancel rate limit (all in one row) -->
                 <div class="flex flex-wrap items-end gap-4">
                   <div class="w-28">
@@ -9790,6 +9834,8 @@ const form = reactive<SettingsForm>({
   payment_balance_disabled: false,
   payment_balance_recharge_multiplier: 1,
   payment_subscription_usd_to_cny_rate: 0,
+  payment_usd_to_cny_rate: 7.2,
+  payment_usd_to_cny_rate_auto: true,
   payment_recharge_fee_rate: 0,
   payment_recharge_bonus_tiers: [],
   payment_recharge_bonus_mode: "bonus",
@@ -11278,6 +11324,12 @@ const siteBillingModeHint = computed(() =>
 );
 
 async function saveSettings() {
+  // 计价汇率为 0 会让所有美元价归零，前端先拦住（后端同一判据也会拒）
+  if (!(Number(form.payment_usd_to_cny_rate) > 0)) {
+    appStore.showError(t("admin.settings.payment.pricingUsdToCnyRateRequired"));
+    return;
+  }
+
   saving.value = true;
   try {
     const normalizedTableDefaultPageSize = Math.floor(
@@ -11677,6 +11729,8 @@ async function saveSettings() {
         Number(form.payment_balance_recharge_multiplier) || 1,
       payment_subscription_usd_to_cny_rate:
         Number(form.payment_subscription_usd_to_cny_rate) || 0,
+      payment_usd_to_cny_rate: Number(form.payment_usd_to_cny_rate) || 0,
+      payment_usd_to_cny_rate_auto: form.payment_usd_to_cny_rate_auto,
       payment_recharge_fee_rate: Number(form.payment_recharge_fee_rate) || 0,
       payment_recharge_bonus_tiers: sanitizeRechargeBonusTiersForSubmit(
         form.payment_recharge_bonus_tiers,
