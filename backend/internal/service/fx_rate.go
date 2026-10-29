@@ -199,6 +199,21 @@ func FXRateForBilling() (float64, error) {
 	return NeutralUSDToCNYRate, nil
 }
 
+// LoadFXRateAtStartup 在进程启动时同步加载一次汇率设置。
+// 读不到就返回错误，由 main 拒绝启动：这样「汇率状态未知」不会进入运行时，
+// 任何计费入口（含图像/视频/语音/搜索这些没有错误通道的路径）都不会在未知状态下按中性 1 计价。
+func LoadFXRateAtStartup(ctx context.Context) error {
+	ensureLoaded()
+	fxRateLoaderMu.Lock()
+	loadedOnce := fxRateLoadEverOK
+	hasLoader := fxRateSettingsLoader != nil
+	fxRateLoaderMu.Unlock()
+	if hasLoader && !loadedOnce {
+		return ErrPricingRateUnavailable
+	}
+	return nil
+}
+
 // FXRateStatus 是给管理端展示的汇率状态。
 type FXRateStatus struct {
 	Rate           float64   `json:"rate"`

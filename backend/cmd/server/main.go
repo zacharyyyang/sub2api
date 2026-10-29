@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
 	"github.com/Wei-Shaw/sub2api/internal/web"
 
@@ -153,6 +154,12 @@ func runMainServer() {
 		log.Fatalf("Failed to initialize application: %v", err)
 	}
 	defer app.Cleanup()
+	// 计价汇率必须在开始接收请求前就确定：设置表读不到就拒绝启动。
+	// 否则图像/视频/语音/搜索这些只有金额返回、没有错误通道的计费路径
+	// 会在「汇率状态未知」时按中性 1 计价（少收 6~7 倍）。
+	if err := service.LoadFXRateAtStartup(context.Background()); err != nil {
+		log.Fatalf("Failed to load pricing FX rate settings: %v", err)
+	}
 	if app.PluginManager != nil {
 		if err := app.PluginManager.Start(context.Background()); err != nil {
 			log.Printf("Plugin manager started in degraded state: %v", err)

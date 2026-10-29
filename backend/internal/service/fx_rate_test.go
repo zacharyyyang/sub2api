@@ -469,3 +469,35 @@ func TestChannelPricingInCNY_RateOneStillLabelsCNY(t *testing.T) {
 		t.Fatalf("converted copy must be labelled CNY, got %q", got.PriceCurrency)
 	}
 }
+
+// 启动期加载：状态未知时返回错误，由 main 拒绝启动——让未知状态进不了运行时。
+func TestLoadFXRateAtStartup(t *testing.T) {
+	t.Cleanup(func() { ConfigureUSDToCNYRate(1, false, false) }) // 别把 7.1 留给后续用例
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, true)
+
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		return 0, false, false, false
+	})
+	if err := LoadFXRateAtStartup(context.Background()); err == nil {
+		t.Fatal("startup must refuse when the rate state cannot be read")
+	}
+
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, true)
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		return 7.1, true, true, true
+	})
+	if err := LoadFXRateAtStartup(context.Background()); err != nil {
+		t.Fatalf("startup must succeed once settings load: %v", err)
+	}
+}
+
+// 测试基线：进程内默认「设置已成功加载过」。真实进程由 LoadFXRateAtStartup 在开机时保证；
+// 测试里若某个用例构造了 SettingService，会注册加载器，若不同时给出这条基线，
+// 其他计费用例会撞上「状态未知」的失败关闭。
+func init() {
+	fxRateLoaderMu.Lock()
+	fxRateLoadEverOK = true
+	fxRateLoaderMu.Unlock()
+}
