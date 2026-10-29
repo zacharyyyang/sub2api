@@ -1919,6 +1919,10 @@ func (s *BillingService) calculateCostInternalWithPolicy(
 	channelPricing *ChannelModelPricing,
 	longContextBillingEnabled bool,
 ) (*CostBreakdown, error) {
+	// 旧接口（CalculateCost 系列）也必须失败关闭：汇率状态未知时不得按中性 1 计价。
+	if _, rateErr := FXRateForBilling(); rateErr != nil {
+		return nil, rateErr
+	}
 	var pricing *ModelPricing
 	var err error
 	if channelPricing != nil {
