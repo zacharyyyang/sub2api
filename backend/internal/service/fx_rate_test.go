@@ -343,9 +343,11 @@ func withFreshFXLoaderState(t *testing.T) {
 	prevLoader := fxRateSettingsLoader
 	prevLoaded := fxRateLoaded
 	prevFailure := lastLoadFailureAt
+	prevEverOK := fxRateLoadEverOK
 	fxRateSettingsLoader = nil
 	fxRateLoaded = false
 	lastLoadFailureAt = time.Time{}
+	fxRateLoadEverOK = false
 	fxRateLoaderMu.Unlock()
 	t.Cleanup(func() {
 		fxRateLoaderMu.Lock()
@@ -353,6 +355,7 @@ func withFreshFXLoaderState(t *testing.T) {
 		fxRateSettingsLoader = prevLoader
 		fxRateLoaded = prevLoaded
 		lastLoadFailureAt = prevFailure
+		fxRateLoadEverOK = prevEverOK
 	})
 }
 
@@ -402,8 +405,8 @@ func TestEnsureLoaded_RetriesAfterReadFailure(t *testing.T) {
 		return 6.9, true, false, true
 	})
 
-	if got := CurrentUSDToCNYRate(); !almostEqual(got, NeutralUSDToCNYRate) {
-		t.Fatalf("after failed load must stay neutral, got %v", got)
+	if _, err := FXRateForBilling(); err == nil {
+		t.Fatal("billing must fail closed while the rate state is unknown")
 	}
 	// 冷却期内不重试，冷却结束后重试并生效
 	fxRateLoaderMu.Lock()
@@ -426,5 +429,43 @@ func TestConfigureUSDToCNYRate_RejectsInfinity(t *testing.T) {
 	ConfigureUSDToCNYRate(math.Inf(-1), true, false)
 	if got := CurrentUSDToCNYRate(); !almostEqual(got, 7.2) {
 		t.Fatalf("-Inf must be ignored, got %v", got)
+	}
+}
+
+// 状态未知（设置读取一直失败）时，计费入口必须显式失败，不得按 1 计价。
+func TestFXRateForBilling_FailsClosedWhenStateUnknown(t *testing.T) {
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, false)
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		return 0, false, false, false // 持续读库失败
+	})
+	if _, err := FXRateForBilling(); err == nil {
+		t.Fatal("unknown state must return an error")
+	}
+}
+
+// 成功确认「确实没有配置」时，计费入口允许中性值（按规则不换算）。
+func TestFXRateForBilling_NeutralWhenConfirmedUnconfigured(t *testing.T) {
+	withFreshFXLoaderState(t)
+	ConfigureUSDToCNYRate(0, false, false)
+	RegisterFXRateSettingsLoader(func(ctx context.Context) (float64, bool, bool, bool) {
+		return NeutralUSDToCNYRate, false, true, true
+	})
+	got, err := FXRateForBilling()
+	if err != nil {
+		t.Fatalf("confirmed-unconfigured must not error: %v", err)
+	}
+	if !almostEqual(got, NeutralUSDToCNYRate) {
+		t.Fatalf("want neutral, got %v", got)
+	}
+}
+
+// rate 恰为 1 时，换算副本仍必须带 CNY 币种标识（金额与币种一致）。
+func TestChannelPricingInCNY_RateOneStillLabelsCNY(t *testing.T) {
+	withRate(t, 1, false)
+	p := &ChannelModelPricing{InputPrice: fxPtr(4e-7)}
+	got := channelPricingInCNY(p, 1)
+	if got.PriceCurrency != PriceCurrencyCNY {
+		t.Fatalf("converted copy must be labelled CNY, got %q", got.PriceCurrency)
 	}
 }

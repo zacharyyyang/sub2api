@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -71,6 +72,7 @@ var (
 	fxRateLoaderMu       sync.Mutex
 	fxRateSettingsLoader func(ctx context.Context) (rate float64, configured, auto, ok bool)
 	fxRateLoaded         bool
+	fxRateLoadEverOK     bool          // 是否至少成功加载过一次（成功且「键不存在」也算）
 	fxRateLoadInFlight   chan struct{} // 非 nil 表示正在加载，关闭即表示本轮加载结束
 	lastLoadFailureAt    time.Time
 )
@@ -124,6 +126,7 @@ func ensureLoaded() {
 		fxRateLoaderMu.Lock()
 		if ok {
 			fxRateLoaded = true
+			fxRateLoadEverOK = true
 			lastLoadFailureAt = time.Time{}
 		} else {
 			lastLoadFailureAt = time.Now()
@@ -167,6 +170,33 @@ func CurrentUSDToCNYRate() float64 {
 		return fxRate.live
 	}
 	return fxRate.manual
+}
+
+// ErrPricingRateUnavailable 表示「汇率状态未知」：设置从未成功读取过，
+// 此时既不能当未配置按 1 计价（少收 6~7 倍），也不能凭空猜一个汇率。
+var ErrPricingRateUnavailable = errors.New("pricing exchange rate unavailable")
+
+// FXRateForBilling 是计费路径专用的取价入口：状态未知时返回错误，让调用方显式失败。
+// 与 CurrentUSDToCNYRate 的区别：后者服务展示/测试，前者不允许在未知状态下静默按 1 计价。
+func FXRateForBilling() (float64, error) {
+	ensureLoaded()
+	fxRate.mu.RLock()
+	defer fxRate.mu.RUnlock()
+	if fxRate.configured {
+		if fxRate.auto && fxRate.live > 0 {
+			return fxRate.live, nil
+		}
+		return fxRate.manual, nil
+	}
+	fxRateLoaderMu.Lock()
+	loadedOnce := fxRateLoadEverOK
+	hasLoader := fxRateSettingsLoader != nil
+	fxRateLoaderMu.Unlock()
+	if hasLoader && !loadedOnce {
+		return 0, ErrPricingRateUnavailable
+	}
+	// 已成功确认过「没有配置」→ 按规则不换算。
+	return NeutralUSDToCNYRate, nil
 }
 
 // FXRateStatus 是给管理端展示的汇率状态。
@@ -348,7 +378,7 @@ func channelPricingInCNY(p *ChannelModelPricing, rate float64) *ChannelModelPric
 		return nil
 	}
 	cloned := *p
-	if NormalizePriceCurrency(p.PriceCurrency) == PriceCurrencyCNY || rate <= 0 || rate == 1 {
+	if NormalizePriceCurrency(p.PriceCurrency) == PriceCurrencyCNY || rate <= 0 {
 		return &cloned
 	}
 	scale := func(v *float64) *float64 {

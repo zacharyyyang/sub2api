@@ -743,7 +743,7 @@ export default {
         pricingUsdToCnyRateHint: '这里填的是**手动兜底值**：美元标度的价格（内置价表与币种为 USD 的定价条目）使用前乘生效汇率；必填且必须大于 0',
         pricingUsdToCnyRateRequired: '计价汇率必须大于 0',
 		pricingUsdToCnyRateAuto: '每日自动更新',
-		pricingUsdToCnyRateAutoHint: '开启后每天从汇率源拉取一次实时汇率，并优先用它计价（不覆盖上面输入框里的手动值）；抓取失败时回落到手动值',
+		pricingUsdToCnyRateAutoHint: '开启后每天从汇率源拉取一次实时汇率，并优先用它计价（不覆盖上面输入框里的手动值）；抓取失败时保持上一次抓到的实时值，从未抓到过才用手动值',
         rechargeFeeRate: '充值手续费率',
         rechargeFeeRateHint: '用户充值时额外收取的手续费百分比，0 表示不收取手续费',
         rechargeFeePreview: '预览：充值 100 元，手续费 {fee} 元',

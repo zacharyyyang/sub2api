@@ -1580,6 +1580,10 @@ type CostInput struct {
 // CalculateCostUnified 统一计费入口，支持三种计费模式。
 // 使用 ModelPricingResolver 解析定价，然后根据 BillingMode 分发计算。
 func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, error) {
+	// 币种：状态未知（设置从未成功读取）时显式失败，不允许静默按汇率 1 计价。
+	if _, err := FXRateForBilling(); err != nil {
+		return nil, err
+	}
 	if input.Resolver == nil {
 		// 无 Resolver，回退到旧路径
 		applyLongContextBilling := true

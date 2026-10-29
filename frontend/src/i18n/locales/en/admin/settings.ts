@@ -748,7 +748,7 @@ export default {
         pricingUsdToCnyRateHint: 'Manual fallback rate: USD-denominated prices (built-in price table and pricing entries with currency USD) are multiplied by the effective rate before use. Required and must be greater than 0.',
         pricingUsdToCnyRateRequired: 'Pricing rate must be greater than 0',
 		pricingUsdToCnyRateAuto: 'Auto-update daily',
-		pricingUsdToCnyRateAutoHint: 'When enabled, the live rate is fetched once a day and takes precedence for pricing (the manual value above is not overwritten). A failed fetch falls back to the manual value.',
+		pricingUsdToCnyRateAutoHint: 'When enabled, the live rate is fetched once a day and takes precedence for pricing (the manual value above is not overwritten). A failed fetch keeps the last live rate; the manual value is used only when no live rate has ever been fetched.',
         rechargeFeeRate: 'Recharge Fee Rate',
         rechargeFeeRateHint: 'Percentage of service fee charged on top of recharge amount, 0 means no fee',
         rechargeFeePreview: 'Preview: Recharge 100, fee {fee}',
