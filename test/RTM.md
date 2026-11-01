@@ -9,7 +9,8 @@
 | 节 | 用例行数 |
 |---|---|
 | 成本账（账号统计成本） | 2 |
-| **合计** | **2 / 50–100（窗口下限远未达到；套件可执行性仍欠账）** |
+| 图片按张计费（分组开关） | 1 |
+| **合计** | **3 / 50–100（窗口下限远未达到；套件可执行性仍欠账）** |
 
 ---
 
@@ -38,3 +39,20 @@
 
 - AC-4（未命中时段兜底）与 AC-7（时段边界时刻）：由单元用例覆盖（设计 §6 CASE-06 / CASE-07），按本表判定范围不入集成行。
 - 套件可执行性：本仓尚无集成运行入口；上两行的用例设计已完整，**实现载体待套件建设**（台账欠账）。
+
+---
+
+## 2. 图片按张计费（分组开关）
+
+**业务故事**：管理员在分组编辑页打开「按张计费」后，专用图片端点的出图调用按**上游实际返回的张数**计费；关闭开关后同一调用回到 token 计价。
+
+### 2.1 用例行
+
+| 行号 | 业务入口 | 组件交互 | 业务结果 | 需求追溯 | 验收证据（通过判据） |
+|---|---|---|---|---|---|
+| **RTM-IMG-01** | 管理员在分组编辑页打开「按张计费」（composite/openai 分组且已开图片生成），客户端经专用图片端点生成 2 张图；随后关闭开关，再发一次同参数请求 | 分组配置（`groups.image_count_billing`）→ 网关图片端点判定（`imageCountBillingApplies`）→ `calculateImageCost` 取价（`CalculateImageCost`：单价先 `ToCNYAmount` 再 × 张数 × 倍率）→ 用量行落库（`image_count` / `billing_mode` / `total_cost` / `actual_cost`）→ 后台用量页读取 | 开启：`billing_mode='image'`、`image_count=2`、`total_cost` = 2 × 该分组该尺寸单价（人民币口径）、`actual_cost` = `total_cost` × `rate_multiplier`。关闭：`billing_mode='token'`、成本由 token 分项构成、`image_count` 仍记录上游报的 2（不计按张） | F3 / AC-4 / AC-7 | ① 两笔 `usage_logs` 行逐字段比对（同一模型、尺寸档、倍率、币种；单价取 `channel_model_pricing` / 分组图片价，不得以「默认价猜测」代替）；② 开启行 `total_cost ÷ image_count` = 配置单价经汇率换算后的值（误差 < 1e-9）；③ 关闭行 `billing_mode='token'` 且 `total_cost` = `input_cost + output_cost + cache_creation_cost + cache_read_cost`；④ 不得以「关闭后 `image_count` 为 0」作为判据——该列记录上游报的张数与计费模式无关 |
+
+### 未覆盖（缺口）
+
+- 「混合请求（图 + 文本）走开张计费分组不按张」由单元用例覆盖（`image_count_billing_switch_test.go`），按本表判定范围不入集成行。
+- 套件可执行性：同 §1 末尾，实现载体待套件建设。
