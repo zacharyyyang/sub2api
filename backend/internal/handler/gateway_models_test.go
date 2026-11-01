@@ -592,7 +592,7 @@ func TestGatewayModels_GeminiGroupFallsBackToGeminiModels(t *testing.T) {
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, "list", got.Object)
-	require.Contains(t, modelIDsForTest(got.Data), decorateIDForDiscoveryForTest("gemini-2.5-flash", "claude"))
+	require.Contains(t, modelIDsForTest(got.Data), "gemini-3.5-flash")
 	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6")
 	require.NotContains(t, modelIDsForTest(got.Data), "claude-sonnet-4-6[1m]")
 }
@@ -2968,8 +2968,8 @@ func TestGatewayModels_AC6501CallsiteMappingMatrixAndIdempotentClone(t *testing.
 		{
 			name:        "site 6 Gemini default fallback",
 			platform:    service.PlatformGemini,
-			want1MID:    decorateCCForTest("gemini-2.5-pro", "claude"),
-			wantNon1MID: decorateCCForTest("gemini-2.0-flash", "claude"),
+			want1MID:    decorateCCForTest("gemini-3.5-flash", "claude"),
+			wantNon1MID: decorateCCForTest("gemini-3.1-flash-image", "claude"),
 			expectShell: true,
 		},
 		{
