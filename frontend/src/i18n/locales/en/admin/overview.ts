@@ -1159,12 +1159,49 @@ export default {
         selectAll: 'Select all',
         invertSelection: 'Invert',
         wildcardTag: 'wildcard',
+        displayNameLabel: 'Display name',
+        displayNamePlaceholder: 'Display name (optional)',
+        displayNameHint: 'Shown in the client model picker',
+        displayNameTableTitle: 'Legacy display names (by real model ID)',
+        displayNameSectionHint: 'Used by non-Claude-Code clients',
+        addDisplayName: 'Add display name',
+        displayNameModelIdPlaceholder: 'Model ID',
+        displayNameEmpty: 'None',
+        convertToCatalog: 'Convert to catalog row',
         customPlaceholder: 'Custom entry, e.g. gpt-*-codex or claude-*',
         addCustom: 'Add',
         emptySelectionError: 'The model allowlist is enabled; select or add at least one model entry',
         errors: {
           empty: 'Please enter a model entry',
           duplicate: 'This entry already exists'
+        }
+      },
+      modelCatalog: {
+        title: 'Model catalog',
+        hint: 'Exactly what Claude Code clients see',
+        empty: 'None',
+        add: 'Add',
+        shellIDPlaceholder: 'claude-mythos-1',
+        displayNamePlaceholder: 'Display name',
+        realModelPlaceholder: 'Real model',
+        rowError: 'Row {index}: {reason}',
+        columns: {
+          shellID: 'Shell ID',
+          displayName: 'Display name',
+          realModel: 'Real model',
+          supports1M: '1M',
+          remove: 'Delete'
+        },
+        errors: {
+          shellRequired: 'Shell ID is required',
+          shellFormat: 'Shell ID must look like claude-mythos-1 (families: sonnet / opus / haiku / fable / mythos)',
+          shellDuplicate: 'Shell ID is duplicated in this group',
+          shellReserved: 'Shell ID collides with a real Claude model name',
+          shellTakenByRealModel: 'Shell ID collides with an existing real model ID (allowlist entry or legacy display-name key)',
+          displayNameRequired: 'Display name is required',
+          realModelRequired: 'Real model is required',
+          realModelWildcard: 'Real model must be a concrete model id — the * wildcard is not allowed',
+          realModelNotAllowed: 'Real model is outside this group allowlist'
         }
       },
       codexModelsManifest: {

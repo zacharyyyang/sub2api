@@ -676,9 +676,22 @@ export interface AdminGroup extends Group {
   sort_order: number
 }
 
+// 分组模型目录的一条（新机制）：客户端看到的壳 ID + 显示名 + 真实模型 + 1M 开关。
+// 与旧 display_names（按真实模型 id 的显示名）并存，两个客户端各吃一份。
+export interface ModelCatalogEntry {
+  shell_id: string
+  display_name: string
+  real_model: string
+  supports_1m?: boolean
+}
+
 export interface ModelAllowlist {
   enabled: boolean
   models: string[]
+  // 显示名映射：模型 id 原文 → 客户端模型选择器里展示的名字。
+  display_names?: Record<string, string>
+  // 模型目录：Claude Code 客户端看到的壳 ID 清单；为空时输出与旧机制逐字相同。
+  catalog?: ModelCatalogEntry[]
 }
 
 // 固定账号获取 Codex Model Manifest 配置（仅 openai 分组）

@@ -1156,12 +1156,49 @@ export default {
         selectAll: '全选',
         invertSelection: '反选',
         wildcardTag: '通配',
+        displayNameLabel: '显示名',
+        displayNamePlaceholder: '显示名（可选）',
+        displayNameHint: '客户端模型选择器里展示的名字',
+        displayNameTableTitle: '旧显示名（按真实模型 ID）',
+        displayNameSectionHint: '非 Claude Code 客户端使用',
+        addDisplayName: '添加显示名',
+        displayNameModelIdPlaceholder: '模型 ID',
+        displayNameEmpty: '暂无',
+        convertToCatalog: '转为目录行',
         customPlaceholder: '自定义条目，如 gpt-*-codex 或 claude-*',
         addCustom: '添加',
         emptySelectionError: '模型白名单已开启，请至少选择或添加一个模型条目',
         errors: {
           empty: '请输入模型条目',
           duplicate: '该条目已存在'
+        }
+      },
+      modelCatalog: {
+        title: '模型目录',
+        hint: 'Claude Code 客户端看到的就是这张清单',
+        empty: '暂无',
+        add: '添加',
+        shellIDPlaceholder: 'claude-mythos-1',
+        displayNamePlaceholder: '显示名',
+        realModelPlaceholder: '真实模型',
+        rowError: '第 {index} 行：{reason}',
+        columns: {
+          shellID: '壳 ID',
+          displayName: '显示名',
+          realModel: '真实模型',
+          supports1M: '1M',
+          remove: '删除'
+        },
+        errors: {
+          shellRequired: '壳 ID 不能为空',
+          shellFormat: '壳 ID 需形如 claude-mythos-1（家族限 sonnet / opus / haiku / fable / mythos）',
+          shellDuplicate: '壳 ID 在本组重复',
+          shellReserved: '壳 ID 与真 Claude 模型名重名',
+          shellTakenByRealModel: '壳 ID 与存量真实模型 ID（白名单条目或旧显示名键）重名',
+          displayNameRequired: '显示名不能为空',
+          realModelRequired: '真实模型不能为空',
+          realModelWildcard: '真实模型必须是具体模型 id，不能含通配 *',
+          realModelNotAllowed: '真实模型不在本组白名单内'
         }
       },
       codexModelsManifest: {

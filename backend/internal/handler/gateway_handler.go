@@ -1152,10 +1152,13 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 
 	var groupID *int64
 	var platform string
+	// 显示名配置随分组一起下发：两级出口（writeModelsList / 默认列表循环）都按它替换 display_name。
+	var modelAllowlist service.GroupModelAllowlist
 
 	if apiKey != nil && apiKey.Group != nil {
 		groupID = &apiKey.Group.ID
 		platform = apiKey.Group.Platform
+		modelAllowlist = apiKey.Group.ModelAllowlist
 	}
 	if forcedPlatform, ok := middleware2.GetForcePlatformFromContext(c); ok && strings.TrimSpace(forcedPlatform) != "" {
 		platform = forcedPlatform
@@ -1177,15 +1180,15 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 			// 白名单）膨胀进输出，与专用分支出口再求交同构（:1197）：WB 键不再过
 			// 消费端过滤，以已钉死原文直通并入——变体条目原文永不进列表。
 			filtered := apiKey.Group.ModelAllowlist.FilterForListing(availableModels)
-			writeAllowlistedModelsList(c, service.PlatformComposite, append(filtered, wbKeys...))
+			writeAllowlistedModelsList(c, service.PlatformComposite, append(filtered, wbKeys...), modelAllowlist)
 			return
 		}
 		availableModels = append(availableModels, wbKeys...)
 		if len(availableModels) > 0 {
-			writeModelsList(c, service.PlatformComposite, availableModels)
+			writeModelsList(c, service.PlatformComposite, availableModels, modelAllowlist)
 			return
 		}
-		writeModelsList(c, service.PlatformComposite, defaultModelIDsForPlatform(service.PlatformComposite))
+		writeModelsList(c, service.PlatformComposite, defaultModelIDsForPlatform(service.PlatformComposite), modelAllowlist)
 		return
 	}
 
@@ -1215,7 +1218,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		if platform == service.PlatformMimo {
 			filtered = mimoIntersectWhitelist(filtered)
 		}
-		writeAllowlistedModelsList(c, platform, filtered)
+		writeAllowlistedModelsList(c, platform, filtered, modelAllowlist)
 		return
 	}
 
@@ -1229,7 +1232,7 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		if platform == service.PlatformMimo {
 			availableModels = mimoIntersectWhitelist(availableModels)
 		}
-		writeModelsList(c, platform, availableModels)
+		writeModelsList(c, platform, availableModels, modelAllowlist)
 		return
 	}
 
@@ -1248,12 +1251,17 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 	}
 
 	if platform == service.PlatformGemini {
-		models := slices.Clone(geminicli.DefaultModels)
-		for i := range models {
-			id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(models[i].ID, models[i].DisplayName, "claude", isCCClient)
-			models[i].ID = id
-			models[i].DisplayName = displayName
-			models[i].ContextWindow = contextWindow
+		defaults := slices.Clone(geminicli.DefaultModels)
+		// 目录行优先发布（KDR-3）：覆盖到的默认条目换成目录值，其余照旧套壳 / 标 1M。
+		catalogModels, catalogCovered := service.CatalogDiscoveryEntries(modelAllowlist, service.GeminiCLIDefaultModelIDs(), isCCClient)
+		models := make([]claude.Model, 0, len(defaults)+len(catalogModels))
+		models = append(models, catalogModels...)
+		for i := range defaults {
+			if _, covered := catalogCovered[defaults[i].ID]; covered {
+				continue
+			}
+			id, outDisplayName, contextWindow := service.FormatModelForDiscoveryWithClient(defaults[i].ID, service.DefaultDiscoveryDisplayName(modelAllowlist, defaults[i].ID, defaults[i].DisplayName), "claude", isCCClient)
+			models = append(models, claude.Model{ID: id, Type: defaults[i].Type, DisplayName: outDisplayName, CreatedAt: defaults[i].CreatedAt, ContextWindow: contextWindow})
 		}
 		writeModelsListResponse(c, models)
 		return
@@ -1263,31 +1271,39 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		return
 	}
 	if platform == service.PlatformTypeSafe {
-		writeModelsList(c, platform, []string{typesafe.JevLatestModel})
+		writeModelsList(c, platform, []string{typesafe.JevLatestModel}, modelAllowlist)
 		return
 	}
 
 	if platform == service.PlatformWB {
-		writeModelsList(c, service.PlatformWB, slices.Clone(domain.WbModelWhitelist))
+		writeModelsList(c, service.PlatformWB, slices.Clone(domain.WbModelWhitelist), modelAllowlist)
 		return
 	}
 	if platform == service.PlatformQoder {
-		writeModelsList(c, service.PlatformQoder, slices.Clone(domain.QoderModelWhitelist))
+		writeModelsList(c, service.PlatformQoder, slices.Clone(domain.QoderModelWhitelist), modelAllowlist)
 		return
 	}
 	if platform == service.PlatformMimo {
-		writeModelsList(c, service.PlatformMimo, slices.Clone(domain.MimoModelWhitelist))
+		writeModelsList(c, service.PlatformMimo, slices.Clone(domain.MimoModelWhitelist), modelAllowlist)
 		return
 	}
 
 	defaults := slices.Clone(claude.DefaultModels)
+	// 目录行优先发布（KDR-3）：覆盖到的默认条目换成目录值，其余照旧套壳 / 标 1M。
+	catalogModels, catalogCovered := service.CatalogDiscoveryEntries(modelAllowlist, claude.DefaultModelIDs(), isCCClient)
+	models := make([]claude.Model, 0, len(defaults)+len(catalogModels))
+	models = append(models, catalogModels...)
 	for i := range defaults {
-		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(defaults[i].ID, defaults[i].DisplayName, "claude", isCCClient)
+		if _, covered := catalogCovered[defaults[i].ID]; covered {
+			continue
+		}
+		id, outDisplayName, contextWindow := service.FormatModelForDiscoveryWithClient(defaults[i].ID, service.DefaultDiscoveryDisplayName(modelAllowlist, defaults[i].ID, defaults[i].DisplayName), "claude", isCCClient)
 		defaults[i].ID = id
-		defaults[i].DisplayName = displayName
+		defaults[i].DisplayName = outDisplayName
 		defaults[i].ContextWindow = contextWindow
+		models = append(models, defaults[i])
 	}
-	writeModelsListResponse(c, defaults)
+	writeModelsListResponse(c, models)
 }
 
 // CodexModels returns the effective group model list using the manifest shape
@@ -1550,7 +1566,7 @@ func (h *GatewayHandler) compositeAvailableModels(ctx context.Context, groupID *
 	return models, wbKeys
 }
 
-func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
+func writeModelsList(c *gin.Context, platform string, modelIDs []string, allowlist service.GroupModelAllowlist) {
 	if platform == service.PlatformOpenAI {
 		writeOpenAIModelsList(c, modelIDs)
 		return
@@ -1560,13 +1576,25 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 		return
 	}
 	isCCClient := service.IsClaudeCodeDiscoveryClient(c.Request)
-	models := make([]claude.Model, 0, len(modelIDs))
+	// 目录命中即按目录发布、不再自动包装（KDR-3）；未命中的模型照旧走下面的原逻辑。
+	catalogModels, catalogCovered := service.CatalogDiscoveryEntries(allowlist, modelIDs, isCCClient)
+	models := make([]claude.Model, 0, len(modelIDs)+len(catalogModels))
+	models = append(models, catalogModels...)
 	for _, modelID := range modelIDs {
-		id, displayName, contextWindow := service.FormatModelForDiscoveryWithClient(modelID, modelID, "claude", isCCClient)
+		if _, covered := catalogCovered[modelID]; covered {
+			continue
+		}
+		// 显示名按模型 id 原文查找（KDR-6）；未配置时显示名仍是原推导值 modelID，
+		// 保证未配置分组的输出与改动前逐字相同（AC-2 / AC-5）。
+		displayName := modelID
+		if configured, ok := allowlist.DisplayNameFor(modelID); ok {
+			displayName = configured
+		}
+		id, outDisplayName, contextWindow := service.FormatModelForDiscoveryWithClient(modelID, displayName, "claude", isCCClient)
 		models = append(models, claude.Model{
 			ID:            id,
 			Type:          "model",
-			DisplayName:   displayName,
+			DisplayName:   outDisplayName,
 			CreatedAt:     "2024-01-01T00:00:00Z",
 			ContextWindow: contextWindow,
 		})
@@ -1574,12 +1602,12 @@ func writeModelsList(c *gin.Context, platform string, modelIDs []string) {
 	writeModelsListResponse(c, models)
 }
 
-func writeAllowlistedModelsList(c *gin.Context, platform string, modelIDs []string) {
+func writeAllowlistedModelsList(c *gin.Context, platform string, modelIDs []string, allowlist service.GroupModelAllowlist) {
 	if platform == service.PlatformOpenAI {
 		writeOpenAIModelsList(c, modelIDs)
 		return
 	}
-	writeModelsList(c, platform, modelIDs)
+	writeModelsList(c, platform, modelIDs, allowlist)
 }
 
 type grokReasoningEffortOption struct {

@@ -781,9 +781,9 @@
             <Toggle v-model="createModelAllowlistState.enabled" />
           </div>
           <div
-            v-if="createModelAllowlistState.enabled"
             class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50/50 dark:border-dark-600 dark:bg-dark-800/40"
           >
+            <template v-if="createModelAllowlistState.enabled">
             <div
               v-if="!createModelAllowlistLoading && createModelAllowlistState.items.length > 0"
               class="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-dark-600 dark:bg-dark-800"
@@ -831,9 +831,10 @@
                 class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
               >
                 <input
-                  v-model="item.selected"
+                  :checked="item.selected"
                   type="checkbox"
                   class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  @change="toggleModelAllowlistItem(createModelAllowlistState, item.id)"
                 />
                 <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
                   {{ item.id }}
@@ -885,6 +886,83 @@
               >
                 {{ t(createAllowlistCustomErrorKey) }}
               </p>
+            </div>
+            </template>
+            <GroupModelCatalogTable v-model:rows="createCatalog.rows" :source="createCatalog.source" />
+            <div
+              class="border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
+            >
+              {{ t("admin.groups.modelAllowlist.displayNameTableTitle") }}
+              <span class="ml-1 font-normal text-gray-400 dark:text-gray-500">
+                {{ t("admin.groups.modelAllowlist.displayNameSectionHint") }}
+              </span>
+            </div>
+            <div class="max-h-64 space-y-2 overflow-y-auto p-2">
+              <p
+                v-if="createDisplayNameRows.length === 0"
+                class="text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t("admin.groups.modelAllowlist.displayNameEmpty") }}
+              </p>
+              <div
+                v-for="row in createDisplayNameRows"
+                :key="row.id"
+                class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+              >
+                <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
+                  {{ row.id }}
+                </span>
+                <input
+                  :value="row.displayName"
+                  type="text"
+                  :aria-label="t('admin.groups.modelAllowlist.displayNameLabel')"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNamePlaceholder')"
+                  :title="t('admin.groups.modelAllowlist.displayNameHint')"
+                  class="w-44 shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @input="handleCreateDisplayNameInput(row.id, $event)"
+                  @change="handleCreateDisplayNameChange(row.id, $event)"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 rounded px-2 py-1 text-xs font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                  @click="createCatalog.convert(row.id, row.displayName)"
+                >
+                  {{ t("admin.groups.modelAllowlist.convertToCatalog") }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="removeCreateModelAllowlistDisplayName(row.id)"
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </div>
+            </div>
+            <div class="border-t border-gray-200 px-3 py-2 dark:border-dark-600">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="createDisplayNameEntryID"
+                  type="text"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNameModelIdPlaceholder')"
+                  class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitCreateDisplayNameEntry"
+                />
+                <input
+                  v-model="createDisplayNameEntryName"
+                  type="text"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNamePlaceholder')"
+                  class="w-44 shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitCreateDisplayNameEntry"
+                />
+                <button
+                  type="button"
+                  :disabled="!createDisplayNameEntryID.trim() || !createDisplayNameEntryName.trim()"
+                  class="rounded bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="submitCreateDisplayNameEntry"
+                >
+                  {{ t("admin.groups.modelAllowlist.addDisplayName") }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2097,7 +2175,7 @@
           <button
             type="submit"
             form="create-group-form"
-            :disabled="submitting"
+            :disabled="submitting || createCatalog.invalid"
             class="btn btn-primary"
             data-tour="group-form-submit"
           >
@@ -2435,9 +2513,9 @@
             <Toggle v-model="editModelAllowlistState.enabled" />
           </div>
           <div
-            v-if="editModelAllowlistState.enabled"
             class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50/50 dark:border-dark-600 dark:bg-dark-800/40"
           >
+            <template v-if="editModelAllowlistState.enabled">
             <div
               v-if="!editModelAllowlistLoading && editModelAllowlistState.items.length > 0"
               class="flex items-center justify-between gap-2 border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-dark-600 dark:bg-dark-800"
@@ -2485,9 +2563,10 @@
                 class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
               >
                 <input
-                  v-model="item.selected"
+                  :checked="item.selected"
                   type="checkbox"
                   class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                  @change="toggleModelAllowlistItem(editModelAllowlistState, item.id)"
                 />
                 <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
                   {{ item.id }}
@@ -2539,6 +2618,83 @@
               >
                 {{ t(editAllowlistCustomErrorKey) }}
               </p>
+            </div>
+            </template>
+            <GroupModelCatalogTable v-model:rows="editCatalog.rows" :source="editCatalog.source" />
+            <div
+              class="border-b border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600 dark:border-dark-600 dark:bg-dark-800 dark:text-gray-300"
+            >
+              {{ t("admin.groups.modelAllowlist.displayNameTableTitle") }}
+              <span class="ml-1 font-normal text-gray-400 dark:text-gray-500">
+                {{ t("admin.groups.modelAllowlist.displayNameSectionHint") }}
+              </span>
+            </div>
+            <div class="max-h-64 space-y-2 overflow-y-auto p-2">
+              <p
+                v-if="editDisplayNameRows.length === 0"
+                class="text-xs text-gray-500 dark:text-gray-400"
+              >
+                {{ t("admin.groups.modelAllowlist.displayNameEmpty") }}
+              </p>
+              <div
+                v-for="row in editDisplayNameRows"
+                :key="row.id"
+                class="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+              >
+                <span class="min-w-0 flex-1 break-all text-sm text-gray-700 dark:text-gray-300">
+                  {{ row.id }}
+                </span>
+                <input
+                  :value="row.displayName"
+                  type="text"
+                  :aria-label="t('admin.groups.modelAllowlist.displayNameLabel')"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNamePlaceholder')"
+                  :title="t('admin.groups.modelAllowlist.displayNameHint')"
+                  class="w-44 shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @input="handleEditDisplayNameInput(row.id, $event)"
+                  @change="handleEditDisplayNameChange(row.id, $event)"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 rounded px-2 py-1 text-xs font-medium text-primary-600 transition-colors hover:bg-primary-50 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                  @click="editCatalog.convert(row.id, row.displayName)"
+                >
+                  {{ t("admin.groups.modelAllowlist.convertToCatalog") }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-dark-600 dark:hover:text-gray-200"
+                  @click="removeEditModelAllowlistDisplayName(row.id)"
+                >
+                  <Icon name="trash" size="sm" />
+                </button>
+              </div>
+            </div>
+            <div class="border-t border-gray-200 px-3 py-2 dark:border-dark-600">
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="editDisplayNameEntryID"
+                  type="text"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNameModelIdPlaceholder')"
+                  class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitEditDisplayNameEntry"
+                />
+                <input
+                  v-model="editDisplayNameEntryName"
+                  type="text"
+                  :placeholder="t('admin.groups.modelAllowlist.displayNamePlaceholder')"
+                  class="w-44 shrink-0 rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 focus:border-primary-500 focus:outline-none dark:border-dark-500 dark:bg-dark-700 dark:text-gray-200"
+                  @keydown.enter.prevent="submitEditDisplayNameEntry"
+                />
+                <button
+                  type="button"
+                  :disabled="!editDisplayNameEntryID.trim() || !editDisplayNameEntryName.trim()"
+                  class="rounded bg-primary-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  @click="submitEditDisplayNameEntry"
+                >
+                  {{ t("admin.groups.modelAllowlist.addDisplayName") }}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -3760,7 +3916,7 @@
           <button
             type="submit"
             form="edit-group-form"
-            :disabled="submitting"
+            :disabled="submitting || editCatalog.invalid"
             class="btn btn-primary"
             data-tour="group-form-submit"
           >
@@ -4365,15 +4521,22 @@ import {
   supportsGroupOpenAIFast,
 } from "./groupsOpenAIFast";
 import {
+  applyModelAllowlistConfig,
   addCustomModelAllowlistItem,
   buildModelAllowlistConfig,
   createModelAllowlistState as createInitialModelAllowlistState,
+  displayNameTableRows,
   invertModelAllowlistSelection,
   moveModelAllowlistItem,
+  removeModelAllowlistDisplayName,
   selectAllModelAllowlistItems,
   setModelAllowlistCandidates,
+  setModelAllowlistDisplayName,
+  toggleModelAllowlistItem,
 } from "./groupModelAllowlist";
+import { createGroupModelCatalogSession } from "./groupModelCatalog";
 import { createModelAllowlistCandidatesTracker } from "./modelAllowlistCandidates";
+import GroupModelCatalogTable from "@/components/admin/group/GroupModelCatalogTable.vue";
 import { normalizeSupportedModelScopesForPlatform } from "./groupsSupportedModelScopes";
 import {
   isProfitControlPlatform,
@@ -4913,6 +5076,10 @@ const createModelAllowlistState = reactive(createInitialModelAllowlistState());
 const editModelAllowlistState = reactive(createInitialModelAllowlistState());
 const createModelAllowlistLoading = ref(false);
 const editModelAllowlistLoading = ref(false);
+// 模型目录（壳 ID + 显示名 + 真实模型）：每个抽屉一份会话，行集 / 候选 / 校验 / 提交
+// 的编排全在 groupModelCatalog.ts，视图只保留绑定与生命周期调用。
+const createCatalog = createGroupModelCatalogSession(createModelAllowlistState);
+const editCatalog = createGroupModelCatalogSession(editModelAllowlistState);
 type ReasoningEffortPolicyFieldsExpose = {
   validate: () => boolean;
   resetValidation: () => void;
@@ -4967,6 +5134,86 @@ const submitEditAllowlistCustomEntry = () => {
   } else {
     editAllowlistCustomErrorKey.value = `admin.groups.modelAllowlist.errors.${error}`;
   }
+};
+
+// 显示名表与白名单开关无关：两种状态下都用同一张表编辑（开关只管勾选列表那一半）；
+// 表与保存提交读同一份 draftDisplayNames，切换开关无需搬运值。
+const createDisplayNameRows = computed(() =>
+  displayNameTableRows(createModelAllowlistState),
+);
+const editDisplayNameRows = computed(() =>
+  displayNameTableRows(editModelAllowlistState),
+);
+const createDisplayNameEntryID = ref("");
+const createDisplayNameEntryName = ref("");
+const editDisplayNameEntryID = ref("");
+const editDisplayNameEntryName = ref("");
+
+const readDisplayNameInputValue = (event: Event): string =>
+  (event.target as HTMLInputElement).value;
+
+const handleCreateDisplayNameInput = (modelID: string, event: Event) => {
+  const value = readDisplayNameInputValue(event);
+  if (value.trim()) {
+    setModelAllowlistDisplayName(createModelAllowlistState, modelID, value);
+  }
+};
+// 清空输入框 = 显式删除：在提交（change）时删键，避免输入途中删掉行、输入框被卸载。
+const handleCreateDisplayNameChange = (modelID: string, event: Event) => {
+  if (!readDisplayNameInputValue(event).trim()) {
+    removeModelAllowlistDisplayName(createModelAllowlistState, modelID);
+  }
+};
+const handleEditDisplayNameInput = (modelID: string, event: Event) => {
+  const value = readDisplayNameInputValue(event);
+  if (value.trim()) {
+    setModelAllowlistDisplayName(editModelAllowlistState, modelID, value);
+  }
+};
+const handleEditDisplayNameChange = (modelID: string, event: Event) => {
+  if (!readDisplayNameInputValue(event).trim()) {
+    removeModelAllowlistDisplayName(editModelAllowlistState, modelID);
+  }
+};
+
+const submitCreateDisplayNameEntry = () => {
+  const modelID = createDisplayNameEntryID.value.trim();
+  if (!modelID) {
+    return;
+  }
+  // 名字为空不写入也不清空：保留用户输入的模型 id，让他补完名字（不静默删掉同名旧值）。
+  if (!createDisplayNameEntryName.value.trim()) {
+    return;
+  }
+  setModelAllowlistDisplayName(
+    createModelAllowlistState,
+    modelID,
+    createDisplayNameEntryName.value,
+  );
+  createDisplayNameEntryID.value = "";
+  createDisplayNameEntryName.value = "";
+};
+const submitEditDisplayNameEntry = () => {
+  const modelID = editDisplayNameEntryID.value.trim();
+  if (!modelID) {
+    return;
+  }
+  if (!editDisplayNameEntryName.value.trim()) {
+    return;
+  }
+  setModelAllowlistDisplayName(
+    editModelAllowlistState,
+    modelID,
+    editDisplayNameEntryName.value,
+  );
+  editDisplayNameEntryID.value = "";
+  editDisplayNameEntryName.value = "";
+};
+const removeCreateModelAllowlistDisplayName = (modelID: string) => {
+  removeModelAllowlistDisplayName(createModelAllowlistState, modelID);
+};
+const removeEditModelAllowlistDisplayName = (modelID: string) => {
+  removeModelAllowlistDisplayName(editModelAllowlistState, modelID);
 };
 
 const createForm = reactive({
@@ -5246,10 +5493,13 @@ const resetModelAllowlistState = (
   state: typeof createModelAllowlistState,
   config?: Parameters<typeof createInitialModelAllowlistState>[0],
 ) => {
-  const fresh = createInitialModelAllowlistState(config);
-  state.enabled = fresh.enabled;
-  state.savedModels = fresh.savedModels;
-  state.items = fresh.items;
+  // 整体替换：逐字段拷贝会在状态新增字段时漏拷（载入的显示名就是这样丢的）。
+  applyModelAllowlistConfig(state, config);
+  // 「添加显示名」是会话级输入：状态重置时一并清空，避免串到另一个分组。
+  createDisplayNameEntryID.value = "";
+  createDisplayNameEntryName.value = "";
+  editDisplayNameEntryID.value = "";
+  editDisplayNameEntryName.value = "";
 };
 
 const loadModelAllowlistCandidates = async (
@@ -5262,6 +5512,9 @@ const loadModelAllowlistCandidates = async (
   const requestID = modelAllowlistCandidatesTracker.next(request);
   const state = mode === "create" ? createModelAllowlistState : editModelAllowlistState;
   const loadingRef = mode === "create" ? createModelAllowlistLoading : editModelAllowlistLoading;
+  const catalog = mode === "create" ? createCatalog : editCatalog;
+  // 先清空：切换平台或分组后不得留上一份候选（失败也只留空，不展示跨会话提示）。
+  catalog.setCandidates([]);
   loadingRef.value = true;
   try {
     const models = await adminAPI.groups.getModelAllowlistCandidates(groupID, platform);
@@ -5269,6 +5522,7 @@ const loadModelAllowlistCandidates = async (
       return;
     }
     setModelAllowlistCandidates(state, models);
+    catalog.setCandidates(models);
   } catch (error) {
     if (!modelAllowlistCandidatesTracker.isCurrent(requestID, request)) {
       return;
@@ -5870,8 +6124,9 @@ const closeCreateModal = () => {
   createForm.max_reasoning_effort_over_limit = reasoningEffortOverLimitDowngrade;
   createForm.reasoning_effort_mappings = [];
   createReasoningEffortPolicyRef.value?.resetValidation();
-  resetModelAllowlistState(createModelAllowlistState);
-  createModelRoutingRules.value = [];
+   resetModelAllowlistState(createModelAllowlistState);
+   createCatalog.load();
+   createModelRoutingRules.value = [];
 };
 
 const normalizeOptionalLimit = (
@@ -5990,7 +6245,10 @@ const handleCreateGroup = async () => {
       model_routing: convertRoutingRulesToApiFormat(
         createModelRoutingRules.value,
       ),
-      model_allowlist: buildModelAllowlistConfig(createModelAllowlistState),
+      model_allowlist: {
+        ...buildModelAllowlistConfig(createModelAllowlistState),
+        ...createCatalog.allowlistPatch(),
+      },
       // 创建时固定账号 manifest 固定发送关闭状态（后端创建路径禁止开启）
       codex_models_manifest_config: createCodexManifestDefaults(),
       supported_model_scopes: normalizeSupportedModelScopesForPlatform(
@@ -6192,7 +6450,8 @@ const handleEdit = async (group: AdminGroup) => {
     group.reasoning_effort_mappings,
     group.platform,
   );
-  resetModelAllowlistState(editModelAllowlistState, group.model_allowlist);
+   resetModelAllowlistState(editModelAllowlistState, group.model_allowlist);
+   editCatalog.load(group.model_allowlist?.catalog);
   // 固定账号 manifest 配置：回显配置并异步解析已存账号名称（失败显示 #<id>）
   const savedCodexManifestConfig =
     group.codex_models_manifest_config ?? createCodexManifestDefaults();
@@ -6260,8 +6519,9 @@ const closeEditModal = () => {
   editForm.audio_stt_price_per_hour = null;
   resetMessagesDispatchFormState(editForm);
   editForm.allow_live = false;
-  resetModelAllowlistState(editModelAllowlistState);
-  editCodexManifestConfig.value = createCodexManifestDefaults();
+   resetModelAllowlistState(editModelAllowlistState);
+   editCatalog.load();
+   editCodexManifestConfig.value = createCodexManifestDefaults();
   editCodexManifestAccountNames.value = {};
   editCodexManifestRef.value?.resetValidation?.();
 };
@@ -6340,7 +6600,10 @@ const handleUpdateGroup = async () => {
       model_routing: convertRoutingRulesToApiFormat(
         editModelRoutingRules.value,
       ),
-      model_allowlist: buildModelAllowlistConfig(editModelAllowlistState),
+      model_allowlist: {
+        ...buildModelAllowlistConfig(editModelAllowlistState),
+        ...editCatalog.allowlistPatch(),
+      },
       // 非 openai 平台提交关闭状态，与后端归一化一致
       codex_models_manifest_config:
         editForm.platform === "openai"
@@ -6774,6 +7037,7 @@ watch(
     createForm.allow_image_generation = defaultAllowImageGenerationForPlatform(newVal);
     resetDisabledBatchImagePricing(createForm);
     resetModelAllowlistState(createModelAllowlistState);
+    createCatalog.load();
     loadModelAllowlistCandidates("create", 0, newVal);
   },
 );
@@ -6832,6 +7096,11 @@ watch(
     resetDisabledBatchImagePricing(editForm);
     if (editingGroup.value) {
       resetModelAllowlistState(editModelAllowlistState, editForm.platform === editingGroup.value.platform ? editingGroup.value.model_allowlist : undefined);
+      editCatalog.load(
+        editForm.platform === editingGroup.value.platform
+          ? editingGroup.value.model_allowlist?.catalog
+          : undefined,
+      );
       loadModelAllowlistCandidates("edit", editingGroup.value.id, newVal);
     }
   },

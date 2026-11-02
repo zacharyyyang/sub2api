@@ -14,51 +14,106 @@ import (
 type GroupModelAllowlist struct {
 	Enabled bool     `json:"enabled"`
 	Models  []string `json:"models,omitempty"`
+	// DisplayNames 是「模型 id 原文 → 展示文本」的显式映射：只影响 Claude 形状模型
+	// 列表的 display_name，与 Enabled / Models 相互独立（KDR-2）。
+	DisplayNames map[string]string `json:"display_names,omitempty"`
+	// Catalog 是分组模型目录：客户端可见的壳 id → 真实模型。归一化规则与出口 / 入站
+	// 判定全在 group_model_catalog.go，本文件只承载字段与逐字段拷贝。
+	Catalog []GroupModelCatalogEntry `json:"catalog,omitempty"`
 }
 
 // DomainGroupModelAllowlist 把 service 白名单转换为 ent 持久化使用的 domain 类型。
+// 逐字段拷贝——漏一个字段就是「配置写进库、网关侧恒为空」。
 func DomainGroupModelAllowlist(cfg GroupModelAllowlist) domain.GroupModelAllowlist {
-	return domain.GroupModelAllowlist{Enabled: cfg.Enabled, Models: cfg.Models}
+	return domain.GroupModelAllowlist{
+		Enabled:      cfg.Enabled,
+		Models:       cfg.Models,
+		DisplayNames: cfg.DisplayNames,
+		Catalog:      domainGroupModelCatalog(cfg.Catalog),
+	}
 }
 
 // GroupModelAllowlistFromDomain 把 ent 读出的 domain 白名单转换为 service 类型。
+// 该函数逐字段拷贝，新增字段必须同步，否则配置写进库却在网关侧永远是空。
 func GroupModelAllowlistFromDomain(cfg domain.GroupModelAllowlist) GroupModelAllowlist {
-	return GroupModelAllowlist{Enabled: cfg.Enabled, Models: cfg.Models}
+	return GroupModelAllowlist{
+		Enabled:      cfg.Enabled,
+		Models:       cfg.Models,
+		DisplayNames: cfg.DisplayNames,
+		Catalog:      groupModelCatalogFromDomain(cfg.Catalog),
+	}
+}
+
+// DisplayNameFor 返回模型 id 原文对应的显示名配置，第二返回值报告是否命中。
+// 精确匹配，不支持通配（KDR-3）：键是模型 id 原文，壳 id / [1m] 后缀不是键。
+func (a GroupModelAllowlist) DisplayNameFor(modelID string) (string, bool) {
+	if len(a.DisplayNames) == 0 {
+		return "", false
+	}
+	name, ok := a.DisplayNames[modelID]
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // normalizeGroupModelAllowlist 归一化管理端提交的分组模型白名单：
 // 条目 TrimSpace、按小写去重保序；`*` 可出现在任意位置；
 // enabled=true 且列表为空视为配置错误，返回 400 而不是运行时静默放行/拒绝。
+// 显示名映射与目录按各自规则归一化，不随 Enabled / Models 清空；
+// 目录的判定全部在 group_model_catalog.go，本函数只做薄调用。
 func normalizeGroupModelAllowlist(cfg GroupModelAllowlist) (GroupModelAllowlist, error) {
-	out := GroupModelAllowlist{Enabled: cfg.Enabled}
-	if len(cfg.Models) == 0 {
-		if out.Enabled {
-			return out, infraerrors.New(http.StatusBadRequest, "INVALID_MODEL_ALLOWLIST", "model allowlist cannot be enabled with an empty model list")
+	out := GroupModelAllowlist{Enabled: cfg.Enabled, DisplayNames: normalizeGroupModelDisplayNames(cfg.DisplayNames)}
+	if len(cfg.Models) > 0 {
+		seen := make(map[string]struct{}, len(cfg.Models))
+		out.Models = make([]string, 0, len(cfg.Models))
+		for _, model := range cfg.Models {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			key := strings.ToLower(model)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out.Models = append(out.Models, model)
 		}
-		return out, nil
+		if len(out.Models) == 0 {
+			out.Models = nil
+		}
 	}
-
-	seen := make(map[string]struct{}, len(cfg.Models))
-	out.Models = make([]string, 0, len(cfg.Models))
-	for _, model := range cfg.Models {
-		model = strings.TrimSpace(model)
-		if model == "" {
-			continue
-		}
-		key := strings.ToLower(model)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out.Models = append(out.Models, model)
+	if out.Enabled && len(out.Models) == 0 {
+		return GroupModelAllowlist{}, infraerrors.New(http.StatusBadRequest, "INVALID_MODEL_ALLOWLIST", "model allowlist cannot be enabled with an empty model list")
 	}
-	if len(out.Models) == 0 {
-		if out.Enabled {
-			return out, infraerrors.New(http.StatusBadRequest, "INVALID_MODEL_ALLOWLIST", "model allowlist cannot be enabled with an empty model list")
-		}
-		out.Models = nil
+	catalog, err := normalizeGroupModelCatalog(out, cfg.Catalog)
+	if err != nil {
+		return GroupModelAllowlist{}, err
 	}
+	out.Catalog = catalog
 	return out, nil
+}
+
+// normalizeGroupModelDisplayNames 归一化管理端提交的显示名映射：键与值都 TrimSpace，
+// 键为空或值为空 ⇒ 丢弃该键。不做通配展开、不校验键是否属于 Models——
+// 显示名与白名单条目相互独立，空串与非配置在存储中不可区分，落库即脏数据。
+func normalizeGroupModelDisplayNames(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ModelAllowlistEnabled 报告该分组是否启用了模型白名单。
