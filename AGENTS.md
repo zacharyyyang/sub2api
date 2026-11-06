@@ -50,6 +50,11 @@ pnpm test:run src/.../x.spec.ts  # 只跑相关用例，别默认全量
 **Go 版本写死在 `backend/go.mod`（当前 `1.27.3`），CI 三个 workflow 都硬断言
 `go version | grep -q 'go1.27.3'`。** 不要顺手升级 Go、也不要改这条断言，除非工单明确要求。
 
+**注意：本仓库的 GitHub Actions 目前被 GitHub 禁用**（手动触发返回 422
+`Actions has been disabled for this repository`），PR 上不会出现任何 check。
+本地验证结果就是唯一证据：不要等 CI，不要因为“没有 CI”跳过验证，也不要把红叉当借口
+越改越大。个别单元测试在 macOS 上有长期失败（前后端各跑一次对比即可，见 §6）。
+
 ## 3. 目录速览
 
 ```
@@ -105,7 +110,9 @@ deploy/                # 部署脚本与 Docker/Compose 配置（上游文件）
 
 ## 6. PR 前自检
 
-- [ ] `cd backend && go build ./... && go test -tags=unit ./...` 通过
+- [ ] `cd backend && go build ./...` 通过
+- [ ] `cd backend && go test -tags=unit ./...`：本仓库没有 CI（Actions 已禁用），所以
+      改动前后各跑一次，确认失败集合没有**新增**；PR 里贴两次结果与差异说明
 - [ ] 改了前端：`pnpm typecheck`、`pnpm lint:check`、相关 `pnpm test:run` 通过
 - [ ] 改了 schema：`go generate ./ent` 生成物已提交，迁移测试通过
 - [ ] 没有提交密钥、本机路径、`node_modules`、构建产物

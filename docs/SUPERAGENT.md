@@ -83,6 +83,7 @@ curl -s -H 'x-orchestrator-request: 1' $api/tickets | jq '.items[] | {id, title,
 | 工单不出现 | 检查 Source 是否 `ready`、Policy 允许名单、是否被暂停；GitHub 侧确认通知里有这条 @ |
 | Ticket 失败于 prepare | 看错误里的 checkout 路径；确认 `/Users/genoptima/src/sub2api` 可 fetch |
 | 推送/开 PR 失败 | `gh-agent api user --jq .login` 应为 `zachyang-11`；确认它是仓库 collaborator |
+| PR 上没有任何 CI check | 本仓库的 GitHub Actions 被 GitHub 禁用（`422 Actions has been disabled`）；以本地验证为准，见 [AGENTS.md](../AGENTS.md) §2 / §6 |
 
 ## 6. 重建步骤（换机或重装时）
 
@@ -105,6 +106,8 @@ Execution 的 prepare 命令（与其它实例同款，只改克隆路径）：
 ```sh
 git -C /Users/genoptima/src/sub2api fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" && git -C /Users/genoptima/src/sub2api worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
 ```
+
+仓库侧的约定见 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 与上游同步
 
@@ -149,5 +152,3 @@ cd backend && go build ./... && go test -tags=unit ./...
 ```sh
 cd frontend && pnpm typecheck
 ```
-
-仓库侧的约定见 [AGENTS.md](../AGENTS.md)。
