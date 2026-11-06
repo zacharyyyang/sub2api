@@ -106,4 +106,48 @@ Execution 的 prepare 命令（与其它实例同款，只改克隆路径）：
 git -C /Users/genoptima/src/sub2api fetch --no-tags "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "${DSH_SUPERAGENT_GITHUB_PR_HEAD:-HEAD}:refs/dsh-superagent/$DSH_SUPERAGENT_TICKET" && git -C /Users/genoptima/src/sub2api worktree add -b "agent/$DSH_SUPERAGENT_NAME" "$DSH_SUPERAGENT_DIR" "refs/dsh-superagent/$DSH_SUPERAGENT_TICKET"
 ```
 
+## 7. 与上游同步
+
+本仓库是 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 的 fork，目标是在不破坏
+与上游合并的前提下叠加自己的东西。文件归属：
+
+| 类型 | 文件 |
+| --- | --- |
+| fork 自有（冲突时保留本仓库版本） | `.github/workflows/fork-image.yml`、`.github/ISSUE_TEMPLATE/`、`AGENTS.md`、`docs/SUPERAGENT.md` |
+| 上游文件 | 其余全部（`backend/`、`frontend/`、`deploy/`、`DEV_GUIDE.md` 等） |
+
+同步步骤（在 `main` 上操作）：
+
+```sh
+# 0) 先确认工作区干净：有未提交的改动就 commit 或 stash
+git status
+git switch main
+
+# 1) 配上游 remote（只需一次）
+git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+
+# 2) 拉取并合并（也可以 rebase，但会改写历史，慎用）
+git fetch upstream
+git merge upstream/main
+
+# 3) 解决冲突：fork 自有文件保留本仓库版本，其余以上游为准；
+#    必须改上游文件时保持最小 diff
+git status
+
+# 4) 推送
+git push origin main
+```
+
+同步后必须重跑的验证（本仓库的 Actions 目前是关的，本地结果就是唯一证据）：
+
+```sh
+cd backend && go build ./... && go test -tags=unit ./...
+```
+
+合并带进了前端改动时，再加：
+
+```sh
+cd frontend && pnpm typecheck
+```
+
 仓库侧的约定见 [AGENTS.md](../AGENTS.md)。
