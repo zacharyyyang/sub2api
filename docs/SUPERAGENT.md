@@ -71,6 +71,33 @@ curl -s -H 'x-orchestrator-request: 1' $api/settings | jq '.sources[0].value.con
 curl -s -H 'x-orchestrator-request: 1' $api/tickets | jq '.items[] | {id, title, state}'
 ```
 
+### 磁盘维护
+
+工单结束后，它的 worktree 和 `agent/*` 本地分支**不会**自动删除（下次重试还要用）。
+每个 worktree 是一份完整检出（约 200 MB），Go 构建缓存另占 2–3 GB。磁盘紧张时按下面清理
+**已交付、PR 已合并**的工单：
+
+```sh
+cd /Users/genoptima/src/sub2api
+git fetch origin --prune
+ls -d ~/.dsh/state/superagent-sub2api/work/*     # 先看清要删哪些
+
+# 1) 删 worktree（--force 会丢弃其中未提交的改动，确认后再跑）
+git worktree list | awk '$1 ~ /\/work\// {print $1}' | while read -r d; do
+  git worktree remove --force "$d"
+done
+
+# 2) 删已合并的本地分支
+git branch --list "agent/*" | sed 's/^[+*] //' | while read -r b; do
+  git merge-base --is-ancestor "$b" origin/main && git branch -D "$b"
+done
+
+git worktree prune
+```
+
+构建缓存单独看：`du -sh ~/Library/Caches/go-build ~/go/pkg/mod`；`go clean -cache` 只清构建
+缓存，不影响源码与 worktree。
+
 ## 5. 排障
 
 日志：`/Users/genoptima/src/dsh-superagent/.artifacts/launchd-sub2api.log`
