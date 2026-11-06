@@ -128,6 +128,8 @@ scripts
 #openspec/
 code-reviews/
 AGENTS.md
+# 本 fork 把 AGENTS.md 作为 dsh-superagent 实例的仓库约定提交（见 docs/SUPERAGENT.md）
+!AGENTS.md
 backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/
@@ -143,6 +145,7 @@ docs/*
 !docs/COMPOSITE_GROUPS.md
 !docs/PLUGIN_DEVELOPMENT.md
 !docs/channel-monitor-v2-safe-defaults.md
+!docs/SUPERAGENT.md
 !docs/codex-credits.md
 !docs/legal/
 !docs/legal/*.md
