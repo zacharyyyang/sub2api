@@ -2410,6 +2410,11 @@ func (s *BillingService) getVideoUnitPrice(model string, resolution string, grou
 
 // getDefaultImagePrice 获取 LiteLLM 默认图片价格
 func (s *BillingService) getDefaultImagePrice(model string, imageSize string) float64 {
+	// MiniMax image-01 按张计费（与像素档位无关），默认价取 MiniMax 官方单价，
+	// 避免落到通用默认价 0.134 造成超收；分组 image_price_* 配置仍然优先。
+	if IsMiniMaxImageModel(model) {
+		return DefaultMiniMaxImagePriceUSD
+	}
 	if price, ok := getDefaultGrokImagineImagePrice(model, imageSize); ok {
 		return price
 	}
