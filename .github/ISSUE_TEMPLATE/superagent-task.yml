@@ -1,0 +1,55 @@
+name: Superagent 工单
+description: 交给 @zachyang-11 处理的任务（自治智能体工单）
+title: "[task] "
+labels: ["superagent"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 这张 Issue 会由 dsh-superagent 实例接手：它先回一句“收到”，再开 `agent/<名字>` 分支干活，
+        > 最后回到这里交付 PR。约定见 [AGENTS.md](https://github.com/zacharyyyang/sub2api/blob/main/AGENTS.md)。
+        >
+        > 只有 @zacharyyyang 的请求会成单；写清楚**不要做什么**比写长需求更有用。
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标
+      description: 一句话说明要达成什么；必要时贴现象、报错、期望行为。
+      placeholder: |
+        例如：新增 Cline 平台缺少额度刷新，打开账号详情时仍显示 0。
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      description: 可逐条勾选、可观察的结果；能跑的命令写进命令。
+      placeholder: |
+        - [ ] `cd backend && go test -tags=unit ./...` 通过
+        - [ ] 账号详情接口返回 cline 的额度窗口
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与禁区
+      description: 允许改哪些目录/文件，哪些不要动（默认不要把上游文件大改）。
+      placeholder: |
+        可以改：backend/internal/service/cline*.go、frontend 相关表单
+        不要动：deploy/、go.mod、CI 版本断言；不要重排无关代码
+  - type: dropdown
+    id: size
+    attributes:
+      label: 预估规模
+      options:
+        - 小（单文件 / 文档 / 一行修复）
+        - 中（跨 2-5 个文件，需要测试）
+        - 大（跨模块或需要迁移，先出方案）
+      default: 0
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: |
+        **提交后请等一分钟**：智能体会在下一轮轮询（约 60 秒）接单。
+        编辑正文追加 @ 不会触发，需要补一条新评论。
