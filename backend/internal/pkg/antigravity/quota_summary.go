@@ -13,6 +13,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 )
+
 // quotaSummaryBodyLimit bounds the retrieveUserQuotaSummary response (a few hundred bytes today).
 const quotaSummaryBodyLimit = 1 << 20
 
@@ -116,7 +117,6 @@ func truncateQuotaSummaryBody(body []byte) string {
 	}
 	return string(body)
 }
-
 
 // UserQuotaBucket 官方配额组中的一个窗口（桶）。
 // RemainingFraction 用 *float64：nil ⇒ 上游缺字段 / JSON null（= 无数据，调用方按无数据处理）；
@@ -256,4 +256,3 @@ func (c *Client) FetchUserQuotaSummaryForDomain(ctx context.Context, accessToken
 	DefaultURLAvailability.MarkSuccess(baseURL)
 	return &summaryResp, nil
 }
-

@@ -336,33 +336,33 @@ func resolveGeminiThinkingVariantForLevel(account *Account, requestedModel strin
 			order = append(order, level)
 		}
 	}
-		for _, level := range order {
-			candidate := model + "-" + level
-			var (
-				variantMapped  string
-				variantMatched bool
-			)
-			if bareMatched && bareMapped == model {
-				variantMapped, variantMatched = mapping[candidate]
-			} else {
-				variantMapped, variantMatched = resolveRequestedModelInMapping(mapping, candidate)
-			}
-			if variantMatched && strings.TrimSpace(variantMapped) != "" {
-				mapped := strings.TrimSpace(variantMapped)
-				if !accountRawModelMappingHasKey(account, candidate) && bareMatched {
-					if level != preferred {
-						continue
-					}
-					if builtIn, ok := resolveBuiltInGeminiThinkingVariant(model, level); ok {
-						return builtIn, true
-					}
+	for _, level := range order {
+		candidate := model + "-" + level
+		var (
+			variantMapped  string
+			variantMatched bool
+		)
+		if bareMatched && bareMapped == model {
+			variantMapped, variantMatched = mapping[candidate]
+		} else {
+			variantMapped, variantMatched = resolveRequestedModelInMapping(mapping, candidate)
+		}
+		if variantMatched && strings.TrimSpace(variantMapped) != "" {
+			mapped := strings.TrimSpace(variantMapped)
+			if !accountRawModelMappingHasKey(account, candidate) && bareMatched {
+				if level != preferred {
 					continue
 				}
-				return mapped, true
+				if builtIn, ok := resolveBuiltInGeminiThinkingVariant(model, level); ok {
+					return builtIn, true
+				}
+				continue
 			}
+			return mapped, true
 		}
-		if bareMatched {
-			return resolveBuiltInGeminiThinkingVariant(model, preferred)
-		}
-		return "", false
 	}
+	if bareMatched {
+		return resolveBuiltInGeminiThinkingVariant(model, preferred)
+	}
+	return "", false
+}

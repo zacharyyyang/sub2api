@@ -87,7 +87,7 @@ func (f *AntigravityQuotaFetcher) FetchQuota(ctx context.Context, account *Accou
 	// 转换为 UsageInfo
 	usageInfo := f.buildUsageInfo(modelsResp, tierRaw, tierNormalized, loadResp)
 
-// 旁路探测官方配额组额度（非关键路径：失败仅 Warn、绝不写 Error/ErrorCode）
+	// 旁路探测官方配额组额度（非关键路径：失败仅 Warn、绝不写 Error/ErrorCode）
 	f.attachGoogleQuotaGroups(ctx, client, accessToken, resolveModelsListReadLimit(f.cfg), usageInfo)
 
 	return &QuotaResult{

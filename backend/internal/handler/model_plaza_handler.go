@@ -38,11 +38,12 @@ func NewModelPlazaHandler(
 
 // modelPlazaOfficialPricing 官方参考价（USD per token，与计费目录同源）。
 type modelPlazaOfficialPricing struct {
-	InputPrice        *float64 `json:"input_price"`
-	OutputPrice       *float64 `json:"output_price"`
-	CacheWritePrice   *float64 `json:"cache_write_price"`
-	CacheWrite1hPrice *float64 `json:"cache_write_1h_price,omitempty"`
-	CacheReadPrice    *float64 `json:"cache_read_price"`
+	InputPrice         *float64 `json:"input_price"`
+	OutputPrice        *float64 `json:"output_price"`
+	CacheWritePrice    *float64 `json:"cache_write_price"`
+	CacheWrite1hPrice  *float64 `json:"cache_write_1h_price,omitempty"`
+	CacheWrite12hPrice *float64 `json:"cache_write_12h_price,omitempty"`
+	CacheReadPrice     *float64 `json:"cache_read_price"`
 	// Intervals 官方长上下文阶梯，仅多档模型给出。
 	Intervals []userPricingIntervalDTO `json:"intervals,omitempty"`
 }
@@ -267,11 +268,12 @@ func toModelPlazaOfficialPricing(p *service.PlazaOfficialPricing) *modelPlazaOff
 		officialIntervals[i].CacheReadPrice = service.USDPriceInCNYForDisplay(officialIntervals[i].CacheReadPrice)
 	}
 	return &modelPlazaOfficialPricing{
-		InputPrice:        service.USDPriceInCNYForDisplay(p.InputPrice),
-		OutputPrice:       service.USDPriceInCNYForDisplay(p.OutputPrice),
-		CacheWritePrice:   service.USDPriceInCNYForDisplay(p.CacheWritePrice),
-		CacheWrite1hPrice: service.USDPriceInCNYForDisplay(p.CacheWrite1hPrice),
-		CacheReadPrice:    service.USDPriceInCNYForDisplay(p.CacheReadPrice),
-		Intervals:         toUserPricingIntervals(officialIntervals),
+		InputPrice:         service.USDPriceInCNYForDisplay(p.InputPrice),
+		OutputPrice:        service.USDPriceInCNYForDisplay(p.OutputPrice),
+		CacheWritePrice:    service.USDPriceInCNYForDisplay(p.CacheWritePrice),
+		CacheWrite1hPrice:  service.USDPriceInCNYForDisplay(p.CacheWrite1hPrice),
+		CacheWrite12hPrice: service.USDPriceInCNYForDisplay(p.CacheWrite12hPrice),
+		CacheReadPrice:     service.USDPriceInCNYForDisplay(p.CacheReadPrice),
+		Intervals:          toUserPricingIntervals(officialIntervals),
 	}
 }
