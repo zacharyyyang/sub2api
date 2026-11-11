@@ -86,7 +86,7 @@ cache_write_price, cache_write_1h_price, cache_write_12h_price, cache_read_price
 		var statsTimePricingTimezone sql.NullString
 		if err := rows.Scan(
 			&p.ID, &ruleID, &p.Platform, &modelsJSON, &p.BillingMode,
-&p.InputPrice, &p.OutputPrice, &p.CacheWritePrice, &p.CacheWrite1hPrice, &p.CacheWrite12hPrice, &p.CacheReadPrice,
+			&p.InputPrice, &p.OutputPrice, &p.CacheWritePrice, &p.CacheWrite1hPrice, &p.CacheWrite12hPrice, &p.CacheReadPrice,
 			&reasoningEffortMultipliersJSON, &p.ImageOutputPrice, &p.PerRequestPrice, &statsTimePricingTimezone, &p.PriceCurrency, &p.CreatedAt, &p.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan account stats model pricing: %w", err)
@@ -209,7 +209,7 @@ func createAccountStatsModelPricingTx(ctx context.Context, tx *sql.Tx, ruleID in
 		statsTimePricingTimezone = &timezone
 	}
 	err = tx.QueryRowContext(ctx,
-`INSERT INTO channel_account_stats_model_pricing (rule_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_write_1h_price, cache_write_12h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price, stats_time_pricing_timezone, price_currency)
+		`INSERT INTO channel_account_stats_model_pricing (rule_id, platform, models, billing_mode, input_price, output_price, cache_write_price, cache_write_1h_price, cache_write_12h_price, cache_read_price, reasoning_effort_multipliers, image_output_price, per_request_price, stats_time_pricing_timezone, price_currency)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id, created_at, updated_at`,
 		ruleID, platform, modelsJSON, billingMode,
 		pricing.InputPrice, pricing.OutputPrice, pricing.CacheWritePrice, pricing.CacheWrite1hPrice, pricing.CacheWrite12hPrice, pricing.CacheReadPrice,

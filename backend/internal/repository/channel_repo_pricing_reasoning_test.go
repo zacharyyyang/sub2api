@@ -148,7 +148,7 @@ func TestAccountStatsReasoningEffortMultipliersRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	mock.ExpectQuery(`INSERT INTO channel_account_stats_model_pricing .*reasoning_effort_multipliers`).
 		WithArgs(int64(9), "anthropic", []byte(`["custom-model"]`), service.BillingModeToken,
-			nil, nil, nil, nil, nil, nil, nil, stored, nil, nil, nil, "USD").
+			nil, nil, nil, nil, nil, nil, stored, nil, nil, nil, "USD").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at"}).AddRow(int64(11), time.Time{}, time.Time{}))
 	require.NoError(t, createAccountStatsModelPricingTx(ctx, tx, 9, pricing))
 	mock.ExpectCommit()
@@ -167,6 +167,8 @@ func TestAccountStatsReasoningEffortMultipliersRoundTrip(t *testing.T) {
 	))
 	mock.ExpectQuery(`(?s)SELECT .*FROM channel_account_stats_pricing_intervals`).
 		WithArgs(pq.Array([]int64{11})).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`(?s)SELECT .*FROM channel_account_stats_pricing_periods`).
+		WithArgs(pq.Array([]int64{11})).WillReturnRows(sqlmock.NewRows([]string{"pricing_id"}))
 	loaded, err := repo.batchLoadAccountStatsModelPricing(ctx, []int64{9})
 	require.NoError(t, err)
 	require.Len(t, loaded[9], 1)

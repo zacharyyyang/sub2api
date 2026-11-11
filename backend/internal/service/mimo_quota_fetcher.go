@@ -23,6 +23,7 @@ const (
 	mimoUsageNegCacheTTL = 30 * time.Second
 	mimoDefaultPlanTitle = "MiMo 会员"
 )
+
 var (
 	mimoQuotaHTTPClient      = http.DefaultClient
 	mimoUsageFlight          singleflight.Group

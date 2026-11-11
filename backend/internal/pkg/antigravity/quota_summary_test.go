@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
 const defaultQuotaSummaryBodyLimit int64 = 8 << 20
 
 // 实测形状：2 组 × 2 窗口（gemini-5h / gemini-weekly / 3p-5h / 3p-weekly）
@@ -267,7 +268,6 @@ func TestFetchUserQuotaSummaryForDomain_SingleShot(t *testing.T) {
 	})
 }
 
-
 // The shape Google returned for a consumer Ultra account on 2026-11-04.
 const quotaSummaryBody = `{
   "groups": [
@@ -335,4 +335,3 @@ func TestClient_RetrieveUserQuotaSummaryFromURL_Errors(t *testing.T) {
 		server.Close()
 	}
 }
-

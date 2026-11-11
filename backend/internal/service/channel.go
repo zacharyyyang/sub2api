@@ -91,23 +91,23 @@ type AccountStatsPricingRule struct {
 
 // ChannelModelPricing 渠道模型定价条目
 type ChannelModelPricing struct {
-	ID                         int64               `json:"id,omitempty"`
-	ChannelID                  int64               `json:"channel_id,omitempty"`
-	Platform                   string              `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
-	Models                     []string            `json:"models"`
-	BillingMode                BillingMode         `json:"billing_mode"`
-	InputPrice                 *float64            `json:"input_price"`
-	OutputPrice                *float64            `json:"output_price"`
-	CacheWritePrice            *float64            `json:"cache_write_price"`
-	CacheWrite1hPrice          *float64            `json:"cache_write_1h_price"`
-	CacheWrite12hPrice         *float64            `json:"cache_write_12h_price"`
-	CacheReadPrice             *float64            `json:"cache_read_price"`
-	FastMultiplier             *float64            `json:"fast_multiplier"`
-	FlexMultiplier             *float64            `json:"flex_multiplier"`
-	ReasoningEffortMultipliers map[string]float64  `json:"reasoning_effort_multipliers,omitempty"`
-	ImageInputPrice            *float64            `json:"image_input_price"`
-	ImageOutputPrice           *float64            `json:"image_output_price"`
-	PerRequestPrice            *float64            `json:"per_request_price"`
+	ID                         int64              `json:"id,omitempty"`
+	ChannelID                  int64              `json:"channel_id,omitempty"`
+	Platform                   string             `json:"platform"` // 所属平台（anthropic/openai/gemini/...）
+	Models                     []string           `json:"models"`
+	BillingMode                BillingMode        `json:"billing_mode"`
+	InputPrice                 *float64           `json:"input_price"`
+	OutputPrice                *float64           `json:"output_price"`
+	CacheWritePrice            *float64           `json:"cache_write_price"`
+	CacheWrite1hPrice          *float64           `json:"cache_write_1h_price"`
+	CacheWrite12hPrice         *float64           `json:"cache_write_12h_price"`
+	CacheReadPrice             *float64           `json:"cache_read_price"`
+	FastMultiplier             *float64           `json:"fast_multiplier"`
+	FlexMultiplier             *float64           `json:"flex_multiplier"`
+	ReasoningEffortMultipliers map[string]float64 `json:"reasoning_effort_multipliers,omitempty"`
+	ImageInputPrice            *float64           `json:"image_input_price"`
+	ImageOutputPrice           *float64           `json:"image_output_price"`
+	PerRequestPrice            *float64           `json:"per_request_price"`
 	// PriceCurrency 声明本条目的价格是美元还是人民币：
 	// USD（默认）在使用前乘计价汇率；CNY 原样使用。
 	PriceCurrency    string                   `json:"price_currency,omitempty"`

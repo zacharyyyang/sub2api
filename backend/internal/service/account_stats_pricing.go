@@ -307,7 +307,7 @@ func calculateTokenStatsCost(pricing *ChannelModelPricing, tokens UsageTokens) *
 				float64(cache1h)*deref(p.CacheWrite1hPrice)
 		}
 	}
-if cost, ok := openAICacheCreationTTLCost(tokens, deref(p.CacheWritePrice), p.CacheWrite12hPrice); ok {
+	if cost, ok := openAICacheCreationTTLCost(tokens, deref(p.CacheWritePrice), p.CacheWrite12hPrice); ok {
 		cacheCreationCost = cost
 	}
 	// 按 token 公式实际参与计算的价字段判定“是否配置”：

@@ -254,7 +254,7 @@ func parseGatewayRequestCurrentBody(parsed *ParsedRequest, protocol string) erro
 		if modelResult.Type != gjson.String {
 			return fmt.Errorf("invalid model field type")
 		}
-parsed.Model = strings.Clone(modelResult.String())
+		parsed.Model = strings.Clone(modelResult.String())
 		// 全协议统一剥离末尾 [1m] 并还原 Claude Code Desktop 外壳 ID，使下游
 		// 路由、选号、白名单与上游转发只看到真实模型名。
 		normalizedModel, context1MRequested := NormalizeInboundModelID(parsed.Model)

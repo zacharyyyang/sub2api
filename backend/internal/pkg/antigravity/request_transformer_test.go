@@ -55,7 +55,7 @@ func TestBuildParts_ThinkingBlockWithoutSignature(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			toolIDToName := make(map[string]string)
-parts, strippedThinking, err := buildParts(json.RawMessage(tt.content), toolIDToName, tt.allowDummyThought, false)
+			parts, strippedThinking, err := buildParts(json.RawMessage(tt.content), toolIDToName, tt.allowDummyThought, false)
 
 			if err != nil {
 				t.Fatalf("buildParts() error = %v", err)
