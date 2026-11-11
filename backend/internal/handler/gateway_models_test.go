@@ -335,11 +335,11 @@ func TestGatewayCodexModels_CompositeUsesCompleteEffectiveModelList(t *testing.T
 	require.Equal(t, http.StatusOK, rec.Code)
 	var got codexModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	// Unmapped OpenAI accounts contribute no default models; only account mapping keys survive.
-	require.ElementsMatch(t, []string{"gpt-5.5", "grok-4.6"}, codexModelSlugsForTest(got.Models))
+	want := service.FilterCodexModelIDsForGroup(openai.DefaultModelIDs(), nil)
+	require.ElementsMatch(t, append(want, "grok-4.6"), codexModelSlugsForTest(got.Models))
 }
 
-func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
+func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 28
 	const sparkModel = "gpt-5.3-codex-spark"
@@ -370,14 +370,14 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 		want     []string
 	}{
 		{
-			name:     "unmapped parent and Spark shadow keep mapped keys only",
+			name:     "unmapped parent and Spark shadow retain defaults and aliases",
 			accounts: accounts,
-			want:     []string{sparkModel, alias},
+			want:     append(append([]string{}, subscriptionDefaults...), alias),
 		},
 		{
-			name:     "unmapped API key account adds no default models",
+			name:     "unmapped API key account also contributes defaults",
 			accounts: append([]service.Account{{ID: 4, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, accounts[1:]...),
-			want:     []string{sparkModel, alias},
+			want:     append(openai.DefaultModelIDs(), alias),
 		},
 		{
 			name:     "unmapped accounts alone retain default response shape",
@@ -385,10 +385,10 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 			want:     subscriptionDefaults,
 		},
 		{
-			name:     "custom list selects mapped keys only",
+			name:     "custom list can select defaults and aliases",
 			accounts: accounts,
 			config:   service.GroupModelAllowlist{Enabled: true, Models: []string{alias, "gpt-5.6-sol", sparkModel, "unknown-model"}},
-			want:     []string{alias, sparkModel},
+			want:     []string{alias, "gpt-5.6-sol", sparkModel},
 		},
 		{
 			name:     "unavailable custom selection remains empty",
@@ -405,13 +405,13 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 			// A passthrough account with a stale mapping behaves like an unmapped
 			// one: it adds the defaults but never its own mapping keys, and it no
 			// longer hides the aliases declared on ordinary accounts.
-			name: "passthrough account adds no defaults and no stale mapping keys",
+			name: "passthrough account contributes defaults without hiding mapped aliases",
 			accounts: append([]service.Account{{
 				ID: 5, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth,
 				Credentials: map[string]any{"model_mapping": map[string]any{"stale-model": "stale-model"}},
 				Extra:       map[string]any{"openai_passthrough": true},
 			}}, accounts[1:]...),
-			want: []string{sparkModel, alias},
+			want: append(append([]string{}, subscriptionDefaults...), alias),
 		},
 		{
 			name:     "unmapped accounts from another platform do not add defaults",
@@ -436,7 +436,7 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 				var got gatewayModelsResponseForTest
 				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 				require.Equal(t, "list", got.Object)
-				require.ElementsMatch(t, decorateIDsForDiscoveryForTest(tt.want, "openai"), modelIDsForTest(got.Data))
+				require.ElementsMatch(t, tt.want, modelIDsForTest(got.Data))
 				for _, model := range got.Data {
 					require.Equal(t, "model", model.Object, model.ID)
 					require.Positive(t, model.Created, model.ID)
@@ -444,7 +444,7 @@ func TestGatewayModels_UnmappedOpenAIAccountsAddNoDefaultModels(t *testing.T) {
 					require.Empty(t, model.CreatedAt, model.ID)
 				}
 				if tt.config.Enabled {
-					require.Equal(t, decorateIDsForDiscoveryForTest(tt.want, "openai"), modelIDsForTest(got.Data))
+					require.Equal(t, tt.want, modelIDsForTest(got.Data))
 				}
 			}
 		})

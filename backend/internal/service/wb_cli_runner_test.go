@@ -316,7 +316,8 @@ func TestWBDiscoveryNegativeCacheExpires(t *testing.T) {
 func TestWBCLIHomeDirAbsolutizesRelativeConfigDir(t *testing.T) {
 	oldWD, err := os.Getwd()
 	require.NoError(t, err)
-	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
 	require.NoError(t, os.Chdir(base))
 	t.Cleanup(func() { require.NoError(t, os.Chdir(oldWD)) })
 
@@ -336,7 +337,9 @@ func TestWBSpawnBoundary(t *testing.T) {
 	s := string(out)
 	require.Contains(t, s, `"--tools" ""`)
 	require.Contains(t, s, "PROMPT:User: hello")
-	require.Contains(t, s, "CWD:"+filepath.Join(os.TempDir(), wbCLIWorkDirName))
+	tempRoot, err := filepath.EvalSymlinks(os.TempDir())
+	require.NoError(t, err)
+	require.Contains(t, s, "CWD:"+filepath.Join(tempRoot, wbCLIWorkDirName))
 	require.Contains(t, s, "CODEBUDDY_INTERNET_ENVIRONMENT=internal")
 	require.NotContains(t, s, "secret-host-value")
 	require.NotContains(t, s, "WB_MCP_BRIDGE_PATH")
