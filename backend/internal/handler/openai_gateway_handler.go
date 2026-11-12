@@ -567,6 +567,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	// SSE 走 nginx 时禁用代理缓冲，保证首个 chunk 立即下行（长 prefill 场景避免被缓冲/超时）。
+	if reqStream {
+		c.Header("X-Accel-Buffering", "no")
+	}
+
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if previousResponseID != "" {
 		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
