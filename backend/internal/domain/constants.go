@@ -452,4 +452,3 @@ func IsMimoVisionModel(model string) bool {
 	}
 	return strings.Contains(lower, "omni") || strings.Contains(lower, "vision") || strings.Contains(lower, "vl")
 }
-

@@ -2622,4 +2622,3 @@ func getDefaultGrokImagineVideoPrice(model string, resolution string) (float64, 
 		return 0, false
 	}
 }
-
