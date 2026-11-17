@@ -309,7 +309,7 @@ var systemIdentityOpeners = []*regexp.Regexp{
 // leading vendor identity sentence, preserving the rest of the system block.
 // Only Antigravity forwarding should use this; native Anthropic may require attribution.
 func NeutralizeSystemIdentity(text string) string {
-	text = stripClaudeAttribution(text)
+	text = StripUpstreamTriggerSentences(stripClaudeAttribution(text))
 	for _, re := range systemIdentityOpeners {
 		if loc := re.FindStringIndex(text); loc != nil {
 			if strings.HasPrefix(text[loc[1]:], ",") {

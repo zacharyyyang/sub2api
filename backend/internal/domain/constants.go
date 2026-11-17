@@ -197,6 +197,13 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-4-argon-high":   "gemini-4-argon-high",
 	"gemini-4-argon-low":    "gemini-4-argon-low",
 	"gemini-4-argon-medium": "gemini-4-argon-medium",
+	// Gemini 4 Hydrogen (fast tier). Antigravity exposes effort-tiered variants;
+	// bare ID is kept as a dynamic self-map and xhigh is Hydrogen-only.
+	"gemini-4-hydrogen":        "gemini-4-hydrogen",
+	"gemini-4-hydrogen-low":    "gemini-4-hydrogen-low",
+	"gemini-4-hydrogen-medium": "gemini-4-hydrogen-medium",
+	"gemini-4-hydrogen-high":   "gemini-4-hydrogen-high",
+	"gemini-4-hydrogen-xhigh":  "gemini-4-hydrogen-xhigh",
 	// Gemini 3 image 兼容映射（向 3.1 image 迁移）
 	"gemini-3-pro-image":         "gemini-3.1-flash-image",
 	"gemini-3-pro-image-preview": "gemini-3.1-flash-image",
@@ -445,3 +452,4 @@ func IsMimoVisionModel(model string) bool {
 	}
 	return strings.Contains(lower, "omni") || strings.Contains(lower, "vision") || strings.Contains(lower, "vl")
 }
+

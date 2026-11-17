@@ -552,6 +552,15 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:         false,
 	}
 
+	// Gemini 4 Hydrogen (Google AI pricing: $1.50 input / $7.50 output / $0.075
+	// cached input per MTok; Priority 1.8x; only implicit caching, no storage fee).
+	s.fallbackPrices["gemini-4-hydrogen"] = pricingWithPriorityMultiplier(&ModelPricing{
+		InputPricePerToken:     1.5e-6,
+		OutputPricePerToken:    7.5e-6,
+		CacheReadPricePerToken: 0.075e-6,
+		SupportsCacheBreakdown: false,
+	}, 1.8)
+
 	// Gemini 4 Argon Cyber Permissive (Vertex AI pricing: $4 input / $20 output /
 	// $0.20 cached input per MTok). The Gemini 4 Argon promotion does not apply.
 	s.fallbackPrices["gemini-4-argon-cyber-permissive"] = &ModelPricing{
@@ -1176,6 +1185,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	}
 	if strings.Contains(modelLower, "gemini-4-argon") || strings.Contains(modelLower, "gemini-4.0-argon") {
 		return s.fallbackPrices["gemini-4-argon"]
+	}
+	// Gemini 4 Hydrogen tiers (-low/-medium/-high/-xhigh) share the base rate.
+	if strings.Contains(modelLower, "gemini-4-hydrogen") || strings.Contains(modelLower, "gemini-4.0-hydrogen") {
+		return s.fallbackPrices["gemini-4-hydrogen"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；
@@ -2609,3 +2622,4 @@ func getDefaultGrokImagineVideoPrice(model string, resolution string) (float64, 
 		return 0, false
 	}
 }
+
