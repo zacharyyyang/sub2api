@@ -301,10 +301,8 @@ func TestTryCustomRules_CacheTTLAllocation(t *testing.T) {
 					}
 					result, err := tryCustomRules(channel, 1, 0, "anthropic", "claude-test", tokens, 1, time.Time{})
 					require.NoError(t, err)
-					if wantCost == 0 {
-						require.Nil(t, result)
-						return
-					}
+					// 账号统计成本契约：只要配置了价，即使算出 0 也返回结果（不能当成
+					// “未命中”回落后续优先级）。零 token 请求因此得到 0 而不是 nil。
 					require.NotNil(t, result)
 					require.InDelta(t, wantCost, *result, 1e-12)
 				})
