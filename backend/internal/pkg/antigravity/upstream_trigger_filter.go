@@ -29,6 +29,10 @@ const stripPatternsEnv = "SUB2API_ANTIGRAVITY_STRIP_PATTERNS"
 
 var defaultUpstreamTriggerPatterns = []string{
 	`(?i)Dual-use security tools \([^)]*\) require clear authorization context:[^.\n]*\.[ \t]*`,
+	// Claude Code / Claude Agent SDK generic opener. From 2026-11-18 the upstream
+	// also rejects this sentence with a bare 429; it carries no functional
+	// instruction, so strip it wherever it appears.
+	`(?i)You are an interactive agent that helps users with software engineering tasks\.[ \t]*`,
 }
 
 var upstreamTriggerPatterns = compileUpstreamTriggerPatterns(os.Getenv(stripPatternsEnv))
