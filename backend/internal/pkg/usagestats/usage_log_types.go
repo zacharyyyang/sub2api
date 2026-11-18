@@ -111,8 +111,9 @@ type EndpointStat struct {
 	Endpoint    string  `json:"endpoint"`
 	Requests    int64   `json:"requests"`
 	TotalTokens int64   `json:"total_tokens"`
-	Cost        float64 `json:"cost"`        // 标准计费
-	ActualCost  float64 `json:"actual_cost"` // 实际扣除
+	Cost        float64 `json:"cost"`                   // 标准计费
+	ActualCost  float64 `json:"actual_cost"`            // 实际扣除
+	AccountCost float64 `json:"account_cost,omitempty"` // 账号成本（仅管理员接口返回）
 }
 
 // APIKeyStat 是按 API 密钥聚合的用量统计。

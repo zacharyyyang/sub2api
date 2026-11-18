@@ -54,7 +54,7 @@
             :error="apiKeyStatsError"
             :loading="endpointStatsLoading"
             :show-metric-toggle="true"
-            @retry="loadStats()"
+@retry="loadStats()"
           />
           <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
