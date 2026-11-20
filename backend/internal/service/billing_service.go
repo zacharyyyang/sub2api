@@ -558,6 +558,18 @@ func (s *BillingService) initFallbackPricing() {
 		SupportsCacheBreakdown:         false,
 	}
 
+	// Gemini 4 Neon: official rates not published yet; use Carbon-tier fallback
+	// so token-bearing requests are never recorded at $0 until pricing lands.
+	s.fallbackPrices["gemini-4-neon"] = &ModelPricing{
+		InputPricePerToken:             2e-6,
+		OutputPricePerToken:            10e-6,
+		CacheReadPricePerToken:         0.1e-6,
+		InputPricePerTokenPriority:     3.6e-6,
+		OutputPricePerTokenPriority:    18e-6,
+		CacheReadPricePerTokenPriority: 0.18e-6,
+		SupportsCacheBreakdown:         false,
+	}
+
 	// Gemini 4 Argon Cyber Permissive (Vertex AI pricing: $4 input / $20 output /
 	// $0.20 cached input per MTok). The Gemini 4 Argon promotion does not apply.
 	s.fallbackPrices["gemini-4-argon-cyber-permissive"] = &ModelPricing{
@@ -1259,6 +1271,10 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	// Gemini 4 Hydrogen tiers (-low/-medium/-high/-xhigh) share the base rate.
 	if strings.Contains(modelLower, "gemini-4-hydrogen") || strings.Contains(modelLower, "gemini-4.0-hydrogen") {
 		return s.fallbackPrices["gemini-4-hydrogen"]
+	}
+	// Gemini 4 Neon tiers use the base Neon rate until official pricing lands.
+	if strings.Contains(modelLower, "gemini-4-neon") || strings.Contains(modelLower, "gemini-4.0-neon") {
+		return s.fallbackPrices["gemini-4-neon"]
 	}
 
 	// DeepSeek 系列：官方模型 V4 Pro/Flash（含 vision-exp）按各自价卡；
@@ -2735,3 +2751,4 @@ func openAIUltrafastMultiplier(model string, at time.Time) float64 {
 	}
 	return 6
 }
+
