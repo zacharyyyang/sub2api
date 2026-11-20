@@ -202,13 +202,13 @@ var DefaultAntigravityModelMapping = map[string]string{
 	"gemini-4-argon-medium":  "gemini-4-argon-medium",
 	// Gemini 4 Hydrogen (fast tier). Antigravity exposes effort-tiered variants;
 	// bare ID resolves to the high tier, and xhigh/sonar/tiered are Hydrogen-only.
-	"gemini-4-hydrogen":             "gemini-4-hydrogen-high",
-	"gemini-4-hydrogen-low":         "gemini-4-hydrogen-low",
-	"gemini-4-hydrogen-medium":      "gemini-4-hydrogen-medium",
-	"gemini-4-hydrogen-high":        "gemini-4-hydrogen-high",
-	"gemini-4-hydrogen-xhigh":       "gemini-4-hydrogen-xhigh",
-	"gemini-4-hydrogen-sonar":       "gemini-4-hydrogen-sonar",
-	"gemini-4-hydrogen-tiered-high": "gemini-4-hydrogen-tiered-high",
+	"gemini-4-hydrogen":              "gemini-4-hydrogen-high",
+	"gemini-4-hydrogen-low":          "gemini-4-hydrogen-low",
+	"gemini-4-hydrogen-medium":       "gemini-4-hydrogen-medium",
+	"gemini-4-hydrogen-high":         "gemini-4-hydrogen-high",
+	"gemini-4-hydrogen-xhigh":        "gemini-4-hydrogen-xhigh",
+	"gemini-4-hydrogen-sonar":        "gemini-4-hydrogen-sonar",
+	"gemini-4-hydrogen-tiered-high":  "gemini-4-hydrogen-tiered-high",
 	"gemini-4-hydrogen-tiered-xhigh": "gemini-4-hydrogen-tiered-xhigh",
 	// Gemini 4 Neon (newest tier). Antigravity exposes low/medium/high/xhigh;
 	// bare ID resolves to the high tier.

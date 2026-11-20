@@ -2751,4 +2751,3 @@ func openAIUltrafastMultiplier(model string, at time.Time) float64 {
 	}
 	return 6
 }
-
